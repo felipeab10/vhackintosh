@@ -12,3 +12,5 @@ venv/
 *.qcow2
 *.img
 /test-artifacts/
+appliance/out/
+appliance/archiso/airootfs/opt/

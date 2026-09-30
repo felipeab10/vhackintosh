@@ -4,6 +4,8 @@ base-devel
 linux
 linux-firmware
 linux-headers
+mkinitcpio
+mkinitcpio-archiso
 systemd
 systemd-sysvcompat
 sudo
