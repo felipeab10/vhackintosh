@@ -68,6 +68,7 @@ if [ -d "${REIMS_SRC}" ]; then
         --include='crates/reims-vgpu-efi/out/**' \
         --include='vendor/qemu/build/qemu-system-x86_64' \
         --include='vendor/qemu/build/pc-bios/**' \
+        --include='vendor/qemu/pc-bios/**' \
         --include='vm/ovmf/**' \
         --include='vm/boot-x86.sh' \
         --include='scripts/**' \
