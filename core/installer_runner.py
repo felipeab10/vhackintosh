@@ -42,15 +42,13 @@ class ABInstallerTest:
         v_map = {"1": "sequoia", "2": "tahoe", "3": "ventura"}
         macos_version = v_map[v_opt]
 
-        # 2. Download / Verificação da Imagem de Recuperação Oficial da Apple
+        # 2. Imagem de Instalação/Recuperação da Apple (Automático)
         console.print(f"\n[bold]2. Imagem de Instalação/Recuperação da Apple ({macos_version.capitalize()}):[/bold]")
         installer_img = MacOSDownloader.get_cached_image_path(macos_version)
         if installer_img:
-            console.print(f"  [bold green]✔ Imagem oficial encontrada em cache local:[/bold green] {installer_img.name}")
-            if Confirm.ask("  Deseja baixar novamente dos servidores da Apple para atualizar?", default=False):
-                installer_img = MacOSDownloader.prepare_installer(macos_version)
+            console.print(f"  [bold green]✔ Imagem oficial vinculada automaticamente:[/bold green] {installer_img.name}")
         else:
-            console.print(f"  [yellow]Nenhuma imagem local encontrada. Baixando dos servidores da Apple...[/yellow]")
+            console.print(f"  [bold cyan]▶ Baixando imagem oficial dos servidores da Apple...[/bold cyan]")
             installer_img = MacOSDownloader.prepare_installer(macos_version)
 
         if not installer_img:
@@ -72,16 +70,15 @@ class ABInstallerTest:
         # Áudio corrigido definitivo (ich9-intel-hda)
         audio_device = "ich9-intel-hda"
 
-        # 5. Provisionamento da VM de teste
+        # 5. Provisionamento da VM de teste (limpeza automática)
         test_vm_id = f"test-ab-{macos_version}"
         test_vm_dir = Path(os.path.expanduser("~/.config/vhackintosh/vms")) / test_vm_id
         if test_vm_dir.exists():
-            if Confirm.ask(f"\nJá existe um diretório de teste anterior ({test_vm_id}). Deseja recriá-lo do zero?", default=True):
-                import shutil
-                try:
-                    shutil.rmtree(test_vm_dir)
-                except Exception as e:
-                    console.print(f"[yellow]Aviso ao limpar diretório antigo: {e}[/yellow]")
+            import shutil
+            try:
+                shutil.rmtree(test_vm_dir)
+            except Exception as e:
+                console.print(f"[yellow]Aviso ao limpar diretório antigo: {e}[/yellow]")
 
         console.print(f"\n[bold cyan]▶ Provisionando armazenamento ({disk_size_gb} GB) e OpenCore EFI para '{test_vm_id}'...[/bold cyan]")
         smbios = GenSMBIOS.generate(macos_version)
