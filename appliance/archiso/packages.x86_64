@@ -59,6 +59,7 @@ pipewire-audio
 wireplumber
 
 # Utilitários e Particionamento
+arch-install-scripts
 7zip
 parted
 gptfdisk

@@ -66,11 +66,25 @@ class VMTUI:
             console.print(" [bold green]5[/bold green] - Baixar / Gerenciar Imagens do macOS (Apple Recovery)")
             console.print(" [bold green]6[/bold green] - Teste A/B de Instalação do Zero (Apple Recovery)")
             console.print(" [bold green]7[/bold green] - Gerador de Imagem ISO Bootável (Appliance Live USB com AI Harnesses)")
+            is_live_media = os.path.exists("/run/archiso/bootmnt")
+            if is_live_media:
+                console.print(" [bold magenta]I[/bold magenta] - [bold yellow]★ INSTALAR vHackintosh OS no SSD/Disco deste Computador[/bold yellow]")
+
             console.print(" [bold red]0[/bold red] - Sair para o Terminal / Desligar")
 
-            choice = Prompt.ask("\nEscolha uma opção", choices=["1", "2", "3", "4", "5", "6", "7", "0"], default="1")
+            choices = ["1", "2", "3", "4", "5", "6", "7", "0"]
+            if is_live_media:
+                choices.extend(["I", "i"])
 
-            if choice == "1":
+            choice = Prompt.ask("\nEscolha uma opção", choices=choices, default="1")
+
+            if choice in ("I", "i"):
+                if shutil.which("vhackintosh-install"):
+                    subprocess.run(["vhackintosh-install"])
+                else:
+                    console.print("[red]Instalador 'vhackintosh-install' não encontrado.[/red]")
+                    Prompt.ask("Enter para continuar")
+            elif choice == "1":
                 self._menu_manage_vms(vms)
             elif choice == "2":
                 self._wizard_create_vm()

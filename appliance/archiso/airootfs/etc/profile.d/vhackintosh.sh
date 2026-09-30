@@ -57,6 +57,27 @@ if [ "$(tty)" = "/dev/tty1" ]; then
 
     clear
 
+    # Se estiver rodando do Pendrive/Live ISO, oferece o Instalador Bare-metal
+    if [ -d "/run/archiso/bootmnt" ]; then
+        echo -e "\033[1;36m======================================================================\033[0m"
+        echo -e "\033[1;37m         Bem-vindo ao Instalador do vHackintosh OS Appliance          \033[0m"
+        echo -e "\033[1;36m======================================================================\033[0m\n"
+        echo -e "Escolha o modo de operação:\n"
+        echo -e "  \033[1;32m[1]\033[0m \033[1;37mInstalar vHackintosh OS no SSD / Disco deste Computador\033[0m"
+        echo -e "      Transforma o computador em um Appliance dedicado com boot direto do SSD.\n"
+        echo -e "  \033[1;33m[2]\033[0m \033[1;37mExecutar em Modo Live / Demonstração (Memória RAM)\033[0m"
+        echo -e "      Testa o vHackintosh sem alterar os discos físicos do computador.\n"
+        read -r -t 15 -p "Escolha [1 ou 2] (padrão 2 em 15s): " boot_choice || boot_choice="2"
+        if [ "$boot_choice" = "1" ]; then
+            if command -v vhackintosh-install >/dev/null 2>&1; then
+                vhackintosh-install
+                exit 0
+            fi
+        fi
+    fi
+
+    clear
+
     # Executa o gerenciador Kiosk do vHackintosh
     if command -v vhackintosh >/dev/null 2>&1; then
         vhackintosh
