@@ -42,38 +42,63 @@ if ! command -v mkarchiso &>/dev/null; then
 fi
 
 # 3. Preparação dos diretórios de saída e airootfs
-echo -e "${BLUE}▶ Preparando estrutura de arquivos da Appliance...${NC}"
+echo -e "${BLUE}▶ Limpando e preparando estrutura da Appliance...${NC}"
+rm -rf "${ARCHISO_PROFILE}/airootfs/opt"
 mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh"
 mkdir -p "${ARCHISO_PROFILE}/airootfs/opt/reims-vgpu"
 
-# 4. Sincronização do código-fonte do vHackintosh para o rootfs
-echo -e "${BLUE}▶ Sincronizando código-fonte do vHackintosh em /opt/vhackintosh...${NC}"
-rsync -av --delete \
+# 4. Sincronização do código-fonte do vHackintosh para o rootfs (excluindo diretório de build appliance)
+echo -e "${BLUE}▶ Sincronizando módulos essenciais do vHackintosh em /opt/vhackintosh...${NC}"
+rsync -av \
+    --exclude='appliance' \
     --exclude='.git' \
     --exclude='venv' \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     --exclude='out' \
-    --exclude='appliance/out' \
-    "${PROJECT_ROOT}/" "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/"
+    "${PROJECT_ROOT}/bin" \
+    "${PROJECT_ROOT}/cli" \
+    "${PROJECT_ROOT}/core" \
+    "${PROJECT_ROOT}/ui" \
+    "${PROJECT_ROOT}/themes" \
+    "${PROJECT_ROOT}/README.md" \
+    "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/"
 
-# 5. Sincronização dos binários e ROMs do reims-vgpu se presentes no host
+# 5. Cópia seletiva dos binários e ROMs do reims-vgpu (sem discos de VMs ou imagens gigantes)
 REIMS_SRC="/home/felipeab10/reims-vgpu"
+REIMS_DEST="${ARCHISO_PROFILE}/airootfs/opt/reims-vgpu"
 if [ -d "${REIMS_SRC}" ]; then
-    echo -e "${BLUE}▶ Empacotando binários compilados do reims-vgpu e ROMs UEFI...${NC}"
-    mkdir -p "${ARCHISO_PROFILE}/airootfs/opt/reims-vgpu"
-    rsync -av \
-        --include='*/' \
-        --include='crates/reims-vgpu-efi/out/**' \
-        --include='vendor/qemu/build/qemu-system-x86_64' \
-        --include='vendor/qemu/build/pc-bios/**' \
-        --include='vendor/qemu/pc-bios/**' \
-        --include='vm/ovmf/**' \
-        --include='vm/boot-x86.sh' \
-        --include='scripts/**' \
-        --exclude='*' \
-        "${REIMS_SRC}/" "${ARCHISO_PROFILE}/airootfs/opt/reims-vgpu/" || true
+    echo -e "${BLUE}▶ Empacotando binários compilados do reims-vgpu e ROMs UEFI (~140 MB)...${NC}"
+    mkdir -p "${REIMS_DEST}/vendor/qemu/build"
+    mkdir -p "${REIMS_DEST}/crates/reims-vgpu-efi"
+    mkdir -p "${REIMS_DEST}/vm"
+
+    # QEMU customizado compilado
+    if [ -f "${REIMS_SRC}/vendor/qemu/build/qemu-system-x86_64" ]; then
+        cp -a "${REIMS_SRC}/vendor/qemu/build/qemu-system-x86_64" "${REIMS_DEST}/vendor/qemu/build/"
+    fi
+
+    # PC-BIOS
+    if [ -d "${REIMS_SRC}/vendor/qemu/pc-bios" ]; then
+        cp -a "${REIMS_SRC}/vendor/qemu/pc-bios" "${REIMS_DEST}/vendor/qemu/"
+    fi
+
+    # ROM UEFI (reims-vgpu-gop.rom)
+    if [ -d "${REIMS_SRC}/crates/reims-vgpu-efi/out" ]; then
+        cp -a "${REIMS_SRC}/crates/reims-vgpu-efi/out" "${REIMS_DEST}/crates/reims-vgpu-efi/"
+    fi
+
+    # Firmware UEFI OVMF 4M e script de inicialização do rail
+    if [ -d "${REIMS_SRC}/vm/ovmf" ]; then
+        cp -a "${REIMS_SRC}/vm/ovmf" "${REIMS_DEST}/vm/"
+    fi
+    if [ -f "${REIMS_SRC}/vm/boot-x86.sh" ]; then
+        cp -a "${REIMS_SRC}/vm/boot-x86.sh" "${REIMS_DEST}/vm/"
+    fi
+    if [ -d "${REIMS_SRC}/scripts" ]; then
+        cp -a "${REIMS_SRC}/scripts" "${REIMS_DEST}/"
+    fi
 fi
 
 # 6. Permissões de execução dos scripts da appliance
