@@ -9,6 +9,8 @@ systemd-sysvcompat
 sudo
 bash
 zsh
+grub
+efibootmgr
 
 # Rede e Conectividade
 networkmanager
