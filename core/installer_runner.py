@@ -139,7 +139,17 @@ class ABInstallerTest:
                 "--device", "reims-vgpu-pci",
             ]
             subprocess.run(cmd, env=env)
-            console.print("\n[bold yellow]Sessão de teste finalizada.[/bold yellow]")
+            console.print("\n[bold yellow]Sessão de instalação finalizada.[/bold yellow]")
+
+            # Registra automaticamente a VM recém-instalada no vHackintosh
+            try:
+                from core.config import VMManagerStore
+                store = VMManagerStore()
+                vm.disk_path = str(bundle.hdd_path)
+                store.add_vm(vm)
+                console.print(f"[bold green]✔ VM '{vm.name}' foi registrada e já está disponível no menu principal![/bold green]")
+            except Exception as e:
+                console.print(f"[yellow]Aviso: Não foi possível registrar a VM automaticamente: {e}[/yellow]")
         finally:
             lock.release()
 
