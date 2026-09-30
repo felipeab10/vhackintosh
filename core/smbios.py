@@ -16,14 +16,11 @@ from core.config import SMBIOSConfig
 class GenSMBIOS:
     """Gerador nativo de seriais da Apple compatível com OpenCore."""
 
-    # Tabela de modelos ideais por versão do macOS
+    # Tabela de modelos ideais por versão do macOS suportada
     RECOMMENDED_MODELS = {
         "tahoe": "MacPro7,1",
         "sequoia": "MacPro7,1",
-        "sonoma": "MacPro7,1",
         "ventura": "MacPro7,1",
-        "monterey": "iMacPro1,1",
-        "bigsur": "iMacPro1,1",
     }
 
     # Prefixos de fábrica comuns (3 caracteres)

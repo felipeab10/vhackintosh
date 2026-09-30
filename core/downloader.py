@@ -31,7 +31,7 @@ console = Console()
 
 IMAGES_CACHE_DIR = Path(os.path.expanduser("~/.config/vhackintosh/images"))
 
-# Catálogo oficial de Board IDs e parâmetros por versão do macOS
+# Catálogo oficial de Board IDs e parâmetros por versão do macOS suportada
 MACOS_PRODUCTS = {
     "tahoe": {
         "name": "macOS Tahoe (26)",
@@ -45,21 +45,9 @@ MACOS_PRODUCTS = {
         "mlb": "00000000000000000",
         "os_type": "default",
     },
-    "sonoma": {
-        "name": "macOS Sonoma (14)",
-        "board_id": "Mac-827FAC58A8FDFA22",
-        "mlb": "00000000000000000",
-        "os_type": "default",
-    },
     "ventura": {
         "name": "macOS Ventura (13)",
         "board_id": "Mac-4B682C642B45593E",
-        "mlb": "00000000000000000",
-        "os_type": "latest",
-    },
-    "monterey": {
-        "name": "macOS Monterey (12)",
-        "board_id": "Mac-B809C3757DA9BB8D",
         "mlb": "00000000000000000",
         "os_type": "latest",
     },

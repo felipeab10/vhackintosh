@@ -193,10 +193,10 @@ class VMTUI:
         # 2. Versão do macOS
         console.print("\n[bold]Escolha a versão do macOS:[/bold]")
         console.print(" 1 - macOS Tahoe 26 (Experimental Reims vGPU)")
-        console.print(" 2 - macOS Sequoia 15 (Estável)")
-        console.print(" 3 - macOS Sonoma 14")
+        console.print(" 2 - macOS Sequoia 15 (Recomendada / Estável)")
+        console.print(" 3 - macOS Ventura 13 (Legado Estável)")
         ver_opt = Prompt.ask("Versão", choices=["1", "2", "3"], default="2")
-        version_map = {"1": "tahoe", "2": "sequoia", "3": "sonoma"}
+        version_map = {"1": "tahoe", "2": "sequoia", "3": "ventura"}
         macos_version = version_map[ver_opt]
 
         # 3. vCPUs recomendadas

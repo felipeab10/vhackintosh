@@ -47,7 +47,10 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
 
 ### 2.6. Auto-Downloader de Imagens do macOS (Apple SUS Recovery)
 - **Download Oficial Apple:** O vHackintosh integra cliente de comunicação direta com os servidores de atualização e recuperação da Apple (`osrecovery.apple.com` e `oscdn.apple.com`).
-- **Catálogo de Imagens:** Suporte nativo a **Tahoe (26)**, **Sequoia (15)**, **Sonoma (14)**, **Ventura (13)** e **Monterey (12)**.
+- **Escopo Inicial de Versões Suportadas:**
+  - 🍏 **macOS Tahoe (26):** Próxima geração do macOS com aceleração via Reims vGPU experimental.
+  - 🍏 **macOS Sequoia (15):** Versão atual estável e recomendada para produção.
+  - 🍏 **macOS Ventura (13):** Versão de referência de alta estabilidade e baixo consumo.
 - **Pipeline Automatizado:** Download de `BaseSystem.dmg` com barra de progresso visual em tempo real (velocidade, ETA e tamanho via Rich) e conversão transparente para disco virtual `BaseSystem.img` via `dmg2img`. Cache local em `~/.config/vhackintosh/images/` para evitar downloads repetidos.
 
 ---
