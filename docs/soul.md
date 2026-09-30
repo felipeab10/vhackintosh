@@ -45,6 +45,11 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
 - **Solução Validada (ultimate-macOS-KVM):** Utilização de controlador nativo PCI Intel High Definition Audio (`ich9-intel-hda`) com codec duplex (`hda-duplex`), mapeado para o servidor de áudio do host (PipeWire / PulseAudio via `/run/user/$UID/pulse/native`).
 - **OpenCore / Dortania:** No OpenCore, o `AppleALC` (ou layout nativo AppleHDA) reconhece o barramento HDA PCI sem necessidade de gambiarras USB, entregando áudio limpo, estéreo sem latência e volume de sistema funcional.
 
+### 2.6. Auto-Downloader de Imagens do macOS (Apple SUS Recovery)
+- **Download Oficial Apple:** O vHackintosh integra cliente de comunicação direta com os servidores de atualização e recuperação da Apple (`osrecovery.apple.com` e `oscdn.apple.com`).
+- **Catálogo de Imagens:** Suporte nativo a **Tahoe (26)**, **Sequoia (15)**, **Sonoma (14)**, **Ventura (13)** e **Monterey (12)**.
+- **Pipeline Automatizado:** Download de `BaseSystem.dmg` com barra de progresso visual em tempo real (velocidade, ETA e tamanho via Rich) e conversão transparente para disco virtual `BaseSystem.img` via `dmg2img`. Cache local em `~/.config/vhackintosh/images/` para evitar downloads repetidos.
+
 ---
 
 ## 3. Wikis e Documentação de Referência
@@ -74,3 +79,4 @@ O projeto segue as melhores práticas e especificações técnicas documentadas 
 - **2026-09-30:** Definição do Kiosk Mode com sincronização bidirecional de energia (Host Power Sync).
 - **2026-09-30:** Adoção oficial das wikis **ultimate-macOS-KVM** e **Dortania** como referências vivas.
 - **2026-09-30:** Substituição do áudio `usb-audio` bugado do OSX-KVM pelo `ich9-intel-hda` + `hda-duplex` do ultimate-macOS-KVM.
+- **2026-09-30:** Implementação do Auto-Downloader oficial Apple Recovery (SUS) com conversão `dmg2img` e cache local.

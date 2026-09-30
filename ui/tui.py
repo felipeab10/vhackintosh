@@ -21,6 +21,7 @@ from core.config import VMConfig, VMManagerStore, ExclusiveVMLock
 from core.hardware import HardwareAdvisor
 from core.gpu import GPUChecker
 from core.smbios import GenSMBIOS
+from core.downloader import MacOSDownloader, MACOS_PRODUCTS
 from ui.banner import render_banner
 
 console = Console()
@@ -50,9 +51,10 @@ class VMTUI:
             console.print(" [bold green]2[/bold green] - Criar Nova VM macOS (Assistente com Auto-Tuning)")
             console.print(" [bold green]3[/bold green] - Diagnóstico de Hardware & GPU Compatibility")
             console.print(" [bold green]4[/bold green] - Atualizar Componentes Upstream (reims-vgpu)")
+            console.print(" [bold green]5[/bold green] - Baixar / Gerenciar Imagens do macOS (Apple Recovery)")
             console.print(" [bold red]0[/bold red] - Sair para o Terminal / Desligar")
 
-            choice = Prompt.ask("\nEscolha uma opção", choices=["1", "2", "3", "4", "0"], default="1")
+            choice = Prompt.ask("\nEscolha uma opção", choices=["1", "2", "3", "4", "5", "0"], default="1")
 
             if choice == "1":
                 self._menu_manage_vms(vms)
@@ -62,6 +64,8 @@ class VMTUI:
                 self._view_hardware_diagnostics()
             elif choice == "4":
                 self._update_upstream()
+            elif choice == "5":
+                self._menu_download_images()
             elif choice == "0":
                 console.print("[dim]Até logo![/dim]")
                 break
@@ -212,6 +216,15 @@ class VMTUI:
         # 7. Geração automática de SMBIOS
         smbios = GenSMBIOS.generate(macos_version=macos_version)
 
+        # 8. Download / Preparação do Instalador Apple
+        cached_img = MacOSDownloader.get_cached_image_path(macos_version)
+        installer_path = str(cached_img) if cached_img else ""
+        if not cached_img:
+            if Confirm.ask(f"\nDeseja baixar a imagem oficial de recuperação da Apple para {macos_version.capitalize()} agora?", default=True):
+                img_result = MacOSDownloader.prepare_installer(macos_version)
+                if img_result:
+                    installer_path = str(img_result)
+
         vm = VMConfig(
             id=vm_id,
             name=name,
@@ -219,6 +232,7 @@ class VMTUI:
             vcpus=vcpus,
             ram_gb=ram_gb,
             disk_size_gb=disk_size_gb,
+            disk_path=installer_path,
             auto_start=auto_start,
             smbios=smbios,
             created_at=datetime.datetime.now().isoformat(),
@@ -270,6 +284,29 @@ class VMTUI:
         else:
             console.print("[yellow]Diretório reims-vgpu não encontrado.[/yellow]")
         Prompt.ask("Enter para continuar")
+
+    def _menu_download_images(self) -> None:
+        console.clear()
+        console.print(render_banner())
+        console.print("[bold cyan]Central de Download de Imagens macOS (Apple Recovery)[/bold cyan]\n")
+
+        versions = list(MACOS_PRODUCTS.keys())
+        for idx, ver in enumerate(versions, start=1):
+            info = MACOS_PRODUCTS[ver]
+            cached = MacOSDownloader.get_cached_image_path(ver)
+            status_str = f"[bold green]✔ BAIXADO[/bold green] ({cached})" if cached else "[dim]Não baixado[/dim]"
+            console.print(f" [bold green]{idx}[/bold green] - {info['name']}: {status_str}")
+
+        console.print(" [bold yellow]0[/bold yellow] - Voltar ao Menu")
+
+        choice = Prompt.ask("\nEscolha uma versão para baixar/reparar", choices=[str(i) for i in range(len(versions) + 1)], default="0")
+        if choice == "0":
+            return
+
+        chosen_ver = versions[int(choice) - 1]
+        console.print(f"\n[bold green]Iniciando processo para {MACOS_PRODUCTS[chosen_ver]['name']}...[/bold green]")
+        MacOSDownloader.prepare_installer(chosen_ver)
+        Prompt.ask("\nPressione Enter para continuar")
 
     def _launch_vm(self, vm: VMConfig) -> None:
         console.clear()
