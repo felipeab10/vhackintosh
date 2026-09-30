@@ -42,34 +42,35 @@ class ABInstallerTest:
         v_map = {"1": "sequoia", "2": "tahoe", "3": "ventura"}
         macos_version = v_map[v_opt]
 
-        # Áudio corrigido definitivo (ich9-intel-hda)
-        audio_device = "ich9-intel-hda"
+        # 2. Download / Verificação da Imagem de Recuperação Oficial da Apple
+        console.print(f"\n[bold]2. Imagem de Instalação/Recuperação da Apple ({macos_version.capitalize()}):[/bold]")
+        installer_img = MacOSDownloader.get_cached_image_path(macos_version)
+        if installer_img:
+            console.print(f"  [bold green]✔ Imagem oficial encontrada em cache local:[/bold green] {installer_img.name}")
+            if Confirm.ask("  Deseja baixar novamente dos servidores da Apple para atualizar?", default=False):
+                installer_img = MacOSDownloader.prepare_installer(macos_version)
+        else:
+            console.print(f"  [yellow]Nenhuma imagem local encontrada. Baixando dos servidores da Apple...[/yellow]")
+            installer_img = MacOSDownloader.prepare_installer(macos_version)
 
-        # 2. Modo de visualização
-        console.print("\n[bold]2. Modo de Exibição:[/bold]")
-        console.print("  1 - Tela Cheia (Fullscreen Kiosk)")
-        console.print("  2 - Modo Janela (Windowed)")
-        disp_choice = Prompt.ask("Modo", choices=["1", "2"], default="1")
-        fullscreen = "1" if disp_choice == "1" else "0"
+        if not installer_img:
+            console.print("[red]Erro ao obter o instalador da Apple. Teste abortado.[/red]")
+            Prompt.ask("Enter para sair")
+            return
 
         # 3. Tamanho do Disco Virtual
         console.print("\n[bold]3. Tamanho do Disco Virtual macOS:[/bold]")
         disk_size_gb = IntPrompt.ask("Tamanho do Disco (GB)", default=64)
 
-        # 4. Checagem / Preparação do Instalador
-        installer_img = MacOSDownloader.get_cached_image_path(macos_version)
-        if not installer_img:
-            console.print(f"\n[yellow]A imagem do instalador para {macos_version} não está no cache.[/yellow]")
-            if Confirm.ask("Deseja baixar e converter agora dos servidores da Apple?", default=True):
-                installer_img = MacOSDownloader.prepare_installer(macos_version)
-                if not installer_img:
-                    console.print("[red]Erro ao preparar instalador. Teste abortado.[/red]")
-                    Prompt.ask("Enter para sair")
-                    return
-            else:
-                console.print("[red]Instalador necessário para continuar. Teste abortado.[/red]")
-                Prompt.ask("Enter para sair")
-                return
+        # 4. Modo de visualização
+        console.print("\n[bold]4. Modo de Exibição:[/bold]")
+        console.print("  1 - Tela Cheia (Fullscreen Kiosk)")
+        console.print("  2 - Modo Janela (Windowed)")
+        disp_choice = Prompt.ask("Modo", choices=["1", "2"], default="1")
+        fullscreen = "1" if disp_choice == "1" else "0"
+
+        # Áudio corrigido definitivo (ich9-intel-hda)
+        audio_device = "ich9-intel-hda"
 
         # 5. Provisionamento da VM de teste
         test_vm_id = f"test-ab-{macos_version}"

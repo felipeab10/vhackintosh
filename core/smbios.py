@@ -115,6 +115,19 @@ class GenSMBIOS:
             generic["ProcessorType"] = 0
             generic["SpoofVendor"] = True
 
+            # Exibe partições auxiliares (como macOS Base System / Recovery)
+            if "Misc" not in plist_data:
+                plist_data["Misc"] = {}
+            if "Security" not in plist_data["Misc"]:
+                plist_data["Misc"]["Security"] = {}
+            plist_data["Misc"]["Security"]["ScanPolicy"] = 0
+
+            if "Boot" not in plist_data["Misc"]:
+                plist_data["Misc"]["Boot"] = {}
+            plist_data["Misc"]["Boot"]["HideAuxiliary"] = False
+            plist_data["Misc"]["Boot"]["ShowPicker"] = True
+            plist_data["Misc"]["Boot"]["Timeout"] = 10
+
             with open(path, "wb") as f:
                 plistlib.dump(plist_data, f)
 

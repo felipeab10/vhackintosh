@@ -22,6 +22,7 @@ from rich.progress import (
     SpinnerColumn,
     TextColumn,
     BarColumn,
+    TaskProgressColumn,
     DownloadColumn,
     TransferSpeedColumn,
     TimeRemainingColumn,
@@ -216,6 +217,7 @@ class MacOSDownloader:
                 SpinnerColumn(spinner_name="dots"),
                 TextColumn("[bold cyan]{task.description}[/bold cyan]"),
                 BarColumn(bar_width=40),
+                TaskProgressColumn(),
                 DownloadColumn(),
                 TransferSpeedColumn(),
                 TimeRemainingColumn(),
@@ -237,7 +239,8 @@ class MacOSDownloader:
 
     @classmethod
     def _convert_dmg_to_img(cls, dmg_path: Path, img_path: Path) -> bool:
-        cmd = ["dmg2img", "-p", "1", "-s", str(dmg_path), str(img_path)]
+        """Converte a imagem BaseSystem.dmg completa para BaseSystem.img com tabela GPT preservada."""
+        cmd = ["dmg2img", "-i", str(dmg_path), str(img_path)]
         try:
             proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             return proc.returncode == 0 and img_path.exists() and img_path.stat().st_size > 0
