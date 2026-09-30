@@ -10,7 +10,7 @@ import sys
 import subprocess
 from pathlib import Path
 from rich.console import Console
-from rich.prompt import Prompt, Confirm
+from rich.prompt import Prompt, Confirm, IntPrompt
 
 from core.config import VMConfig, SMBIOSConfig, ExclusiveVMLock
 from core.smbios import GenSMBIOS
@@ -52,7 +52,11 @@ class ABInstallerTest:
         disp_choice = Prompt.ask("Modo", choices=["1", "2"], default="1")
         fullscreen = "1" if disp_choice == "1" else "0"
 
-        # 3. Checagem / Preparação do Instalador
+        # 3. Tamanho do Disco Virtual
+        console.print("\n[bold]3. Tamanho do Disco Virtual macOS:[/bold]")
+        disk_size_gb = IntPrompt.ask("Tamanho do Disco (GB)", default=64)
+
+        # 4. Checagem / Preparação do Instalador
         installer_img = MacOSDownloader.get_cached_image_path(macos_version)
         if not installer_img:
             console.print(f"\n[yellow]A imagem do instalador para {macos_version} não está no cache.[/yellow]")
@@ -67,9 +71,19 @@ class ABInstallerTest:
                 Prompt.ask("Enter para sair")
                 return
 
-        # 4. Provisionamento da VM de teste
+        # 5. Provisionamento da VM de teste
         test_vm_id = f"test-ab-{macos_version}"
-        console.print(f"\n[bold cyan]▶ Provisionando armazenamento e OpenCore EFI para '{test_vm_id}'...[/bold cyan]")
+        test_vm_dir = Path(os.path.expanduser("~/.config/vhackintosh/vms")) / test_vm_id
+        if (test_vm_dir / "hdd.qcow2").exists():
+            if Confirm.ask(f"\nJá existe um disco de teste anterior ({test_vm_id}). Deseja recriá-lo do zero?", default=True):
+                try:
+                    (test_vm_dir / "hdd.qcow2").unlink()
+                    if (test_vm_dir / "OpenCore.qcow2").exists():
+                        (test_vm_dir / "OpenCore.qcow2").unlink()
+                except Exception as e:
+                    console.print(f"[yellow]Aviso ao limpar disco antigo: {e}[/yellow]")
+
+        console.print(f"\n[bold cyan]▶ Provisionando armazenamento ({disk_size_gb} GB) e OpenCore EFI para '{test_vm_id}'...[/bold cyan]")
         smbios = GenSMBIOS.generate(macos_version)
         vm = VMConfig(
             id=test_vm_id,
@@ -77,14 +91,14 @@ class ABInstallerTest:
             macos_version=macos_version,
             vcpus=12,
             ram_gb=8,
-            disk_size_gb=64,
+            disk_size_gb=disk_size_gb,
             audio_device=audio_device,
             smbios=smbios,
         )
 
         bundle = DiskProvisioner.provision(vm, installer_img=installer_img)
 
-        # 5. Execução do Boot
+        # 6. Execução do Boot
         reims_dir = Path("/home/felipeab10/reims-vgpu")
         boot_script = reims_dir / "vm" / "boot-x86.sh"
 
