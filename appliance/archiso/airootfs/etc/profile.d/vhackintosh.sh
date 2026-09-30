@@ -40,15 +40,15 @@ if [ "$(tty)" = "/dev/tty1" ]; then
         fi
     fi
 
-    # 2. Checagem de Conexão com a Internet
-    if ! ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+    # 2. Checagem de Conexão com a Internet (TCP HTTP/HTTPS para compatibilidade com QEMU e Proxies)
+    if ! curl -s -m 2 -I https://www.apple.com >/dev/null 2>&1 && ! curl -s -m 2 -I https://1.1.1.1 >/dev/null 2>&1; then
         echo -e "\033[1;33m======================================================================\033[0m"
         echo -e "\033[1;33m  AVISO: NENHUMA CONEXÃO COM A INTERNET DETECTADA                     \033[0m"
         echo -e "\033[1;33m======================================================================\033[0m"
         echo -e "A internet é necessária para baixar as imagens oficiais da Apple e Harnesses."
-        echo -e "Deseja configurar o Wi-Fi agora via 'nmtui'? [S/n]"
-        read -r -t 8 ans || ans="s"
-        if [[ "$ans" =~ ^[Ss]$ ]] || [ -z "$ans" ]; then
+        echo -e "Deseja configurar o Wi-Fi agora via 'nmtui'? [S/n] (Auto-continua em 6s)"
+        read -r -t 6 ans || ans="n"
+        if [[ "$ans" =~ ^[Ss]$ ]]; then
             if command -v nmtui >/dev/null 2>&1; then
                 nmtui
             fi
