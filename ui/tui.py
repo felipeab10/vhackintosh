@@ -276,7 +276,13 @@ class VMTUI:
             console.print("\n[bold cyan]Placas de Vídeo Detectadas no Host:[/bold cyan]")
             default_choice = "1"
             for idx, g in enumerate(gpus, start=1):
-                tipo = "Dedicada" if g.vendor_name in ["NVIDIA", "AMD"] else "Integrada"
+                if g.vendor_name == "AMD":
+                    tipo = "[bold green]Dedicada (Suporte Nativo Apple / Metal)[/bold green]"
+                elif g.vendor_name == "NVIDIA":
+                    tipo = "[bold magenta]Dedicada (Reims vGPU / Vulkan)[/bold magenta]"
+                else:
+                    tipo = "[bold cyan]Integrada (Reims vGPU / Vulkan)[/bold cyan]"
+
                 if g.vendor_name in ["NVIDIA", "AMD"]:
                     default_choice = str(idx)
                 console.print(f"  [bold yellow]{idx}[/bold yellow] - {g.vendor_name} {g.device_name} ([dim]{g.pci_slot}[/dim]) [{tipo}]")
@@ -356,7 +362,13 @@ class VMTUI:
     def _choose_gpu_for_vm(self, vm: VMConfig, gpus: list) -> None:
         console.print("\n[bold cyan]Placas de Vídeo Detectadas no Host:[/bold cyan]")
         for idx, g in enumerate(gpus, start=1):
-            tipo = "Dedicada" if g.vendor_name in ["NVIDIA", "AMD"] else "Integrada"
+            if g.vendor_name == "AMD":
+                tipo = "[bold green]Dedicada (Suporte Nativo Apple / Metal)[/bold green]"
+            elif g.vendor_name == "NVIDIA":
+                tipo = "[bold magenta]Dedicada (Reims vGPU / Vulkan)[/bold magenta]"
+            else:
+                tipo = "[bold cyan]Integrada (Reims vGPU / Vulkan)[/bold cyan]"
+
             selected_mark = " ★ (Atual)" if vm.selected_gpu == g.pci_slot else ""
             console.print(f"  [bold yellow]{idx}[/bold yellow] - {g.vendor_name} {g.device_name} ([dim]{g.pci_slot}[/dim]) [{tipo}]{selected_mark}")
 
@@ -646,8 +658,14 @@ class VMTUI:
             "-device", "usb-tablet,bus=ehci.0",
             "-device", "ich9-intel-hda",
             "-device", "hda-output",
-            "-vga", "std",
         ])
+
+        # Suporte a Passthrough VFIO direto para GPUs AMD compatíveis nativamente com macOS
+        if vm.gpu_mode == "vfio-passthrough" and vm.selected_gpu:
+            clean_pci = vm.selected_gpu.replace("0000:", "")
+            cmd.extend(["-device", f"vfio-pci,host={clean_pci},multifunction=on"])
+        else:
+            cmd.extend(["-vga", "std"])
 
         # Se estiver no console TTY puro sem display X11/Wayland ativo, inicializa via xinit
         if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
