@@ -23,10 +23,10 @@ console = Console()
 
 VM_STORAGE_BASE = CONFIG_DIR / "vms"
 DEFAULT_OPENCORE_TEMPLATES = [
+    Path("/home/felipeab10/reims-vgpu/vm/disks/rails/sequoia/persistent/OpenCore.qcow2"),
     Path(os.path.expanduser("~/.config/vhackintosh/templates/OpenCore.qcow2")),
     Path(__file__).resolve().parent.parent / "templates" / "OpenCore.qcow2",
     Path("/home/felipeab10/reims-vgpu/.local/installer/osx-kvm-tools/OpenCore/OpenCore.qcow2"),
-    Path("/home/felipeab10/reims-vgpu/vm/disks/rails/sequoia/persistent/OpenCore.qcow2"),
 ]
 
 DEFAULT_OVMF_VARS_TEMPLATES = [
@@ -150,7 +150,7 @@ class DiskProvisioner:
             res_dl = subprocess.run(cmd_download, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             if res_dl.returncode != 0:
                 # Tenta partição raiz /dev/sda se não for particionado
-                cmd_download[3] = "/dev/sda"
+                cmd_download[4] = "/dev/sda"
                 subprocess.run(cmd_download, check=True)
 
             # 2. Injeta os seriais e ajustes de áudio no plist
@@ -165,7 +165,7 @@ class DiskProvisioner:
             ]
             res_up = subprocess.run(cmd_upload, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             if res_up.returncode != 0:
-                cmd_upload[3] = "/dev/sda"
+                cmd_upload[4] = "/dev/sda"
                 subprocess.run(cmd_upload, check=True)
 
     @classmethod

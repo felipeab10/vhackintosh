@@ -115,6 +115,19 @@ class GenSMBIOS:
             generic["ProcessorType"] = 0
             generic["SpoofVendor"] = True
 
+            # Injeta boot-args com verbose (-v) e flags essenciais
+            if "NVRAM" not in plist_data:
+                plist_data["NVRAM"] = {}
+            if "Add" not in plist_data["NVRAM"]:
+                plist_data["NVRAM"]["Add"] = {}
+            apple_uuid = "7C436110-AB2A-4BBB-A880-FE41995C9F82"
+            if apple_uuid not in plist_data["NVRAM"]["Add"]:
+                plist_data["NVRAM"]["Add"][apple_uuid] = {}
+
+            plist_data["NVRAM"]["Add"][apple_uuid]["boot-args"] = (
+                "-v -lilubetaall ipc_control_port_options=0 debug=0x10A keepsyms=1 msgbuf=1048576"
+            )
+
             # Exibe partições auxiliares (como macOS Base System / Recovery)
             if "Misc" not in plist_data:
                 plist_data["Misc"] = {}
