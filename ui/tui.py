@@ -409,7 +409,10 @@ class VMTUI:
                     installer_img = str(cand_img)
                     break
 
-            if reims_dir and os.path.exists(os.path.join(reims_dir, "vm", "boot-x86.sh")):
+            rail_dir = Path(reims_dir) / "vm" / "disks" / "rails" / vm.macos_version if reims_dir else None
+            use_reims_rail = bool(reims_dir and rail_dir and rail_dir.exists() and os.path.exists(os.path.join(reims_dir, "vm", "boot-x86.sh")))
+
+            if use_reims_rail:
                 boot_script = os.path.join(reims_dir, "vm", "boot-x86.sh")
                 env_vars = os.environ.copy()
                 env_vars["FORCE_X11"] = "1"
@@ -491,8 +494,18 @@ class VMTUI:
             console.print("[bold red]Erro: Componentes essenciais de boot (OpenCore ou OVMF) não encontrados![/bold red]")
             return
 
+        qemu_bin = "qemu-system-x86_64"
+        for qcand in [
+            "/opt/reims-vgpu/vendor/qemu/build/qemu-system-x86_64",
+            "/home/felipeab10/reims-vgpu/vendor/qemu/build/qemu-system-x86_64",
+            shutil.which("qemu-system-x86_64"),
+        ]:
+            if qcand and os.path.exists(qcand) and os.access(qcand, os.X_OK):
+                qemu_bin = qcand
+                break
+
         cmd = [
-            "qemu-system-x86_64",
+            qemu_bin,
             "-enable-kvm",
             "-m", f"{vm.ram_gb}G",
             "-smp", f"cpus={vm.vcpus},sockets=1,cores={vm.vcpus},threads=1",
@@ -531,6 +544,11 @@ class VMTUI:
             "-device", "hda-output",
             "-vga", "std",
         ])
+
+        # Se estiver no console TTY puro sem display X11/Wayland ativo, inicializa via xinit
+        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+            if shutil.which("xinit"):
+                cmd = ["xinit"] + cmd + ["--", ":0"]
 
         subprocess.run(cmd)
 
