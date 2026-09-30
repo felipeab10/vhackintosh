@@ -625,8 +625,12 @@ class VMTUI:
             "-enable-kvm",
             "-m", f"{vm.ram_gb}G",
             "-smp", f"cpus={vm.vcpus},sockets=1,cores={vm.vcpus},threads=1",
-            "-cpu", "host,kvm=on,vendor=GenuineIntel,+invtsc,+hypervisor,vmx=on",
+            "-cpu", "Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+avx2,+aes,+xsave,+xsaveopt,check",
             "-machine", "q35,accel=kvm",
+            "-global", "ICH9-LPC.disable_s3=1",
+            "-global", "ICH9-LPC.disable_s4=1",
+            "-device", "isa-applesmc,osk=ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc",
+            "-smbios", "type=2",
             "-drive", f"if=pflash,format=raw,readonly=on,file={ovmf_code}",
         ]
         if ovmf_vars:
