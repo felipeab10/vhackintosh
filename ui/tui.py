@@ -337,8 +337,8 @@ class VMTUI:
         try:
             console.print(f"[bold green]▶ Iniciando VM '{vm.name}' em Modo Kiosk Fullscreen (X11 + Vulkan)...[/bold green]\n")
             reims_dir = "/home/felipeab10/reims-vgpu"
-            script_path = os.path.join(reims_dir, "scripts", f"run-{vm.macos_version}.sh")
-            
+            boot_script = os.path.join(reims_dir, "vm", "boot-x86.sh")
+
             env_vars = os.environ.copy()
             env_vars["FORCE_X11"] = "1"
             env_vars["REIMS_VGPU_FULLSCREEN"] = "1"
@@ -348,12 +348,31 @@ class VMTUI:
             env_vars["REIMS_VGPU_ACQUIRE_TIMEOUT_MS"] = "100"
             env_vars["CPUS"] = str(vm.vcpus)
             env_vars["RAM"] = f"{vm.ram_gb}G"
+            env_vars["AUDIO_DEVICE"] = vm.audio_device or "ich9-intel-hda"
+            env_vars["QEMU_REBOOT_ACTION"] = "reset"
 
-            if os.path.exists(script_path):
-                subprocess.run(["bash", script_path], env=env_vars)
+            # Se a VM possui disco e OpenCore próprios no diretório
+            custom_dir = None
+            if vm.disk_path and os.path.exists(vm.disk_path):
+                disk_parent = Path(vm.disk_path).parent
+                if (disk_parent / "OpenCore.qcow2").exists():
+                    custom_dir = disk_parent
+
+            if custom_dir and os.path.exists(boot_script):
+                env_vars["PERSISTENT_DIR"] = str(custom_dir)
+                env_vars["DISK_MASTER"] = str(vm.disk_path)
+                env_vars["OPENCORE_MASTER"] = str(custom_dir / "OpenCore.qcow2")
+                subprocess.run([
+                    "bash", boot_script,
+                    "--rail", vm.macos_version,
+                    "--persistent",
+                    "--device", "reims-vgpu-pci",
+                ], env=env_vars)
             else:
-                boot_script = os.path.join(reims_dir, "vm", "boot-x86.sh")
-                if os.path.exists(boot_script):
+                script_path = os.path.join(reims_dir, "scripts", f"run-{vm.macos_version}.sh")
+                if os.path.exists(script_path):
+                    subprocess.run(["bash", script_path], env=env_vars)
+                elif os.path.exists(boot_script):
                     subprocess.run([
                         "bash", boot_script,
                         "--rail", vm.macos_version,
@@ -361,7 +380,7 @@ class VMTUI:
                         "--device", "reims-vgpu-pci",
                     ], env=env_vars)
                 else:
-                    console.print(f"[red]Erro: Script de inicialização não encontrado em {script_path}[/red]")
+                    console.print(f"[red]Erro: Script de inicialização não encontrado.[/red]")
             
             console.print("\n[bold yellow]VM finalizada.[/bold yellow]")
             if sys.stdin.isatty():
