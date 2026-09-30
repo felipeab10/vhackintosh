@@ -80,7 +80,8 @@ class VMTUI:
 
             if choice in ("I", "i"):
                 if shutil.which("vhackintosh-install"):
-                    subprocess.run(["vhackintosh-install"])
+                    cmd = ["sudo", "vhackintosh-install"] if os.geteuid() != 0 else ["vhackintosh-install"]
+                    subprocess.run(cmd)
                 else:
                     console.print("[red]Instalador 'vhackintosh-install' não encontrado.[/red]")
                     Prompt.ask("Enter para continuar")
