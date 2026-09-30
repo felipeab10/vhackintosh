@@ -103,6 +103,7 @@ fi
 
 # 6. Permissões de execução dos scripts da appliance
 chmod +x "${ARCHISO_PROFILE}/airootfs/usr/local/bin/"* || true
+chmod +x "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/bin/"* || true
 
 # 7. Execução do mkarchiso
 echo -e "\n${CYAN}▶ Iniciando montagem do sistema e compressão da ISO (ZSTD-19)...${NC}"
