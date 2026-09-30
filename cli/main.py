@@ -23,7 +23,7 @@ def main():
     if len(sys.argv) > 1:
         cmd = sys.argv[1].lower()
         if cmd in ["--help", "-h"]:
-            print("Uso: vhackintosh [start <vm> | list | doctor | update]")
+            print("Uso: vhackintosh [start <vm> | list | doctor | update | test-install]")
             return
         elif cmd == "list":
             tui._render_vm_table(store.list_vms())
@@ -33,6 +33,10 @@ def main():
             return
         elif cmd == "update":
             tui._update_upstream()
+            return
+        elif cmd in ["test-install", "test"]:
+            from core.installer_runner import ABInstallerTest
+            ABInstallerTest.run_interactive()
             return
         elif cmd == "start" and len(sys.argv) > 2:
             vm_name = sys.argv[2]

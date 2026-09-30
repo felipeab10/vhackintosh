@@ -66,6 +66,11 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
   - Armazenamento: `vm/disks/rails/tahoe/persistent/macos.qcow2` (42 GB gravados).
   - Alocação: 12 vCPUs, 8 GB RAM, backend Vulkan experimental.
 
+### 2.9. Motor de Teste A/B de Instalação do Zero (`core/installer_runner.py`)
+- **Validação Isolada:** Permite testar o fluxo completo de instalação oficial da Apple do zero, sem afetar ou alterar as VMs de produção já instaladas no disco.
+- **Comparações A/B de Áudio:** Alternância em tempo real entre o padrão moderno `ich9-intel-hda` + `hda-duplex` e o legado `usb-audio`.
+- **Modos de Exibição:** Suporte a execução em Janela (para depuração e observação de logs) ou Fullscreen Kiosk.
+
 ---
 
 ## 3. Wikis e Documentação de Referência
@@ -98,3 +103,4 @@ O projeto segue as melhores práticas e especificações técnicas documentadas 
 - **2026-09-30:** Implementação do Auto-Downloader oficial Apple Recovery (SUS) com conversão `dmg2img` e cache local.
 - **2026-09-30:** Implementação do Provisionador de Armazenamento QCOW2 e injeção EFI in-place via guestfish (`core/disk.py`).
 - **2026-09-30:** Integração e cadastro no catálogo das VMs existentes no host (macOS Sequoia 15 e macOS Tahoe 26) com suporte a `REIMS_VGPU_FULLSCREEN=1`.
+- **2026-09-30:** Implementação do Motor de Teste A/B de Instalação do Zero (`core/installer_runner.py`) com alternância entre `ich9-intel-hda` e `usb-audio`.

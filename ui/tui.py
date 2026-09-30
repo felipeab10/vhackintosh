@@ -53,9 +53,10 @@ class VMTUI:
             console.print(" [bold green]3[/bold green] - Diagnóstico de Hardware & GPU Compatibility")
             console.print(" [bold green]4[/bold green] - Atualizar Componentes Upstream (reims-vgpu)")
             console.print(" [bold green]5[/bold green] - Baixar / Gerenciar Imagens do macOS (Apple Recovery)")
+            console.print(" [bold green]6[/bold green] - Teste A/B de Instalação do Zero (Apple Recovery)")
             console.print(" [bold red]0[/bold red] - Sair para o Terminal / Desligar")
 
-            choice = Prompt.ask("\nEscolha uma opção", choices=["1", "2", "3", "4", "5", "0"], default="1")
+            choice = Prompt.ask("\nEscolha uma opção", choices=["1", "2", "3", "4", "5", "6", "0"], default="1")
 
             if choice == "1":
                 self._menu_manage_vms(vms)
@@ -67,6 +68,9 @@ class VMTUI:
                 self._update_upstream()
             elif choice == "5":
                 self._menu_download_images()
+            elif choice == "6":
+                from core.installer_runner import ABInstallerTest
+                ABInstallerTest.run_interactive()
             elif choice == "0":
                 console.print("[dim]Até logo![/dim]")
                 break
