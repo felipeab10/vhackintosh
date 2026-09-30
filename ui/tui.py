@@ -19,7 +19,7 @@ from rich.prompt import Prompt, Confirm, IntPrompt
 from rich.layout import Layout
 from rich.text import Text
 
-from core.config import VMConfig, VMManagerStore, ExclusiveVMLock
+from core.config import VMConfig, VMManagerStore, ExclusiveVMLock, CONFIG_DIR
 from core.hardware import HardwareAdvisor
 from core.gpu import GPUChecker
 from core.readiness import SystemReadinessChecker
