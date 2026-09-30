@@ -23,13 +23,18 @@ console = Console()
 
 VM_STORAGE_BASE = CONFIG_DIR / "vms"
 DEFAULT_OPENCORE_TEMPLATES = [
-    Path("/home/felipeab10/reims-vgpu/vm/disks/rails/sequoia/persistent/OpenCore.qcow2"),
-    Path(os.path.expanduser("~/.config/vhackintosh/templates/OpenCore.qcow2")),
+    Path("/opt/vhackintosh/templates/OpenCore.qcow2"),
     Path(__file__).resolve().parent.parent / "templates" / "OpenCore.qcow2",
+    Path(os.path.expanduser("~/.config/vhackintosh/templates/OpenCore.qcow2")),
+    Path("/opt/reims-vgpu/templates/OpenCore.qcow2"),
     Path("/home/felipeab10/reims-vgpu/.local/installer/osx-kvm-tools/OpenCore/OpenCore.qcow2"),
+    Path("/home/felipeab10/reims-vgpu/vm/disks/rails/sequoia/persistent/OpenCore.qcow2"),
+    Path("/home/felipeab10/reims-vgpu/vm/disks/rails/tahoe/persistent/OpenCore.qcow2"),
 ]
 
 DEFAULT_OVMF_VARS_TEMPLATES = [
+    Path("/opt/vhackintosh/templates/OVMF_VARS.fd"),
+    Path(__file__).resolve().parent.parent / "templates" / "OVMF_VARS.fd",
     Path("/home/felipeab10/reims-vgpu/.local/installer/osx-kvm-tools/OVMF_VARS-1920x1080.fd"),
     Path("/home/felipeab10/reims-vgpu/vm/disks/rails/sequoia/persistent/OVMF_VARS.fd"),
 ]
