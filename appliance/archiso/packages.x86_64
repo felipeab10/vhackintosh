@@ -31,8 +31,7 @@ libguestfs
 edk2-ovmf
 swtpm
 dnsmasq
-iptables-nft
-bridge-utils
+iptables
 socat
 
 # Gráficos X11 e Vulkan (Aceleração reims-vgpu)
@@ -58,10 +57,9 @@ pipewire-audio
 wireplumber
 
 # Utilitários e Particionamento
-dmg2img
-p7zip
+7zip
 parted
-gdisk
+gptfdisk
 e2fsprogs
 dosfstools
 btrfs-progs
