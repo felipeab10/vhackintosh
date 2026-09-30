@@ -28,9 +28,10 @@ class ABInstallerTest:
     def run_interactive(cls) -> None:
         console.clear()
         console.print(render_banner())
-        console.print("[bold cyan]── Teste A/B: Criação e Instalação de VM do Zero ──[/bold cyan]\n")
-        console.print("[white]Este teste cria uma VM limpa com disco zerado, injeta novos seriais SMBIOS[/white]")
-        console.print("[white]e inicializa o instalador oficial da Apple (BaseSystem) para validar o comportamento.[/white]\n")
+        console.print("[bold cyan]── Teste de Criação e Instalação de VM macOS do Zero ──[/bold cyan]\n")
+        console.print("[white]Este assistente provisiona uma VM limpa com disco zerado, injeta novos seriais SMBIOS[/white]")
+        console.print("[white]e inicializa o instalador oficial da Apple (BaseSystem) para validar o comportamento.[/white]")
+        console.print("[dim]Áudio corrigido ativado por padrão: ich9-intel-hda + hda-duplex (ultimate-macOS-KVM standard).[/dim]\n")
 
         # 1. Escolha da versão
         console.print("[bold]1. Escolha a versão do macOS:[/bold]")
@@ -41,21 +42,17 @@ class ABInstallerTest:
         v_map = {"1": "sequoia", "2": "tahoe", "3": "ventura"}
         macos_version = v_map[v_opt]
 
-        # 2. Teste A/B de Áudio
-        console.print("\n[bold]2. Selecione o modelo de áudio para o Teste A/B:[/bold]")
-        console.print("  [bold green]A (Recomendado)[/bold green] - ultimate-macOS-KVM standard (ich9-intel-hda + hda-duplex)")
-        console.print("  [bold red]B (Legado)[/bold red]     - OSX-KVM padrão (usb-audio - conhecido por estalos e lag)")
-        audio_choice = Prompt.ask("Opção de Áudio", choices=["A", "B", "a", "b"], default="A").upper()
-        audio_device = "ich9-intel-hda" if audio_choice == "A" else "usb-audio"
+        # Áudio corrigido definitivo (ich9-intel-hda)
+        audio_device = "ich9-intel-hda"
 
-        # 3. Modo de visualização
-        console.print("\n[bold]3. Modo de Exibição:[/bold]")
+        # 2. Modo de visualização
+        console.print("\n[bold]2. Modo de Exibição:[/bold]")
         console.print("  1 - Tela Cheia (Fullscreen Kiosk)")
         console.print("  2 - Modo Janela (Windowed)")
         disp_choice = Prompt.ask("Modo", choices=["1", "2"], default="1")
         fullscreen = "1" if disp_choice == "1" else "0"
 
-        # 4. Checagem / Preparação do Instalador
+        # 3. Checagem / Preparação do Instalador
         installer_img = MacOSDownloader.get_cached_image_path(macos_version)
         if not installer_img:
             console.print(f"\n[yellow]A imagem do instalador para {macos_version} não está no cache.[/yellow]")
@@ -70,7 +67,7 @@ class ABInstallerTest:
                 Prompt.ask("Enter para sair")
                 return
 
-        # 5. Provisionamento da VM de teste
+        # 4. Provisionamento da VM de teste
         test_vm_id = f"test-ab-{macos_version}"
         console.print(f"\n[bold cyan]▶ Provisionando armazenamento e OpenCore EFI para '{test_vm_id}'...[/bold cyan]")
         smbios = GenSMBIOS.generate(macos_version)
@@ -87,7 +84,7 @@ class ABInstallerTest:
 
         bundle = DiskProvisioner.provision(vm, installer_img=installer_img)
 
-        # 6. Execução do Boot
+        # 5. Execução do Boot
         reims_dir = Path("/home/felipeab10/reims-vgpu")
         boot_script = reims_dir / "vm" / "boot-x86.sh"
 
