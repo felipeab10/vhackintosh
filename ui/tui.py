@@ -120,6 +120,9 @@ class VMTUI:
         else:
             for idx, vm in enumerate(vms, start=1):
                 auto_str = "[bold green]★ SIM[/bold green]" if vm.auto_start else "[dim]NÃO[/dim]"
+                gpu_str = vm.selected_gpu_name or vm.gpu_mode
+                if len(gpu_str) > 24:
+                    gpu_str = gpu_str[:21] + "..."
                 table.add_row(
                     str(idx),
                     vm.name,
@@ -127,7 +130,7 @@ class VMTUI:
                     f"{vm.vcpus} vCPUs",
                     f"{vm.ram_gb} GB",
                     f"{vm.disk_size_gb} GB",
-                    vm.gpu_mode,
+                    gpu_str,
                     auto_str,
                 )
 
@@ -169,7 +172,9 @@ class VMTUI:
             details_text.append(f"Arquivo de Disco: ", style="bold")
             details_text.append(f"{vm.disk_path or 'Padrão'}\n", style="dim")
             details_text.append(f"Adaptador Gráfico: ", style="bold")
-            details_text.append(f"{vm.gpu_mode} (X11 Backend)\n", style="magenta")
+            gpu_display = vm.selected_gpu_name or vm.gpu_mode
+            pci_suffix = f" [PCI: {vm.selected_gpu}]" if vm.selected_gpu else ""
+            details_text.append(f"{gpu_display}{pci_suffix}\n", style="magenta")
             details_text.append(f"Auto-Start no Boot: ", style="bold")
             details_text.append(f"{'ATIVADO' if vm.auto_start else 'DESATIVADO'}\n\n", style="bold green" if vm.auto_start else "dim")
 
@@ -182,15 +187,24 @@ class VMTUI:
             panel = Panel(details_text, title=f"[bold green]Gerenciamento da VM: {vm.name}[/bold green]", border_style="green")
             console.print(panel)
 
+            gpus = GPUChecker.list_gpus()
+            has_multiple_gpus = len(gpus) > 1
+
             console.print("[bold cyan]Ações Disponíveis:[/bold cyan]")
             console.print(" [bold green]1[/bold green] - ▶ Iniciar esta VM")
             console.print(" [bold green]2[/bold green] - ★ Alternar Auto-Start no Boot")
             console.print(" [bold green]3[/bold green] - ⚙ Ajustar vCPUs e Memória RAM")
             console.print(" [bold green]4[/bold green] - 🔄 Regenerar Seriais GenSMBIOS")
-            console.print(" [bold red]5[/bold red] - ✖ Excluir esta VM")
+            if has_multiple_gpus:
+                console.print(" [bold green]5[/bold green] - 🎮 Alterar Placa de Vídeo Vinculada")
+                console.print(" [bold red]6[/bold red] - ✖ Excluir esta VM")
+                allowed_actions = ["1", "2", "3", "4", "5", "6", "0"]
+            else:
+                console.print(" [bold red]5[/bold red] - ✖ Excluir esta VM")
+                allowed_actions = ["1", "2", "3", "4", "5", "0"]
             console.print(" [bold yellow]0[/bold yellow] - Voltar ao Menu Principal")
 
-            action = Prompt.ask("\nEscolha uma ação", choices=["1", "2", "3", "4", "5", "0"], default="1")
+            action = Prompt.ask("\nEscolha uma ação", choices=allowed_actions, default="1")
 
             if action == "1":
                 self._launch_vm(vm)
@@ -206,7 +220,12 @@ class VMTUI:
                 self.store.update_vm(vm)
                 console.print("[bold green]Novos seriais SMBIOS gerados com sucesso![/bold green]")
                 Prompt.ask("Enter para continuar")
-            elif action == "5":
+            elif has_multiple_gpus and action == "5":
+                self._choose_gpu_for_vm(vm, gpus)
+                self.store.update_vm(vm)
+                console.print(f"[bold green]Placa de vídeo atualizada para: {vm.selected_gpu_name}![/bold green]")
+                Prompt.ask("Enter para continuar")
+            elif (has_multiple_gpus and action == "6") or (not has_multiple_gpus and action == "5"):
                 if Confirm.ask(f"[bold red]Tem certeza que deseja excluir a VM '{vm.name}'?[/bold red]"):
                     del_disk = Confirm.ask("Deseja apagar também o arquivo de disco virtual do SSD?")
                     self.store.delete_vm(vm.id, delete_disk=del_disk)
@@ -248,13 +267,40 @@ class VMTUI:
         # 5. Tamanho do Disco
         disk_size_gb = IntPrompt.ask("Tamanho do Disco Virtual (GB)", default=64)
 
-        # 6. Auto-Start
+        # 6. Seleção de Placa de Vídeo (somente se houver mais de 1 GPU no host)
+        gpus = GPUChecker.list_gpus()
+        selected_gpu_slot = None
+        selected_gpu_name = None
+
+        if len(gpus) > 1:
+            console.print("\n[bold cyan]Placas de Vídeo Detectadas no Host:[/bold cyan]")
+            default_choice = "1"
+            for idx, g in enumerate(gpus, start=1):
+                tipo = "Dedicada" if g.vendor_name in ["NVIDIA", "AMD"] else "Integrada"
+                if g.vendor_name in ["NVIDIA", "AMD"]:
+                    default_choice = str(idx)
+                console.print(f"  [bold yellow]{idx}[/bold yellow] - {g.vendor_name} {g.device_name} ([dim]{g.pci_slot}[/dim]) [{tipo}]")
+
+            gpu_choices = [str(i) for i in range(1, len(gpus) + 1)]
+            chosen_idx = Prompt.ask(
+                "Selecione a GPU para vinculação e aceleração da VM",
+                choices=gpu_choices,
+                default=default_choice,
+            )
+            chosen_gpu = gpus[int(chosen_idx) - 1]
+            selected_gpu_slot = chosen_gpu.pci_slot
+            selected_gpu_name = f"{chosen_gpu.vendor_name} {chosen_gpu.device_name}"
+        elif len(gpus) == 1:
+            selected_gpu_slot = gpus[0].pci_slot
+            selected_gpu_name = f"{gpus[0].vendor_name} {gpus[0].device_name}"
+
+        # 7. Auto-Start
         auto_start = Confirm.ask("Definir esta VM para iniciar automaticamente no boot do host?", default=False)
 
-        # 7. Geração automática de SMBIOS
+        # 8. Geração automática de SMBIOS
         smbios = GenSMBIOS.generate(macos_version=macos_version)
 
-        # 8. Download / Preparação do Instalador Apple
+        # 9. Download / Preparação do Instalador Apple
         cached_img = MacOSDownloader.get_cached_image_path(macos_version)
         installer_path = str(cached_img) if cached_img else ""
         if not cached_img:
@@ -272,6 +318,8 @@ class VMTUI:
             disk_size_gb=disk_size_gb,
             disk_path="",
             auto_start=auto_start,
+            selected_gpu=selected_gpu_slot,
+            selected_gpu_name=selected_gpu_name,
             smbios=smbios,
             created_at=datetime.datetime.now().isoformat(),
         )
@@ -295,9 +343,28 @@ class VMTUI:
         console.print(f"\n[bold]Ajuste de Recursos para {vm.name}:[/bold]")
         vm.vcpus = IntPrompt.ask("vCPUs", default=vm.vcpus)
         vm.ram_gb = IntPrompt.ask("RAM (GB)", default=vm.ram_gb)
+
+        gpus = GPUChecker.list_gpus()
+        if len(gpus) > 1:
+            if Confirm.ask("Deseja alterar a placa de vídeo vinculada a esta VM?", default=False):
+                self._choose_gpu_for_vm(vm, gpus)
+
         self.store.update_vm(vm)
         console.print("[bold green]Recursos atualizados com sucesso![/bold green]")
         Prompt.ask("Enter para continuar")
+
+    def _choose_gpu_for_vm(self, vm: VMConfig, gpus: list) -> None:
+        console.print("\n[bold cyan]Placas de Vídeo Detectadas no Host:[/bold cyan]")
+        for idx, g in enumerate(gpus, start=1):
+            tipo = "Dedicada" if g.vendor_name in ["NVIDIA", "AMD"] else "Integrada"
+            selected_mark = " ★ (Atual)" if vm.selected_gpu == g.pci_slot else ""
+            console.print(f"  [bold yellow]{idx}[/bold yellow] - {g.vendor_name} {g.device_name} ([dim]{g.pci_slot}[/dim]) [{tipo}]{selected_mark}")
+
+        gpu_choices = [str(i) for i in range(1, len(gpus) + 1)]
+        g_choice = Prompt.ask("Selecione a nova GPU para a VM", choices=gpu_choices, default="1")
+        chosen_gpu = gpus[int(g_choice) - 1]
+        vm.selected_gpu = chosen_gpu.pci_slot
+        vm.selected_gpu_name = f"{chosen_gpu.vendor_name} {chosen_gpu.device_name}"
 
     def _view_hardware_diagnostics(self, interactive: bool = True) -> None:
         if interactive and sys.stdin.isatty():
@@ -412,20 +479,23 @@ class VMTUI:
             rail_dir = Path(reims_dir) / "vm" / "disks" / "rails" / vm.macos_version if reims_dir else None
             use_reims_rail = bool(reims_dir and rail_dir and rail_dir.exists() and os.path.exists(os.path.join(reims_dir, "vm", "boot-x86.sh")))
 
+            env_vars = os.environ.copy()
+            env_vars["FORCE_X11"] = "1"
+            env_vars["REIMS_VGPU_FULLSCREEN"] = "1"
+            env_vars["REIMS_VGPU_BACKEND"] = "vulkan"
+            env_vars["REIMS_VGPU_WINDOW"] = "1"
+            env_vars["REIMS_VGPU_GUEST_IMPORT"] = "off"
+            env_vars["REIMS_VGPU_ACQUIRE_TIMEOUT_MS"] = "100"
+            env_vars["CPUS"] = str(vm.vcpus)
+            env_vars["RAM"] = f"{vm.ram_gb}G"
+            env_vars["AUDIO_DEVICE"] = vm.audio_device or "ich9-intel-hda"
+            env_vars["QEMU_REBOOT_ACTION"] = "reset"
+
+            # Aplica diretivas de aceleração gráfica para a GPU vinculada
+            self._apply_gpu_environment(vm, env_vars)
+
             if use_reims_rail:
                 boot_script = os.path.join(reims_dir, "vm", "boot-x86.sh")
-                env_vars = os.environ.copy()
-                env_vars["FORCE_X11"] = "1"
-                env_vars["REIMS_VGPU_FULLSCREEN"] = "1"
-                env_vars["REIMS_VGPU_BACKEND"] = "vulkan"
-                env_vars["REIMS_VGPU_WINDOW"] = "1"
-                env_vars["REIMS_VGPU_GUEST_IMPORT"] = "off"
-                env_vars["REIMS_VGPU_ACQUIRE_TIMEOUT_MS"] = "100"
-                env_vars["CPUS"] = str(vm.vcpus)
-                env_vars["RAM"] = f"{vm.ram_gb}G"
-                env_vars["AUDIO_DEVICE"] = vm.audio_device or "ich9-intel-hda"
-                env_vars["QEMU_REBOOT_ACTION"] = "reset"
-
                 if installer_img:
                     env_vars["INSTALL_MEDIA"] = installer_img
 
@@ -441,7 +511,7 @@ class VMTUI:
                     "--device", "reims-vgpu-pci",
                 ], env=env_vars)
             else:
-                self._launch_vm_native_qemu(vm, custom_dir, installer_img)
+                self._launch_vm_native_qemu(vm, custom_dir, installer_img, env_vars=env_vars)
 
             console.print("\n[bold yellow]VM finalizada.[/bold yellow]")
             if sys.stdin.isatty():
@@ -449,7 +519,41 @@ class VMTUI:
         finally:
             self.lock.release()
 
-    def _launch_vm_native_qemu(self, vm: VMConfig, custom_dir: Optional[Path], installer_img: Optional[str]) -> None:
+    def _apply_gpu_environment(self, vm: VMConfig, env_vars: dict) -> None:
+        if not vm.selected_gpu_name and not vm.selected_gpu:
+            return
+        gpu_name_upper = (vm.selected_gpu_name or "").upper()
+        if "NVIDIA" in gpu_name_upper:
+            env_vars["__NV_PRIME_RENDER_OFFLOAD"] = "1"
+            env_vars["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
+            env_vars["__VK_LAYER_NV_optimus"] = "NVIDIA_only"
+            env_vars["DRI_PRIME"] = "1"
+            if os.path.exists("/usr/share/vulkan/icd.d/nvidia_icd.json"):
+                env_vars["VK_DRIVER_FILES"] = "/usr/share/vulkan/icd.d/nvidia_icd.json"
+        elif "INTEL" in gpu_name_upper:
+            env_vars["DRI_PRIME"] = "0"
+            for intel_icd in [
+                "/usr/share/vulkan/icd.d/intel_icd.x86_64.json",
+                "/usr/share/vulkan/icd.d/intel_hasvk_icd.x86_64.json",
+            ]:
+                if os.path.exists(intel_icd):
+                    env_vars["VK_DRIVER_FILES"] = intel_icd
+                    break
+        elif "AMD" in gpu_name_upper:
+            env_vars["DRI_PRIME"] = "1"
+            if os.path.exists("/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"):
+                env_vars["VK_DRIVER_FILES"] = "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"
+
+        if vm.selected_gpu:
+            env_vars["REIMS_VGPU_PCI_SLOT"] = vm.selected_gpu
+
+    def _launch_vm_native_qemu(
+        self,
+        vm: VMConfig,
+        custom_dir: Optional[Path],
+        installer_img: Optional[str],
+        env_vars: Optional[dict] = None,
+    ) -> None:
         console.print("[cyan]Inicializando motor KVM nativo para macOS...[/cyan]")
 
         # Localiza OVMF_CODE e OVMF_VARS
@@ -550,7 +654,11 @@ class VMTUI:
             if shutil.which("xinit"):
                 cmd = ["xinit"] + cmd + ["--", ":0"]
 
-        subprocess.run(cmd)
+        if env_vars is None:
+            env_vars = os.environ.copy()
+            self._apply_gpu_environment(vm, env_vars)
+
+        subprocess.run(cmd, env=env_vars)
 
     def _menu_build_iso(self) -> None:
         console.clear()

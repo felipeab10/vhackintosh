@@ -39,6 +39,8 @@ class VMConfig:
     smbios: SMBIOSConfig = field(default_factory=SMBIOSConfig)
     gpu_mode: str = "reims-vgpu"  # "reims-vgpu" ou "vfio-passthrough"
     vfio_pci_id: Optional[str] = None
+    selected_gpu: Optional[str] = None  # Ex: "0000:01:00.0"
+    selected_gpu_name: Optional[str] = None  # Ex: "NVIDIA RTX 3050 Mobile"
     audio_device: str = "ich9-intel-hda"  # Padrão ultimate-macOS-KVM (ich9-intel-hda + hda-duplex)
     force_x11: bool = True
     display_resolution: str = "1920x1080"
