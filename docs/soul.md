@@ -53,6 +53,10 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
   - 🍏 **macOS Ventura (13):** Versão de referência de alta estabilidade e baixo consumo.
 - **Pipeline Automatizado:** Download de `BaseSystem.dmg` com barra de progresso visual em tempo real (velocidade, ETA e tamanho via Rich) e conversão transparente para disco virtual `BaseSystem.img` via `dmg2img`. Cache local em `~/.config/vhackintosh/images/` para evitar downloads repetidos.
 
+### 2.7. Provisionamento Automático de Armazenamento e OpenCore EFI
+- **Discos Virtuais Dinâmicos:** Cada VM criada recebe seu próprio armazenamento em `~/.config/vhackintosh/vms/{vm_id}/hdd.qcow2`, com alocação dinâmica (*thin provisioning* e cluster size de 2M otimizado).
+- **Injeção Transparente na Partição EFI:** Utilização do `guestfish` para abrir diretamente a partição EFI (`/dev/sda1`) da imagem `OpenCore.qcow2` da VM e gravar o `config.plist` modificado com os seriais do GenSMBIOS e boot-args de áudio sem necessidade de privilégios de superusuário (`sudo`).
+
 ---
 
 ## 3. Wikis e Documentação de Referência
@@ -83,3 +87,4 @@ O projeto segue as melhores práticas e especificações técnicas documentadas 
 - **2026-09-30:** Adoção oficial das wikis **ultimate-macOS-KVM** e **Dortania** como referências vivas.
 - **2026-09-30:** Substituição do áudio `usb-audio` bugado do OSX-KVM pelo `ich9-intel-hda` + `hda-duplex` do ultimate-macOS-KVM.
 - **2026-09-30:** Implementação do Auto-Downloader oficial Apple Recovery (SUS) com conversão `dmg2img` e cache local.
+- **2026-09-30:** Implementação do Provisionador de Armazenamento QCOW2 e injeção EFI in-place via guestfish (`core/disk.py`).

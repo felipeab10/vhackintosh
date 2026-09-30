@@ -22,6 +22,7 @@ from core.hardware import HardwareAdvisor
 from core.gpu import GPUChecker
 from core.smbios import GenSMBIOS
 from core.downloader import MacOSDownloader, MACOS_PRODUCTS
+from core.disk import DiskProvisioner
 from ui.banner import render_banner
 
 console = Console()
@@ -128,8 +129,12 @@ class VMTUI:
             details_text.append(f"{vm.vcpus} vCPUs\n", style="white")
             details_text.append(f"Memória RAM: ", style="bold")
             details_text.append(f"{vm.ram_gb} GB\n", style="white")
+            # Informações de disco
+            disk_info = DiskProvisioner.get_disk_info(vm.disk_path) if vm.disk_path else {"virtual_gb": vm.disk_size_gb, "disk_gb": 0}
             details_text.append(f"Disco Virtual: ", style="bold")
-            details_text.append(f"{vm.disk_size_gb} GB ({vm.disk_path or 'Padrão'})\n", style="white")
+            details_text.append(f"{vm.disk_size_gb} GB alocados (Uso real no host: {disk_info['disk_gb']} GB)\n", style="white")
+            details_text.append(f"Arquivo de Disco: ", style="bold")
+            details_text.append(f"{vm.disk_path or 'Padrão'}\n", style="dim")
             details_text.append(f"Adaptador Gráfico: ", style="bold")
             details_text.append(f"{vm.gpu_mode} (X11 Backend)\n", style="magenta")
             details_text.append(f"Auto-Start no Boot: ", style="bold")
@@ -232,14 +237,21 @@ class VMTUI:
             vcpus=vcpus,
             ram_gb=ram_gb,
             disk_size_gb=disk_size_gb,
-            disk_path=installer_path,
+            disk_path="",
             auto_start=auto_start,
             smbios=smbios,
             created_at=datetime.datetime.now().isoformat(),
         )
 
+        console.print("\n[bold cyan]▶ Provisionando armazenamento e partição EFI OpenCore...[/bold cyan]")
+        try:
+            bundle = DiskProvisioner.provision(vm, installer_img=installer_path)
+            vm.disk_path = str(bundle.hdd_path)
+        except Exception as e:
+            console.print(f"[bold red]Aviso no provisionamento de disco:[/bold red] {e}")
+
         self.store.add_vm(vm)
-        console.print(f"\n[bold green]✔ VM '{name}' criada e configurada com sucesso![/bold green]")
+        console.print(f"\n[bold green]✔ VM '{name}' criada e provisionada com sucesso![/bold green]")
         Prompt.ask("Pressione Enter para voltar ao menu")
 
     def _edit_vm_resources(self, vm: VMConfig) -> None:
