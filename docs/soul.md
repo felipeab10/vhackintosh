@@ -40,9 +40,24 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
 5. `INICIANDO_MACOS` (Desktop pronto para uso diário)
 6. `ERRO_AO_INICIAR` (Captura de kernel panic com diagnóstico)
 
+### 2.5. Arquitetura de Áudio (Padrão ultimate-macOS-KVM + Dortania)
+- **Problema do OSX-KVM Padrão:** O OSX-KVM utiliza `usb-audio` no controlador `qemu-xhci`. No Linux KVM, o áudio isócrono USB sofre com forte jitter de tempo, estouro de buffer e descarte de pacotes (`streambuf_put`), causando estalos contínuos (*crackles*), som robotizado ou ausência total de som.
+- **Solução Validada (ultimate-macOS-KVM):** Utilização de controlador nativo PCI Intel High Definition Audio (`ich9-intel-hda`) com codec duplex (`hda-duplex`), mapeado para o servidor de áudio do host (PipeWire / PulseAudio via `/run/user/$UID/pulse/native`).
+- **OpenCore / Dortania:** No OpenCore, o `AppleALC` (ou layout nativo AppleHDA) reconhece o barramento HDA PCI sem necessidade de gambiarras USB, entregando áudio limpo, estéreo sem latência e volume de sistema funcional.
+
 ---
 
-## 3. Repositórios e Módulos Integrados
+## 3. Wikis e Documentação de Referência
+
+O projeto segue as melhores práticas e especificações técnicas documentadas nas wikis e guias oficiais:
+- 📚 **ultimate-macOS-KVM Wiki:** [https://github.com/Coopydood/ultimate-macOS-KVM/wiki](https://github.com/Coopydood/ultimate-macOS-KVM/wiki)
+- 📚 **Dortania OpenCore Install & Post-Install Guide:** [https://dortania.github.io/docs/](https://dortania.github.io/docs/)
+  - *OpenCore Post-Install Universal Audio:* [https://dortania.github.io/OpenCore-Post-Install/universal/audio.html](https://dortania.github.io/OpenCore-Post-Install/universal/audio.html)
+  - *OpenCore Configuration Guide:* [https://dortania.github.io/OpenCore-Install-Guide/](https://dortania.github.io/OpenCore-Install-Guide/)
+
+---
+
+## 4. Repositórios e Módulos Integrados
 
 | Módulo | Repositório / Fonte | Função |
 |---|---|---|
@@ -52,8 +67,10 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
 
 ---
 
-## 4. Registro de Decisões & Evolução
+## 5. Registro de Decisões & Evolução
 
 - **2026-09-30:** Criação da estrutura do projeto `felipeab10/vhackintosh`.
 - **2026-09-30:** Padronização de `reims-vgpu` desde a fase de instalação com injeção automática de GenSMBIOS.
 - **2026-09-30:** Definição do Kiosk Mode com sincronização bidirecional de energia (Host Power Sync).
+- **2026-09-30:** Adoção oficial das wikis **ultimate-macOS-KVM** e **Dortania** como referências vivas.
+- **2026-09-30:** Substituição do áudio `usb-audio` bugado do OSX-KVM pelo `ich9-intel-hda` + `hda-duplex` do ultimate-macOS-KVM.
