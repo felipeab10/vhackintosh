@@ -331,14 +331,34 @@ class VMTUI:
             return
 
         try:
-            console.print(f"[bold green]▶ Iniciando VM '{vm.name}' em Modo Kiosk Fullscreen...[/bold green]\n")
-            # Executa script de boot correspondente
+            console.print(f"[bold green]▶ Iniciando VM '{vm.name}' em Modo Kiosk Fullscreen (X11 + Vulkan)...[/bold green]\n")
             reims_dir = "/home/felipeab10/reims-vgpu"
             script_path = os.path.join(reims_dir, "scripts", f"run-{vm.macos_version}.sh")
+            
+            env_vars = os.environ.copy()
+            env_vars["FORCE_X11"] = "1"
+            env_vars["REIMS_VGPU_FULLSCREEN"] = "1"
+            env_vars["REIMS_VGPU_BACKEND"] = "vulkan"
+            env_vars["REIMS_VGPU_WINDOW"] = "1"
+            env_vars["CPUS"] = str(vm.vcpus)
+            env_vars["RAM"] = f"{vm.ram_gb}G"
+
             if os.path.exists(script_path):
-                cmd = f"FORCE_X11=1 CPUS={vm.vcpus} RAM={vm.ram_gb}G {script_path}"
-                os.system(cmd)
+                subprocess.run(["bash", script_path], env=env_vars)
             else:
-                console.print(f"[yellow]Script {script_path} não encontrado, utilizando inicializador padrão...[/yellow]")
+                boot_script = os.path.join(reims_dir, "vm", "boot-x86.sh")
+                if os.path.exists(boot_script):
+                    subprocess.run([
+                        "bash", boot_script,
+                        "--rail", vm.macos_version,
+                        "--persistent",
+                        "--device", "reims-vgpu-pci",
+                    ], env=env_vars)
+                else:
+                    console.print(f"[red]Erro: Script de inicialização não encontrado em {script_path}[/red]")
+            
+            console.print("\n[bold yellow]VM finalizada.[/bold yellow]")
+            if sys.stdin.isatty():
+                Prompt.ask("Pressione Enter para retornar ao gerenciador")
         finally:
             self.lock.release()

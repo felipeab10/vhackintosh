@@ -57,6 +57,15 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
 - **Discos Virtuais Dinâmicos:** Cada VM criada recebe seu próprio armazenamento em `~/.config/vhackintosh/vms/{vm_id}/hdd.qcow2`, com alocação dinâmica (*thin provisioning* e cluster size de 2M otimizado).
 - **Injeção Transparente na Partição EFI:** Utilização do `guestfish` para abrir diretamente a partição EFI (`/dev/sda1`) da imagem `OpenCore.qcow2` da VM e gravar o `config.plist` modificado com os seriais do GenSMBIOS e boot-args de áudio sem necessidade de privilégios de superusuário (`sudo`).
 
+### 2.8. VMs Registradas no Host (Sequoia e Tahoe)
+- **macOS Sequoia 15 (`macos-sequoia`):**
+  - Armazenamento: `vm/disks/rails/sequoia/persistent/macos.qcow2` (36 GB gravados).
+  - Alocação: 12 vCPUs, 8 GB RAM, backend Vulkan, tela cheia sem bordas (`REIMS_VGPU_FULLSCREEN=1`).
+  - Padrão de Auto-Start: Definido como VM padrão para inicialização com interceptador de 5 segundos.
+- **macOS Tahoe 26 (`macos-tahoe`):**
+  - Armazenamento: `vm/disks/rails/tahoe/persistent/macos.qcow2` (42 GB gravados).
+  - Alocação: 12 vCPUs, 8 GB RAM, backend Vulkan experimental.
+
 ---
 
 ## 3. Wikis e Documentação de Referência
@@ -88,3 +97,4 @@ O projeto segue as melhores práticas e especificações técnicas documentadas 
 - **2026-09-30:** Substituição do áudio `usb-audio` bugado do OSX-KVM pelo `ich9-intel-hda` + `hda-duplex` do ultimate-macOS-KVM.
 - **2026-09-30:** Implementação do Auto-Downloader oficial Apple Recovery (SUS) com conversão `dmg2img` e cache local.
 - **2026-09-30:** Implementação do Provisionador de Armazenamento QCOW2 e injeção EFI in-place via guestfish (`core/disk.py`).
+- **2026-09-30:** Integração e cadastro no catálogo das VMs existentes no host (macOS Sequoia 15 e macOS Tahoe 26) com suporte a `REIMS_VGPU_FULLSCREEN=1`.
