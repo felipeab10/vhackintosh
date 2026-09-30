@@ -356,17 +356,46 @@ echo "vhackintosh-host" > /mnt/etc/hostname
 rm -f /mnt/etc/mkinitcpio.conf.d/archiso.conf 2>/dev/null || true
 rm -f /mnt/etc/systemd/system-generators/systemd-gpt-auto-generator 2>/dev/null || true
 
+# Copia o kernel do Linux para /mnt/boot/vmlinuz-linux
+echo -e "  • Instalando imagem do Kernel Linux em /boot/vmlinuz-linux..."
+if [ ! -f /mnt/boot/vmlinuz-linux ]; then
+    KERNEL_FOUND=""
+    for k in "/run/archiso/bootmnt/arch/boot/x86_64/vmlinuz-linux" \
+             "/run/archiso/bootmnt/arch/boot/x86_64/vmlinuz" \
+             $(find /mnt/usr/lib/modules -name "vmlinuz" 2>/dev/null | head -n 1) \
+             $(find /run/archiso -name "vmlinuz*" 2>/dev/null | head -n 1); do
+        if [ -n "$k" ] && [ -f "$k" ]; then
+            KERNEL_FOUND="$k"
+            break
+        fi
+    done
+    if [ -n "$KERNEL_FOUND" ]; then
+        cp -a "$KERNEL_FOUND" /mnt/boot/vmlinuz-linux
+    fi
+fi
+
 echo -e "\n${CYAN}▶ 5/5 Instalando Bootloader GRUB 2 UEFI e tema Dark Apple...${NC}"
-mount --bind /dev /mnt/dev
-mount --bind /proc /mnt/proc
-mount --bind /sys /mnt/sys
 
-chroot /mnt /bin/bash -c "
+# Chroot compatível (usa arch-chroot se disponível para propagar efivars automaticamente)
+if command -v arch-chroot >/dev/null 2>&1; then
+    CHROOT_EXEC="arch-chroot /mnt"
+else
+    mount --bind /dev /mnt/dev
+    mount --bind /proc /mnt/proc
+    mount --bind /sys /mnt/sys
+    if [ -d /sys/firmware/efi/efivars ]; then
+        mount --bind /sys/firmware/efi/efivars /mnt/sys/firmware/efi/efivars 2>/dev/null || true
+    fi
+    CHROOT_EXEC="chroot /mnt"
+fi
+
+$CHROOT_EXEC /bin/bash -c "
     # Cria o initramfs definitivo para o hardware real
-    mkinitcpio -P
+    mkinitcpio -P || true
 
-    # Instala o GRUB UEFI na partição de boot
-    grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=vHackintosh --recheck
+    # Instala o GRUB UEFI com fallback universal --removable (funciona em qualquer placa-mãe ou VM)
+    grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=vHackintosh --removable --recheck || \
+    grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=vHackintosh --no-nvram --removable --recheck
 
     # Aplica o tema personalizado do GRUB vHackintosh
     if [ -f /opt/vhackintosh/themes/grub/install.sh ]; then
