@@ -284,8 +284,12 @@ class VMTUI:
             console.print(f"[bold red]Aviso no provisionamento de disco:[/bold red] {e}")
 
         self.store.add_vm(vm)
-        console.print(f"\n[bold green]✔ VM '{name}' criada e provisionada com sucesso![/bold green]")
-        Prompt.ask("Pressione Enter para voltar ao menu")
+        console.print(f"\n[bold green]✔ VM '{name}' criada e provisionada com sucesso![/bold green]\n")
+
+        if Confirm.ask("Deseja INICIAR a instalação do macOS nesta VM agora?", default=True):
+            self._launch_vm(vm)
+        else:
+            Prompt.ask("Pressione Enter para voltar ao menu")
 
     def _edit_vm_resources(self, vm: VMConfig) -> None:
         console.print(f"\n[bold]Ajuste de Recursos para {vm.name}:[/bold]")
@@ -379,21 +383,13 @@ class VMTUI:
             return
 
         try:
-            console.print(f"[bold green]▶ Iniciando VM '{vm.name}' em Modo Kiosk Fullscreen (X11 + Vulkan)...[/bold green]\n")
-            reims_dir = "/home/felipeab10/reims-vgpu"
-            boot_script = os.path.join(reims_dir, "vm", "boot-x86.sh")
+            console.print(f"[bold green]▶ Iniciando VM '{vm.name}' (macOS {vm.macos_version.capitalize()})...[/bold green]\n")
 
-            env_vars = os.environ.copy()
-            env_vars["FORCE_X11"] = "1"
-            env_vars["REIMS_VGPU_FULLSCREEN"] = "1"
-            env_vars["REIMS_VGPU_BACKEND"] = "vulkan"
-            env_vars["REIMS_VGPU_WINDOW"] = "1"
-            env_vars["REIMS_VGPU_GUEST_IMPORT"] = "off"
-            env_vars["REIMS_VGPU_ACQUIRE_TIMEOUT_MS"] = "100"
-            env_vars["CPUS"] = str(vm.vcpus)
-            env_vars["RAM"] = f"{vm.ram_gb}G"
-            env_vars["AUDIO_DEVICE"] = vm.audio_device or "ich9-intel-hda"
-            env_vars["QEMU_REBOOT_ACTION"] = "reset"
+            reims_dir = None
+            for cand in ["/opt/reims-vgpu", "/home/felipeab10/reims-vgpu", os.path.expanduser("~/reims-vgpu")]:
+                if os.path.exists(os.path.join(cand, "vm", "boot-x86.sh")):
+                    reims_dir = cand
+                    break
 
             # Se a VM possui disco e OpenCore próprios no diretório
             custom_dir = None
@@ -402,10 +398,39 @@ class VMTUI:
                 if (disk_parent / "OpenCore.qcow2").exists():
                     custom_dir = disk_parent
 
-            if custom_dir and os.path.exists(boot_script):
-                env_vars["PERSISTENT_DIR"] = str(custom_dir)
-                env_vars["DISK_MASTER"] = str(vm.disk_path)
-                env_vars["OPENCORE_MASTER"] = str(custom_dir / "OpenCore.qcow2")
+            # Busca mídia de instalação (BaseSystem.img) se disponível
+            installer_img = None
+            for cand_img in [
+                custom_dir / "BaseSystem.img" if custom_dir else None,
+                CONFIG_DIR / "images" / vm.macos_version / "BaseSystem.img",
+                Path(os.path.expanduser(f"~/.config/vhackintosh/images/{vm.macos_version}/BaseSystem.img")),
+            ]:
+                if cand_img and cand_img.exists():
+                    installer_img = str(cand_img)
+                    break
+
+            if reims_dir and os.path.exists(os.path.join(reims_dir, "vm", "boot-x86.sh")):
+                boot_script = os.path.join(reims_dir, "vm", "boot-x86.sh")
+                env_vars = os.environ.copy()
+                env_vars["FORCE_X11"] = "1"
+                env_vars["REIMS_VGPU_FULLSCREEN"] = "1"
+                env_vars["REIMS_VGPU_BACKEND"] = "vulkan"
+                env_vars["REIMS_VGPU_WINDOW"] = "1"
+                env_vars["REIMS_VGPU_GUEST_IMPORT"] = "off"
+                env_vars["REIMS_VGPU_ACQUIRE_TIMEOUT_MS"] = "100"
+                env_vars["CPUS"] = str(vm.vcpus)
+                env_vars["RAM"] = f"{vm.ram_gb}G"
+                env_vars["AUDIO_DEVICE"] = vm.audio_device or "ich9-intel-hda"
+                env_vars["QEMU_REBOOT_ACTION"] = "reset"
+
+                if installer_img:
+                    env_vars["INSTALL_MEDIA"] = installer_img
+
+                if custom_dir:
+                    env_vars["PERSISTENT_DIR"] = str(custom_dir)
+                    env_vars["DISK_MASTER"] = str(vm.disk_path)
+                    env_vars["OPENCORE_MASTER"] = str(custom_dir / "OpenCore.qcow2")
+
                 subprocess.run([
                     "bash", boot_script,
                     "--rail", vm.macos_version,
@@ -413,24 +438,101 @@ class VMTUI:
                     "--device", "reims-vgpu-pci",
                 ], env=env_vars)
             else:
-                script_path = os.path.join(reims_dir, "scripts", f"run-{vm.macos_version}.sh")
-                if os.path.exists(script_path):
-                    subprocess.run(["bash", script_path], env=env_vars)
-                elif os.path.exists(boot_script):
-                    subprocess.run([
-                        "bash", boot_script,
-                        "--rail", vm.macos_version,
-                        "--persistent",
-                        "--device", "reims-vgpu-pci",
-                    ], env=env_vars)
-                else:
-                    console.print(f"[red]Erro: Script de inicialização não encontrado.[/red]")
-            
+                self._launch_vm_native_qemu(vm, custom_dir, installer_img)
+
             console.print("\n[bold yellow]VM finalizada.[/bold yellow]")
             if sys.stdin.isatty():
                 Prompt.ask("Pressione Enter para retornar ao gerenciador")
         finally:
             self.lock.release()
+
+    def _launch_vm_native_qemu(self, vm: VMConfig, custom_dir: Optional[Path], installer_img: Optional[str]) -> None:
+        console.print("[cyan]Inicializando motor KVM nativo para macOS...[/cyan]")
+
+        # Localiza OVMF_CODE e OVMF_VARS
+        ovmf_code = None
+        for cand in [
+            Path("/opt/vhackintosh/templates/OVMF_CODE_4M.fd"),
+            Path(__file__).resolve().parent.parent / "templates" / "OVMF_CODE_4M.fd",
+            Path("/usr/share/edk2/x64/OVMF_CODE.4m.fd"),
+            Path("/usr/share/edk2-ovmf/x64/OVMF_CODE.4m.fd"),
+            Path("/home/felipeab10/reims-vgpu/vm/ovmf/OVMF_CODE_4M.fd"),
+        ]:
+            if cand.exists():
+                ovmf_code = str(cand)
+                break
+
+        ovmf_vars = None
+        if custom_dir and (custom_dir / "OVMF_VARS.fd").exists():
+            ovmf_vars = str(custom_dir / "OVMF_VARS.fd")
+        else:
+            for cand in [
+                Path("/opt/vhackintosh/templates/OVMF_VARS.fd"),
+                Path(__file__).resolve().parent.parent / "templates" / "OVMF_VARS.fd",
+                Path("/usr/share/edk2/x64/OVMF_VARS.4m.fd"),
+            ]:
+                if cand.exists():
+                    ovmf_vars = str(cand)
+                    break
+
+        opencore = None
+        if custom_dir and (custom_dir / "OpenCore.qcow2").exists():
+            opencore = str(custom_dir / "OpenCore.qcow2")
+        else:
+            for cand in [
+                Path("/opt/vhackintosh/templates/OpenCore.qcow2"),
+                Path(__file__).resolve().parent.parent / "templates" / "OpenCore.qcow2",
+            ]:
+                if cand.exists():
+                    opencore = str(cand)
+                    break
+
+        if not opencore or not ovmf_code:
+            console.print("[bold red]Erro: Componentes essenciais de boot (OpenCore ou OVMF) não encontrados![/bold red]")
+            return
+
+        cmd = [
+            "qemu-system-x86_64",
+            "-enable-kvm",
+            "-m", f"{vm.ram_gb}G",
+            "-smp", f"cpus={vm.vcpus},sockets=1,cores={vm.vcpus},threads=1",
+            "-cpu", "host,kvm=on,vendor=GenuineIntel,+invtsc,+hypervisor,vmx=on",
+            "-machine", "q35,accel=kvm",
+            "-drive", f"if=pflash,format=raw,readonly=on,file={ovmf_code}",
+        ]
+        if ovmf_vars:
+            cmd.extend(["-drive", f"if=pflash,format=raw,file={ovmf_vars}"])
+
+        cmd.extend([
+            "-device", "ich9-ahci,id=sata",
+            "-drive", f"id=OpenCoreBoot,if=none,format=qcow2,file={opencore}",
+            "-device", "ide-hd,bus=sata.2,drive=OpenCoreBoot",
+        ])
+
+        if installer_img and os.path.exists(installer_img):
+            cmd.extend([
+                "-drive", f"id=InstallMedia,if=none,format=raw,file={installer_img}",
+                "-device", "ide-hd,bus=sata.3,drive=InstallMedia",
+            ])
+
+        if vm.disk_path and os.path.exists(vm.disk_path):
+            cmd.extend([
+                "-drive", f"id=MacHDD,if=none,format=qcow2,file={vm.disk_path}",
+                "-device", "ide-hd,bus=sata.4,drive=MacHDD",
+            ])
+
+        cmd.extend([
+            "-netdev", "user,id=net0",
+            "-device", "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56",
+            "-device", "usb-ehci,id=ehci",
+            "-device", "usb-kbd,bus=ehci.0",
+            "-device", "usb-tablet,bus=ehci.0",
+            "-device", "ich9-intel-hda",
+            "-device", "hda-output",
+            "-vga", "std",
+        ])
+
+        subprocess.run(cmd)
 
     def _menu_build_iso(self) -> None:
         console.clear()
