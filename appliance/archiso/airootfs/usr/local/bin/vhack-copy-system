@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""
+vHackintosh OS — Copiador de Sistema com Barra de Progresso Visual Rich
+Substitui o rsync verboso por uma barra elegante com porcentagem, velocidade e tempo restante.
+"""
+
+import sys
+import re
+import subprocess
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
+
+console = Console()
+
+def main():
+    src = sys.argv[1] if len(sys.argv) > 1 else "/"
+    dest = sys.argv[2] if len(sys.argv) > 2 else "/mnt/"
+
+    excludes = [
+        "/dev/*", "/proc/*", "/sys/*", "/tmp/*", "/run/*",
+        "/mnt/*", "/media/*", "/lost+found", "/run/archiso/*"
+    ]
+    exclude_args = []
+    for exc in excludes:
+        exclude_args.extend(["--exclude", exc])
+
+    cmd = [
+        "rsync", "-aAX", "--delete", "--info=progress2", "--no-inc-recursive"
+    ] + exclude_args + [src, dest]
+
+    with Progress(
+        SpinnerColumn(spinner_name="dots"),
+        TextColumn("[bold cyan]{task.description}[/bold cyan]"),
+        BarColumn(bar_width=35, style="grey37", complete_style="bold green"),
+        TextColumn("[bold white]{task.percentage:>3.0f}%[/bold white]"),
+        TextColumn("[green]{task.fields[speed]}[/green]"),
+        TextColumn("[yellow]{task.fields[eta]}[/yellow]"),
+        console=console,
+        transient=False,
+    ) as progress:
+        task = progress.add_task("Instalando arquivos no SSD", total=100, speed="Calculando...", eta="--:--")
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+
+        regex = re.compile(r"(\d+)%\s+([\d\.]+[A-Za-z]+/s)\s+(\d+:\d+:\d+)")
+
+        try:
+            for line in iter(process.stdout.readline, ""):
+                match = regex.search(line)
+                if match:
+                    percent = int(match.group(1))
+                    speed = match.group(2)
+                    eta = match.group(3)
+                    progress.update(task, completed=percent, speed=speed, eta=f"ETA: {eta}")
+        except Exception:
+            pass
+
+        process.wait()
+        if process.returncode != 0:
+            console.print(f"[bold red]Erro na gravação dos arquivos do sistema.[/bold red]")
+            sys.exit(process.returncode)
+
+        progress.update(task, completed=100, speed="[bold green]Concluído[/bold green]", eta="")
+
+if __name__ == "__main__":
+    main()

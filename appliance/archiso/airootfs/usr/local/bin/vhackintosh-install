@@ -322,10 +322,14 @@ mount "${PART_ROOT}" /mnt
 mkdir -p /mnt/boot
 mount "${PART_EFI}" /mnt/boot
 
-echo -e "\n${CYAN}▶ 3/5 Copiando imagem do vHackintosh OS para o disco (rsync)...${NC}"
-rsync -aAXv --delete \
-    --exclude={"/dev/*","/proc/*","/sys/*","/tmp/*","/run/*","/mnt/*","/media/*","/lost+found","/run/archiso/*"} \
-    / /mnt/
+echo -e "\n${CYAN}▶ 3/5 Gravando sistema operacional vHackintosh no SSD...${NC}"
+if [ -f /usr/local/bin/vhack-copy-system ]; then
+    /usr/local/bin/vhack-copy-system "/" "/mnt/"
+else
+    rsync -aAX --info=progress2 --no-inc-recursive \
+        --exclude={"/dev/*","/proc/*","/sys/*","/tmp/*","/run/*","/mnt/*","/media/*","/lost+found","/run/archiso/*"} \
+        / /mnt/
+fi
 
 # Diretórios virtuais no destino
 mkdir -p /mnt/{dev,proc,sys,tmp,run,mnt,media}
