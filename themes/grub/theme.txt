@@ -1,0 +1,45 @@
+# vHackintosh GRUB2 Theme
+# Resolução: 1920x1080 (Dark Minimalist Kiosk)
+
+title-text: ""
+desktop-image: "background.png"
+desktop-color: "#0a0c10"
+terminal-font: "Unifont Regular 16"
+terminal-box: "terminal_box_*.png"
+
+# Logo vHackintosh
++ image {
+    top = 18%
+    left = 50%-150
+    width = 300
+    height = 80
+    file = "logo.png"
+}
+
+# Menu de Boot
++ boot_menu {
+    left = 30%
+    top = 45%
+    width = 40%
+    height = 35%
+    item_font = "Unifont Regular 16"
+    item_color = "#8b949e"
+    selected_item_color = "#58a6ff"
+    item_height = 36
+    item_padding = 8
+    item_spacing = 6
+    selected_item_pixmap_style = "select_*.png"
+}
+
+# Barra de Progresso / Contagem de Timeout
++ progress_bar {
+    id = "__timeout__"
+    left = 35%
+    top = 85%
+    width = 30%
+    height = 8
+    text_color = "#8b949e"
+    fg_color = "#58a6ff"
+    bg_color = "#21262d"
+    border_color = "#30363d"
+}
