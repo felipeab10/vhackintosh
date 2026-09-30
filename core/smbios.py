@@ -128,6 +128,13 @@ class GenSMBIOS:
                 "-v -lilubetaall ipc_control_port_options=0 debug=0x10A keepsyms=1 msgbuf=1048576"
             )
 
+            # Habilita reinicialização limpa via registrador de reset ACPI FADT
+            if "ACPI" not in plist_data:
+                plist_data["ACPI"] = {}
+            if "Quirks" not in plist_data["ACPI"]:
+                plist_data["ACPI"]["Quirks"] = {}
+            plist_data["ACPI"]["Quirks"]["FadtEnableReset"] = True
+
             # Exibe partições auxiliares (como macOS Base System / Recovery)
             if "Misc" not in plist_data:
                 plist_data["Misc"] = {}
