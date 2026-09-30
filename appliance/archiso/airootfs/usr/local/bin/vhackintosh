@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# vHackintosh Appliance - Global Launcher
+# ==============================================================================
+
+export PYTHONUNBUFFERED=1
+export FORCE_X11=1
+
+# Ajusta caminhos padrão
+if [ -d "/opt/vhackintosh" ]; then
+    export PYTHONPATH="/opt/vhackintosh:${PYTHONPATH}"
+    exec python3 /opt/vhackintosh/bin/vhackintosh "$@"
+elif [ -d "$HOME/vhackintosh" ]; then
+    export PYTHONPATH="$HOME/vhackintosh:${PYTHONPATH}"
+    exec python3 "$HOME/vhackintosh/bin/vhackintosh" "$@"
+else
+    echo "Erro: vHackintosh não encontrado em /opt/vhackintosh ou $HOME/vhackintosh"
+    exit 1
+fi

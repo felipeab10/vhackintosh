@@ -1,0 +1,89 @@
+# Base & Kernel
+base
+base-devel
+linux
+linux-firmware
+linux-headers
+systemd
+systemd-sysvcompat
+sudo
+bash
+zsh
+
+# Rede e Conectividade
+networkmanager
+wireless_tools
+wpa_supplicant
+curl
+wget
+rsync
+openssh
+ethtool
+
+# Virtualização KVM / QEMU
+qemu-desktop
+qemu-system-x86
+qemu-img
+qemu-tools
+libguestfs
+edk2-ovmf
+swtpm
+dnsmasq
+iptables-nft
+bridge-utils
+socat
+
+# Gráficos X11 e Vulkan (Aceleração reims-vgpu)
+xorg-server
+xorg-xinit
+xorg-xrandr
+mesa
+vulkan-icd-loader
+vulkan-radeon
+vulkan-intel
+vulkan-mesa-layers
+libdrm
+libx11
+libxrandr
+libxcursor
+libxinerama
+
+# Áudio de Baixa Latência (PipeWire / ICH9 HDA)
+pipewire
+pipewire-pulse
+pipewire-alsa
+pipewire-audio
+wireplumber
+
+# Utilitários e Particionamento
+dmg2img
+p7zip
+parted
+gdisk
+e2fsprogs
+dosfstools
+btrfs-progs
+git
+tmux
+htop
+fastfetch
+neovim
+nano
+
+# Runtime Python para vHackintosh TUI/Engine
+python
+python-pip
+python-rich
+python-textual
+python-psutil
+python-setuptools
+
+# Runtimes e CLI Tools para Harnesses de IA (Claude Code, OpenCode, Codex)
+nodejs
+npm
+pnpm
+ripgrep
+fd
+bat
+fzf
+jq

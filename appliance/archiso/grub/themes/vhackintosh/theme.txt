@@ -1,0 +1,45 @@
+# ==============================================================================
+# vHackintosh GRUB 2 Minimalist Theme
+# Dark Apple Silicon aesthetic with cyber cyan accents
+# ==============================================================================
+
+# Global properties
+title-text: ""
+desktop-image: "background.png"
+desktop-color: "#080b10"
+terminal-font: "Terminus Regular 16"
+terminal-box: "terminal_box_*.png"
+terminal-left: "0"
+terminal-top: "0"
+terminal-width: "100%"
+terminal-height: "100%"
+terminal-border: "0"
+
+# Boot Menu
++ boot_menu {
+    left = 32%
+    top = 35%
+    width = 36%
+    height = 45%
+    item_color = "#8b9bb4"
+    selected_item_color = "#ffffff"
+    item_height = 42
+    item_padding = 10
+    item_spacing = 8
+    selected_item_pixmap_style = "select_*.png"
+    menu_pixmap_style = ""
+}
+
+# Progress Bar
++ progress_bar {
+    id = "__timeout__"
+    left = 35%
+    top = 82%
+    width = 30%
+    height = 6
+    text_color = "#00d4ff"
+    font = "Terminus 12"
+    text = "@TIMEOUT_NOTIFICATION_SHORT@"
+    bar_style = "progress_bar_*.png"
+    highlight_style = "progress_bar_hl_*.png"
+}

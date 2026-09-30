@@ -8,6 +8,8 @@ import os
 import sys
 import uuid
 import datetime
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional
 from rich.console import Console
@@ -54,9 +56,10 @@ class VMTUI:
             console.print(" [bold green]4[/bold green] - Atualizar Componentes Upstream (reims-vgpu)")
             console.print(" [bold green]5[/bold green] - Baixar / Gerenciar Imagens do macOS (Apple Recovery)")
             console.print(" [bold green]6[/bold green] - Teste A/B de Instalação do Zero (Apple Recovery)")
+            console.print(" [bold green]7[/bold green] - Gerador de Imagem ISO Bootável (Appliance Live USB com AI Harnesses)")
             console.print(" [bold red]0[/bold red] - Sair para o Terminal / Desligar")
 
-            choice = Prompt.ask("\nEscolha uma opção", choices=["1", "2", "3", "4", "5", "6", "0"], default="1")
+            choice = Prompt.ask("\nEscolha uma opção", choices=["1", "2", "3", "4", "5", "6", "7", "0"], default="1")
 
             if choice == "1":
                 self._menu_manage_vms(vms)
@@ -71,6 +74,8 @@ class VMTUI:
             elif choice == "6":
                 from core.installer_runner import ABInstallerTest
                 ABInstallerTest.run_interactive()
+            elif choice == "7":
+                self._menu_build_iso()
             elif choice == "0":
                 console.print("[dim]Até logo![/dim]")
                 break
@@ -387,3 +392,42 @@ class VMTUI:
                 Prompt.ask("Pressione Enter para retornar ao gerenciador")
         finally:
             self.lock.release()
+
+    def _menu_build_iso(self) -> None:
+        console.clear()
+        console.print(render_banner())
+        console.print("[bold cyan]Gerador de Imagem ISO Bootável (vHackintosh Appliance Live USB)[/bold cyan]\n")
+        console.print("O Appliance vHackintosh é um sistema operacional Linux dedicado e minimalista,")
+        console.print("projetado especificamente para rodar máquinas virtuais macOS com aceleração gráfica.\n")
+        console.print("[bold green]Recursos integrados na ISO:[/bold green]")
+        console.print("  • Kernel Linux com otimizações KVM para macOS (MSRs ignorados, nested virtualization)")
+        console.print("  • Pilha gráfica Vulkan + X11 otimizada para o driver reims-vgpu")
+        console.print("  • Subsistema de áudio PipeWire de baixa latência (Intel ICH9 HDA)")
+        console.print("  • Auto-login no console com interface Kiosk do vHackintosh")
+        console.print("  • [bold magenta]AI Coding Harnesses CLI integrados:[/bold magenta]")
+        console.print("      - [cyan]claude[/cyan]   (@anthropic-ai/claude-code)")
+        console.print("      - [cyan]codex[/cyan]    (@openai/codex)")
+        console.print("      - [cyan]opencode[/cyan] (opencode-cli)")
+        console.print("  • Tema customizado do GRUB 2 com identidade visual Apple Silicon / Minimalist\n")
+
+        builder_script = Path(__file__).resolve().parent.parent / "appliance" / "build-iso.sh"
+        if not shutil.which("mkarchiso"):
+            console.print("[bold yellow]Aviso: 'mkarchiso' não está instalado neste computador host.[/bold yellow]")
+            console.print("Para instalar o Archiso no Arch / CachyOS, execute:")
+            console.print("  [bold green]sudo pacman -S --needed archiso[/bold green]\n")
+
+        console.print(f"Script de compilação: [dim]{builder_script}[/dim]\n")
+        console.print(" [bold green]1[/bold green] - Instruções para compilar a ISO (requer sudo no terminal)")
+        console.print(" [bold green]2[/bold green] - Instalar / Atualizar Harnesses CLI neste sistema host agora")
+        console.print(" [bold yellow]0[/bold yellow] - Voltar ao Menu Principal")
+
+        choice = Prompt.ask("\nEscolha uma opção", choices=["1", "2", "0"], default="0")
+        if choice == "1":
+            console.print("\n[bold yellow]Para compilar a imagem ISO completa, execute no seu terminal:[/bold yellow]")
+            console.print(f"  [bold green]sudo bash {builder_script}[/bold green]\n")
+            Prompt.ask("Pressione Enter para continuar")
+        elif choice == "2":
+            setup_script = Path(__file__).resolve().parent.parent / "appliance" / "archiso" / "airootfs" / "usr" / "local" / "bin" / "setup-harness-tools.sh"
+            if setup_script.exists():
+                subprocess.run(["bash", str(setup_script)])
+            Prompt.ask("\nPressione Enter para continuar")
