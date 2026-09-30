@@ -10,7 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ARCHISO_PROFILE="${SCRIPT_DIR}/archiso"
-BUILD_WORK="/tmp/vhackintosh-archiso-work"
+BUILD_WORK="/var/tmp/vhackintosh-archiso-work"
 OUTPUT_DIR="${SCRIPT_DIR}/out"
 
 GREEN='\033[0;32m'
