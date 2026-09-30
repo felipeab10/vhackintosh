@@ -46,9 +46,10 @@ if [ ! -f "${TEST_SSD}" ]; then
     qemu-img create -f qcow2 "${TEST_SSD}" 64G >/dev/null
 fi
 
-# Argumentos base do QEMU com suporte a Virtualização Nested e SSD de Teste
+# Argumentos base do QEMU com suporte a Q35 moderno, Virtualização Nested e SSD de Teste
 QEMU_ARGS=(
     -enable-kvm
+    -machine q35
     -cpu host,kvm=on
     -m 4G
     -smp 4
