@@ -121,6 +121,8 @@ class ABInstallerTest:
             env["REIMS_VGPU_FULLSCREEN"] = fullscreen
             env["REIMS_VGPU_BACKEND"] = "vulkan"
             env["REIMS_VGPU_WINDOW"] = "1"
+            env["REIMS_VGPU_GUEST_IMPORT"] = "off"
+            env["REIMS_VGPU_ACQUIRE_TIMEOUT_MS"] = "100"
             env["CPUS"] = str(vm.vcpus)
             env["RAM"] = f"{vm.ram_gb}G"
             env["AUDIO_DEVICE"] = audio_device

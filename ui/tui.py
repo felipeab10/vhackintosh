@@ -344,6 +344,8 @@ class VMTUI:
             env_vars["REIMS_VGPU_FULLSCREEN"] = "1"
             env_vars["REIMS_VGPU_BACKEND"] = "vulkan"
             env_vars["REIMS_VGPU_WINDOW"] = "1"
+            env_vars["REIMS_VGPU_GUEST_IMPORT"] = "off"
+            env_vars["REIMS_VGPU_ACQUIRE_TIMEOUT_MS"] = "100"
             env_vars["CPUS"] = str(vm.vcpus)
             env_vars["RAM"] = f"{vm.ram_gb}G"
 
