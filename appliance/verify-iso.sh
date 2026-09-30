@@ -29,6 +29,7 @@ fi
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${CYAN}===================================================================${NC}"
@@ -40,9 +41,9 @@ echo -e "  • Memória RAM:    ${YELLOW}4 GB${NC}"
 echo -e "  • vCPUs:          ${YELLOW}4 Cores${NC}\n"
 echo -e "${CYAN}Iniciando QEMU com aceleração KVM e interface gráfica...${NC}\n"
 
-TEST_SSD="/tmp/vhackintosh-test-ssd.qcow2"
+TEST_SSD="/var/tmp/vhackintosh-test-ssd.qcow2"
 if [ ! -f "${TEST_SSD}" ]; then
-    echo -e "${BLUE}▶ Criando disco virtual de teste SSD NVMe/VirtIO (64 GB sparse)...${NC}"
+    echo -e "${BLUE}▶ Criando disco virtual de teste SSD NVMe/VirtIO (64 GB sparse em /var/tmp)...${NC}"
     qemu-img create -f qcow2 "${TEST_SSD}" 64G >/dev/null
 fi
 
@@ -51,7 +52,7 @@ QEMU_ARGS=(
     -enable-kvm
     -machine q35
     -cpu host,kvm=on
-    -m 4G
+    -m 8G
     -smp 4
     -drive file="${TEST_SSD}",if=virtio,format=qcow2,id=ssd0
     -cdrom "${ISO_FILE}"

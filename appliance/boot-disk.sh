@@ -7,7 +7,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEST_SSD="${1:-/tmp/vhackintosh-test-ssd.qcow2}"
+TEST_SSD="${1:-/var/tmp/vhackintosh-test-ssd.qcow2}"
+if [ ! -f "${TEST_SSD}" ] && [ -f "/tmp/vhackintosh-test-ssd.qcow2" ]; then
+    TEST_SSD="/tmp/vhackintosh-test-ssd.qcow2"
+fi
 
 if [ ! -f "${TEST_SSD}" ]; then
     echo -e "\033[0;31mErro: Disco virtual '${TEST_SSD}' não encontrado!\033[0m"
@@ -27,6 +30,7 @@ fi
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${CYAN}===================================================================${NC}"
