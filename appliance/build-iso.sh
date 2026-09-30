@@ -48,11 +48,10 @@ mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh"
 mkdir -p "${ARCHISO_PROFILE}/airootfs/opt/reims-vgpu"
 
-# 4. Sincronização do código-fonte do vHackintosh para o rootfs (excluindo diretório de build appliance)
+# 4. Sincronização do código-fonte do vHackintosh para o rootfs
 echo -e "${BLUE}▶ Sincronizando módulos essenciais do vHackintosh em /opt/vhackintosh...${NC}"
 rsync -av \
     --exclude='appliance' \
-    --exclude='.git' \
     --exclude='venv' \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
@@ -62,7 +61,9 @@ rsync -av \
     "${PROJECT_ROOT}/core" \
     "${PROJECT_ROOT}/ui" \
     "${PROJECT_ROOT}/themes" \
+    "${PROJECT_ROOT}/templates" \
     "${PROJECT_ROOT}/README.md" \
+    "${PROJECT_ROOT}/.git" \
     "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/"
 
 # 5. Cópia seletiva dos binários e ROMs do reims-vgpu (sem discos de VMs ou imagens gigantes)
