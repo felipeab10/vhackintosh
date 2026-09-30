@@ -141,6 +141,36 @@ class GenSMBIOS:
             plist_data["Misc"]["Boot"]["ShowPicker"] = True
             plist_data["Misc"]["Boot"]["Timeout"] = 10
 
+            # Previne kernel panic em AppleIntelMCEReporter (típico de MacPro7,1 em VM / KVM)
+            if "Kernel" not in plist_data:
+                plist_data["Kernel"] = {}
+
+            # 1. Habilita MCEReporterDisabler.kext se existir na lista
+            for kext in plist_data["Kernel"].get("Add", []):
+                if "MCE" in kext.get("BundlePath", ""):
+                    kext["BundlePath"] = "MCEReporterDisabler.kext"
+                    kext["Enabled"] = True
+                    kext["MinKernel"] = ""
+
+            # 2. Bloqueia AppleIntelMCEReporter nativo
+            if "Block" not in plist_data["Kernel"]:
+                plist_data["Kernel"]["Block"] = []
+
+            has_mce_block = any(
+                b.get("Identifier") == "com.apple.driver.AppleIntelMCEReporter"
+                for b in plist_data["Kernel"]["Block"]
+            )
+            if not has_mce_block:
+                plist_data["Kernel"]["Block"].append({
+                    "Arch": "x86_64",
+                    "Comment": "Disable AppleIntelMCEReporter to prevent panic on MacPro7,1 / VMs",
+                    "Enabled": True,
+                    "Identifier": "com.apple.driver.AppleIntelMCEReporter",
+                    "MaxKernel": "",
+                    "MinKernel": "19.0.0",
+                    "Strategy": "Disable",
+                })
+
             with open(path, "wb") as f:
                 plistlib.dump(plist_data, f)
 
