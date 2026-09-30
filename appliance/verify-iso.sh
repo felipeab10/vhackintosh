@@ -40,9 +40,10 @@ echo -e "  • Memória RAM:    ${YELLOW}4 GB${NC}"
 echo -e "  • vCPUs:          ${YELLOW}4 Cores${NC}\n"
 echo -e "${CYAN}Iniciando QEMU com aceleração KVM e interface gráfica...${NC}\n"
 
-# Argumentos base do QEMU
+# Argumentos base do QEMU com suporte a Virtualização Nested
 QEMU_ARGS=(
     -enable-kvm
+    -cpu host,kvm=on
     -m 4G
     -smp 4
     -cdrom "${ISO_FILE}"
