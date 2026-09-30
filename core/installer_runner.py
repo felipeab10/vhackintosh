@@ -74,14 +74,13 @@ class ABInstallerTest:
         # 5. Provisionamento da VM de teste
         test_vm_id = f"test-ab-{macos_version}"
         test_vm_dir = Path(os.path.expanduser("~/.config/vhackintosh/vms")) / test_vm_id
-        if (test_vm_dir / "hdd.qcow2").exists():
-            if Confirm.ask(f"\nJá existe um disco de teste anterior ({test_vm_id}). Deseja recriá-lo do zero?", default=True):
+        if test_vm_dir.exists():
+            if Confirm.ask(f"\nJá existe um diretório de teste anterior ({test_vm_id}). Deseja recriá-lo do zero?", default=True):
+                import shutil
                 try:
-                    (test_vm_dir / "hdd.qcow2").unlink()
-                    if (test_vm_dir / "OpenCore.qcow2").exists():
-                        (test_vm_dir / "OpenCore.qcow2").unlink()
+                    shutil.rmtree(test_vm_dir)
                 except Exception as e:
-                    console.print(f"[yellow]Aviso ao limpar disco antigo: {e}[/yellow]")
+                    console.print(f"[yellow]Aviso ao limpar diretório antigo: {e}[/yellow]")
 
         console.print(f"\n[bold cyan]▶ Provisionando armazenamento ({disk_size_gb} GB) e OpenCore EFI para '{test_vm_id}'...[/bold cyan]")
         smbios = GenSMBIOS.generate(macos_version)
@@ -128,6 +127,7 @@ class ABInstallerTest:
             env["RAM"] = f"{vm.ram_gb}G"
             env["AUDIO_DEVICE"] = audio_device
             env["INSTALL_MEDIA"] = str(installer_img)
+            env["PERSISTENT_DIR"] = str(bundle.vm_dir)
             env["DISK_MASTER"] = str(bundle.hdd_path)
             env["OPENCORE_MASTER"] = str(bundle.opencore_path)
             env["QEMU_REBOOT_ACTION"] = "reset"

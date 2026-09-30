@@ -29,6 +29,11 @@ DEFAULT_OPENCORE_TEMPLATES = [
     Path("/home/felipeab10/reims-vgpu/vm/disks/rails/sequoia/persistent/OpenCore.qcow2"),
 ]
 
+DEFAULT_OVMF_VARS_TEMPLATES = [
+    Path("/home/felipeab10/reims-vgpu/.local/installer/osx-kvm-tools/OVMF_VARS-1920x1080.fd"),
+    Path("/home/felipeab10/reims-vgpu/vm/disks/rails/sequoia/persistent/OVMF_VARS.fd"),
+]
+
 
 @dataclass
 class VMDiskBundle:
@@ -56,8 +61,10 @@ class DiskProvisioner:
         vm_dir = VM_STORAGE_BASE / vm.id
         vm_dir.mkdir(parents=True, exist_ok=True)
 
+        macos_path = vm_dir / "macos.qcow2"
         hdd_path = vm_dir / "hdd.qcow2"
         opencore_path = vm_dir / "OpenCore.qcow2"
+        ovmf_vars_path = vm_dir / "OVMF_VARS.fd"
 
         with Progress(
             SpinnerColumn(spinner_name="dots"),
@@ -66,9 +73,14 @@ class DiskProvisioner:
         ) as progress:
             # 1. Criação do disco virtual macOS QCOW2
             task1 = progress.add_task(f"Criando disco virtual de {vm.disk_size_gb} GB...", total=None)
+            if not macos_path.exists():
+                cls._create_qcow2_disk(macos_path, vm.disk_size_gb)
             if not hdd_path.exists():
-                cls._create_qcow2_disk(hdd_path, vm.disk_size_gb)
-            progress.update(task1, description=f"[bold green]✔ Disco de {vm.disk_size_gb} GB criado ({hdd_path.name})[/bold green]")
+                try:
+                    hdd_path.symlink_to("macos.qcow2")
+                except Exception:
+                    pass
+            progress.update(task1, description=f"[bold green]✔ Disco de {vm.disk_size_gb} GB criado (macos.qcow2)[/bold green]")
 
             # 2. Cópia e customização do OpenCore.qcow2
             task2 = progress.add_task("Provisionando bootloader OpenCore EFI...", total=None)
@@ -79,22 +91,29 @@ class DiskProvisioner:
             if not opencore_path.exists():
                 shutil.copyfile(template_oc, opencore_path)
 
-            # 3. Injeção dos seriais GenSMBIOS no config.plist do OpenCore
+            # 3. Provisionamento de OVMF_VARS.fd se não existir
+            if not ovmf_vars_path.exists():
+                for v_cand in DEFAULT_OVMF_VARS_TEMPLATES:
+                    if v_cand.exists():
+                        shutil.copyfile(v_cand, ovmf_vars_path)
+                        break
+
+            # 4. Injeção dos seriais GenSMBIOS no config.plist do OpenCore
             progress.update(task2, description="Injetando seriais GenSMBIOS na partição EFI...")
             cls._inject_smbios_to_opencore_qcow2(opencore_path, vm)
             progress.update(task2, description="[bold green]✔ OpenCore EFI configurado com seriais da Apple![/bold green]")
 
-        # 4. Link/cópia do instalador se fornecido
+        # 5. Link/cópia do instalador se fornecido
         inst_target: Optional[Path] = None
         if installer_img and Path(installer_img).exists():
             inst_target = Path(installer_img)
 
         # Atualiza o VMConfig com os caminhos criados
-        vm.disk_path = str(hdd_path)
+        vm.disk_path = str(macos_path)
 
         return VMDiskBundle(
             vm_dir=vm_dir,
-            hdd_path=hdd_path,
+            hdd_path=macos_path,
             opencore_path=opencore_path,
             installer_path=inst_target,
         )
