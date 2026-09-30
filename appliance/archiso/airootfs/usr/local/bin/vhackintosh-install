@@ -26,33 +26,44 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+trap 'echo -e "\n${RED}Erro na execução (linha $LINENO). Verifique as mensagens acima.${NC}\nPressione Enter para voltar..."; read -r' ERR
+
 # Detecta dispositivo de boot da ISO para proteger o instalador USB
 BOOT_DEV=""
 if [ -d "/run/archiso/bootmnt" ]; then
     BOOT_DEV=$(df /run/archiso/bootmnt 2>/dev/null | awk 'NR==2 {print $1}' | sed -E 's/[0-9]+$|p[0-9]+$//' || true)
 fi
 
-echo -e "${BOLD}Detectando discos físicos conectados:${NC}\n"
+echo -e "${BOLD}Detectando discos físicos conectados (filtrando unidades com >= 10 GB):${NC}\n"
 
 DISKS=()
 DISK_INFO=()
 
 while IFS= read -r line; do
     DEV_NAME=$(echo "$line" | awk '{print $1}')
-    DEV_SIZE=$(echo "$line" | awk '{print $2}')
-    DEV_MODEL=$(echo "$line" | cut -d' ' -f3-)
+    DEV_SIZE_BYTES=$(echo "$line" | awk '{print $2}')
+    DEV_RO=$(echo "$line" | awk '{print $3}')
+    DEV_MODEL=$(echo "$line" | cut -d' ' -f4-)
     DEV_PATH="/dev/${DEV_NAME}"
 
-    if [[ "$DEV_NAME" =~ ^(loop|ram|zram|sr|airoot) ]]; then
+    if [[ "$DEV_NAME" =~ ^(loop|ram|zram|sr|airoot|fd|md) ]]; then
+        continue
+    fi
+    if [ "$DEV_RO" = "1" ]; then
+        continue
+    fi
+    # Ignora dispositivos menores que 10 GB (disquetes, partições ram, etc.)
+    if [ "${DEV_SIZE_BYTES:-0}" -lt 10737418240 ] 2>/dev/null; then
         continue
     fi
     if [ -n "$BOOT_DEV" ] && [ "$DEV_PATH" = "$BOOT_DEV" ]; then
         continue
     fi
 
+    DEV_SIZE_HUMAN=$(lsblk -d -n -o SIZE "${DEV_PATH}" 2>/dev/null || echo "$DEV_SIZE_BYTES")
     DISKS+=("$DEV_PATH")
-    DISK_INFO+=("$DEV_PATH ($DEV_SIZE) - $DEV_MODEL")
-done < <(lsblk -d -n -o NAME,SIZE,MODEL 2>/dev/null)
+    DISK_INFO+=("$DEV_PATH (${DEV_SIZE_HUMAN}) - ${DEV_MODEL:-'Disco Armazenamento'}")
+done < <(lsblk -d -n -b -o NAME,SIZE,RO,MODEL 2>/dev/null)
 
 if [ "${#DISKS[@]}" -eq 0 ]; then
     echo -e "${RED}Nenhum disco rígido ou SSD elegível encontrado no sistema!${NC}"
@@ -138,7 +149,9 @@ if [ "$part_mode" = "1" ]; then
     parted -s "${TARGET_DISK}" set 1 esp on
     parted -s "${TARGET_DISK}" mkpart "VHACK_ROOT" ext4 1025MiB 100%
 
-    sleep 2
+    udevadm settle || sleep 2
+    partprobe "${TARGET_DISK}" 2>/dev/null || true
+    sleep 1
 
     if [[ "${TARGET_DISK}" =~ [0-9]$ ]]; then
         PART_EFI="${TARGET_DISK}p1"
@@ -146,6 +159,11 @@ if [ "$part_mode" = "1" ]; then
     else
         PART_EFI="${TARGET_DISK}1"
         PART_ROOT="${TARGET_DISK}2"
+    fi
+
+    if [ ! -b "${PART_EFI}" ] || [ ! -b "${PART_ROOT}" ]; then
+        echo -e "${RED}Erro: As partições criadas (${PART_EFI}, ${PART_ROOT}) não foram registradas pelo kernel.${NC}"
+        exit 1
     fi
 
 # ------------------------------------------------------------------------------

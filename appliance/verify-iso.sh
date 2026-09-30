@@ -40,12 +40,19 @@ echo -e "  • Memória RAM:    ${YELLOW}4 GB${NC}"
 echo -e "  • vCPUs:          ${YELLOW}4 Cores${NC}\n"
 echo -e "${CYAN}Iniciando QEMU com aceleração KVM e interface gráfica...${NC}\n"
 
-# Argumentos base do QEMU com suporte a Virtualização Nested
+TEST_SSD="/tmp/vhackintosh-test-ssd.qcow2"
+if [ ! -f "${TEST_SSD}" ]; then
+    echo -e "${BLUE}▶ Criando disco virtual de teste SSD NVMe/VirtIO (64 GB sparse)...${NC}"
+    qemu-img create -f qcow2 "${TEST_SSD}" 64G >/dev/null
+fi
+
+# Argumentos base do QEMU com suporte a Virtualização Nested e SSD de Teste
 QEMU_ARGS=(
     -enable-kvm
     -cpu host,kvm=on
     -m 4G
     -smp 4
+    -drive file="${TEST_SSD}",if=virtio,format=qcow2,id=ssd0
     -cdrom "${ISO_FILE}"
     -boot d
     -vga std
