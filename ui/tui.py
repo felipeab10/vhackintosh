@@ -22,6 +22,7 @@ from rich.text import Text
 from core.config import VMConfig, VMManagerStore, ExclusiveVMLock
 from core.hardware import HardwareAdvisor
 from core.gpu import GPUChecker
+from core.readiness import SystemReadinessChecker
 from core.smbios import GenSMBIOS
 from core.downloader import MacOSDownloader, MACOS_PRODUCTS
 from core.disk import DiskProvisioner
@@ -45,6 +46,14 @@ class VMTUI:
             running_vm = self.lock.get_running_vm_info()
             if running_vm:
                 console.print(f"[bold red]● VM Ativa em Execução: {running_vm}[/bold red]\n")
+
+            # Checagem de prontidão do sistema (Virtualização BIOS e Internet)
+            readiness = SystemReadinessChecker.check_all()
+            if not readiness.can_run_vms:
+                console.print("[bold red]⚠ ATENÇÃO: Virtualização por hardware (VT-x / AMD SVM) DESATIVADA na BIOS![/bold red]")
+                console.print("[yellow]Acesse o setup da placa-mãe (BIOS) e ative a virtualização para poder iniciar VMs.[/yellow]\n")
+            elif not readiness.has_internet:
+                console.print("[yellow]⚠ Aviso de Rede: Sem conexão com a Internet (downloads Apple e AI indisponíveis).[/yellow]\n")
 
             vms = self.store.list_vms()
             self._render_vm_table(vms)
@@ -276,6 +285,11 @@ class VMTUI:
             console.clear()
         console.print(render_banner())
 
+        # Matriz completa de prontidão e compatibilidade
+        readiness = SystemReadinessChecker.check_all()
+        console.print(SystemReadinessChecker.render_panel(readiness))
+        console.print()
+
         profile = HardwareAdvisor.analyze()
         gpus = GPUChecker.list_gpus()
 
@@ -310,6 +324,16 @@ class VMTUI:
         console.clear()
         console.print(render_banner())
         console.print("[bold cyan]Central de Download de Imagens macOS (Apple Recovery)[/bold cyan]\n")
+
+        readiness = SystemReadinessChecker.check_all()
+        if not readiness.has_internet:
+            console.print("[bold red]✖ Erro: Nenhuma conexão com a Internet detectada.[/bold red]")
+            console.print("[yellow]O download de instaladores oficiais da Apple requer conectividade ativa.[/yellow]\n")
+            if shutil.which("nmtui"):
+                if Confirm.ask("Deseja abrir o utilitário de rede 'nmtui' para conectar agora?", default=True):
+                    subprocess.run(["nmtui"])
+            Prompt.ask("Pressione Enter para continuar")
+            return
 
         versions = list(MACOS_PRODUCTS.keys())
         for idx, ver in enumerate(versions, start=1):
