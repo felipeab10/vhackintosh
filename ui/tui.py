@@ -675,6 +675,21 @@ class VMTUI:
         else:
             cmd.extend(["-vga", "std"])
 
+        # Adiciona socket QMP para sincronização de energia (PowerSync) e controle de reboot
+        sock_path = "/tmp/vhackintosh-qmp.sock"
+        if os.path.exists(sock_path):
+            try:
+                os.unlink(sock_path)
+            except Exception:
+                pass
+
+        cmd.extend([
+            "-qmp", f"unix:{sock_path},server=on,wait=off",
+        ])
+
+        if not installer_img:
+            cmd.append("-no-reboot")
+
         # Oculta menus GTK (Machine, View), ativa cursor visível e ajusta proporção da janela / tela cheia
         display_opts = "gtk,show-menubar=off,zoom-to-fit=on,show-cursor=on"
         if getattr(vm, "fullscreen", False):
@@ -691,7 +706,22 @@ class VMTUI:
             env_vars = os.environ.copy()
             self._apply_gpu_environment(vm, env_vars)
 
-        subprocess.run(cmd, env=env_vars)
+        from core.power import QMPPowerMonitor, PowerSync
+        monitor = QMPPowerMonitor(sock_path)
+        monitor.start()
+
+        try:
+            subprocess.run(cmd, env=env_vars)
+        finally:
+            monitor.stop()
+
+        # Sincronização Total de Energia (Host Power Sync):
+        # Desligar no macOS desliga o computador físico; Reiniciar no macOS reinicia o computador físico.
+        if monitor.last_reason == "guest-reset":
+            if not installer_img:
+                PowerSync.sync_host_reboot(is_kiosk_mode=True)
+        elif monitor.last_reason == "guest-shutdown":
+            PowerSync.sync_host_shutdown(is_kiosk_mode=True)
 
     def _menu_build_iso(self) -> None:
         console.clear()
