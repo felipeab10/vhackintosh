@@ -71,6 +71,37 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
 - **Comparações A/B de Áudio:** Alternância em tempo real entre o padrão moderno `ich9-intel-hda` + `hda-duplex` e o legado `usb-audio`.
 - **Modos de Exibição:** Suporte a execução em Janela (para depuração e observação de logs) ou Fullscreen Kiosk.
 
+### 2.10. Seletor Inteligente Dual-GPU e Suporte Multi-Vendor (NVIDIA, AMD e Intel)
+- **Detecção de Gráficos Híbridos:** Identificação automática de todas as GPUs presentes no barramento PCI do host (Intel Iris Xe / UHD, NVIDIA GeForce GTX/RTX Mobile/Desktop e AMD Radeon RX).
+- **PRIME Render Offload Dinâmico:**
+  - **NVIDIA:** Ativação automática de `__NV_PRIME_RENDER_OFFLOAD=1`, `__GLX_VENDOR_LIBRARY_NAME=nvidia` e injeção do arquivo ICD proprietário `nvidia_icd.json` para renderização Vulkan na GPU dedicada.
+  - **AMD:** Ativação de `DRI_PRIME=1` e apontamento do driver Vulkan Mesa RADV (`radeon_icd.x86_64.json`) ou AMDVLK.
+  - **Intel:** Utilização do driver Mesa ANV com aceleração vGPU Vulkan.
+- **VFIO Passthrough Nativo para AMD:** Para placas desktop AMD Polaris (RX 400/500), Vega e Navi (RX 5000/6000), o sistema oferece vinculação direta via `vfio-pci` com 100% de suporte nativo Apple Metal 3, DisplayPort áudio e aceleração bare-metal.
+
+### 2.11. Resolução do Kernel Handoff em `#[EB|LOG:EXITBS:START]`
+- **Causa Raiz Identificada:** A parada no milissegundo de transição `ExitBootServices: START` entre o firmware UEFI e o Kernel XNU decorre da checagem obrigatória do chip de segurança AppleSMC e da sincronização de timers de CPU.
+- **Parâmetros Mandatórios do QEMU:**
+  - Emulação do chip com chave OSK: `-device isa-applesmc,osk="ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc"`
+  - Bloqueio de colapso de suspensão ACPI S3/S4: `-global ICH9-LPC.disable_s3=1` e `-global ICH9-LPC.disable_s4=1`
+  - Sincronização de timer de CPU: `vmware-cpuid-freq=on` com perfil AVX2 e exclusão de instruções problemáticas (`-hle,-rtm`)
+  - Identificação de placa Apple: `-smbios type=2`
+
+### 2.12. Instalador Bare-Metal da Appliance Linux (`vhackintosh-install`)
+- **Particionamento Automatizado & Manual:** Particionamento limpo de SSDs NVMe/SATA em GPT com tabela EFI de 1 GB (`boot,esp`) e partição raiz ext4.
+- **Cópia de Sistema com Barra Rich:** Substituição de logs rsync por barra animada em tempo real com taxa de transferência (MB/s), porcentagem e cálculo de tempo restante (`vhack-copy-system`).
+- **Bootloader de Resiliência:** Instalação do GRUB no caminho padrão de contingência UEFI (`/boot/efi/EFI/BOOT/BOOTX64.EFI`) com tema escuro Apple Dark integrado.
+- **Gerador de Imagem ISO (`appliance/build-iso.sh`):** Empacotamento com diretório de trabalho em `/var/tmp` para evitar exaustão de memória em discos voláteis `tmpfs`.
+
+### 2.13. Portal de Distribuição & Landing Page (`vhackintosh-lp`)
+- **Design System UI/UX Pro Max:** Interface moderna em tema Dark Sci-Fi HUD / Apple Minimalist construída em Next.js 16 (App Router), React 19, Tailwind CSS v4 e Lucide Icons.
+- **Terminal Interativo:** Demonstração interativa de hardware com Intel 12ª geração, Dual-GPU e boot KVM na landing page.
+- **Distribuição de Imagens ISO de até 4 GB:**
+  - Motor de upload particionado (*Chunked Upload*) em blocos de 15 MB com barra de progresso visual, imune a limites de timeout e proxy reverso.
+  - Limpeza automática de versões anteriores no storage após novo upload.
+  - Download público via streaming com suporte a Range headers e contador global de downloads persistente.
+  - Painel de administração autenticado (`/admin`) com criptografia bcrypt para senhas e suporte nativo a deploy no Coolify via Docker standalone.
+
 ---
 
 ## 3. Wikis e Documentação de Referência
@@ -104,3 +135,11 @@ O projeto segue as melhores práticas e especificações técnicas documentadas 
 - **2026-09-30:** Implementação do Provisionador de Armazenamento QCOW2 e injeção EFI in-place via guestfish (`core/disk.py`).
 - **2026-09-30:** Integração e cadastro no catálogo das VMs existentes no host (macOS Sequoia 15 e macOS Tahoe 26) com suporte a `REIMS_VGPU_FULLSCREEN=1`.
 - **2026-09-30:** Implementação do Motor de Teste A/B de Instalação do Zero (`core/installer_runner.py`) com alternância entre `ich9-intel-hda` e `usb-audio`.
+- **2026-09-30:** Implementação do Seletor Inteligente Dual-GPU para notebooks com Intel Iris Xe e NVIDIA Optimus PRIME / AMD RADV Vulkan offloading.
+- **2026-09-30:** Suporte de primeira classe para placas de vídeo AMD Radeon (Mesa RADV Vulkan e VFIO PCI Passthrough bare-metal 100% nativo).
+- **2026-09-30:** Diagnóstico e resolução da trava de kernel handoff em `#[EB|LOG:EXITBS:START]` via injeção de dispositivo `isa-applesmc` com chave OSK da Apple, `smbios type=2`, `vmware-cpuid-freq=on` e bloqueio de suspensão ACPI.
+- **2026-09-30:** Criação do instalador bare-metal `vhackintosh-install` com particionador GPT automático/manual e barra de progresso visual animada via Rich (`vhack-copy-system`).
+- **2026-09-30:** Criação da imagem de distribuição ISO em `/var/tmp` para prevenção de estouro de memória em discos `tmpfs`.
+- **2026-09-30:** Criação do repositório privado `felipeab10/vhackintosh-lp` contendo a Landing Page oficial e Portal de Distribuição em Next.js 16 com sistema de design Dark Cyber HUD / Apple Minimalist.
+- **2026-09-30:** Implementação do sistema de upload particionado (*Chunked Upload*) para ISOs de até 4 GB com limpeza automática de versões anteriores, contador global de downloads e painel administrativo `/admin` autenticado.
+- **2026-09-30:** Configuração de deploy no Coolify via Dockerfile standalone, entrypoint seguro de permissões de volume persistente e liberação de builds pnpm.
