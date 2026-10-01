@@ -663,6 +663,18 @@ class VMTUI:
             "-smbios", "type=2",
             "-drive", f"if=pflash,format=raw,readonly=on,file={ovmf_code}",
         ]
+
+        # Configura caminhos das ROMs e BIOS do QEMU (-L) para localizar kvmvapic.bin e vgabios
+        qemu_pc_bios_dirs = [
+            str(Path(qemu_bin).parent.parent / "pc-bios"),
+            "/opt/reims-vgpu/vendor/qemu/pc-bios",
+            "/home/felipeab10/reims-vgpu/vendor/qemu/pc-bios",
+            "/usr/share/qemu",
+            "/usr/share/seabios",
+        ]
+        for bdir in qemu_pc_bios_dirs:
+            if os.path.isdir(bdir):
+                cmd.extend(["-L", bdir])
         if ovmf_vars:
             cmd.extend(["-drive", f"if=pflash,format=raw,file={ovmf_vars}"])
 
