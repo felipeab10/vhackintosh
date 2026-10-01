@@ -660,9 +660,10 @@ class VMTUI:
         cmd.extend([
             "-netdev", "user,id=net0",
             "-device", "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56",
+            "-device", "qemu-xhci,id=xhci",
+            "-device", "usb-kbd,bus=xhci.0",
+            "-device", "usb-tablet,bus=xhci.0",
             "-device", "usb-ehci,id=ehci",
-            "-device", "usb-kbd,bus=ehci.0",
-            "-device", "usb-tablet,bus=ehci.0",
             "-device", "ich9-intel-hda",
             "-device", "hda-output",
         ])
@@ -674,11 +675,12 @@ class VMTUI:
         else:
             cmd.extend(["-vga", "std"])
 
-        # Oculta menus GTK (Machine, View) e ajusta proporção da janela / tela cheia
+        # Oculta menus GTK (Machine, View), ativa cursor visível e ajusta proporção da janela / tela cheia
+        display_opts = "gtk,show-menubar=off,zoom-to-fit=on,show-cursor=on"
         if getattr(vm, "fullscreen", False):
-            cmd.extend(["-display", "gtk,show-menubar=off,zoom-to-fit=on", "-full-screen"])
+            cmd.extend(["-display", display_opts, "-full-screen"])
         else:
-            cmd.extend(["-display", "gtk,show-menubar=off,zoom-to-fit=on"])
+            cmd.extend(["-display", display_opts])
 
         # Se estiver no console TTY puro sem display X11/Wayland ativo, inicializa via xinit
         if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
