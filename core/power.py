@@ -86,8 +86,14 @@ class QMPPowerMonitor:
                                 self.last_reason = "guest-reset"
                             elif ev == "SHUTDOWN":
                                 data_obj = msg.get("data", {})
-                                reason = data_obj.get("reason", "guest-shutdown")
-                                self.last_reason = reason
+                                reason = data_obj.get("reason")
+                                if reason == "guest-reset":
+                                    self.last_reason = "guest-reset"
+                                elif reason == "guest-shutdown":
+                                    if self.last_reason != "guest-reset":
+                                        self.last_reason = "guest-shutdown"
+                                elif not self.last_reason:
+                                    self.last_reason = "guest-shutdown"
                         except Exception:
                             pass
                 except socket.timeout:

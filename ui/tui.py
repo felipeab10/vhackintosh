@@ -374,7 +374,7 @@ class VMTUI:
         console.print(f"\n[bold green]✔ VM '{name}' criada e provisionada com sucesso![/bold green]\n")
 
         if Confirm.ask("Deseja INICIAR a instalação do macOS nesta VM agora?", default=True):
-            self._launch_vm(vm)
+            self._launch_vm(vm, is_installation=True)
         else:
             Prompt.ask("Pressione Enter para voltar ao menu")
 
@@ -478,7 +478,7 @@ class VMTUI:
         MacOSDownloader.prepare_installer(chosen_ver)
         Prompt.ask("\nPressione Enter para continuar")
 
-    def _launch_vm(self, vm: VMConfig) -> None:
+    def _launch_vm(self, vm: VMConfig, is_installation: bool = False) -> None:
         console.clear()
         console.print(render_banner())
 
@@ -504,16 +504,22 @@ class VMTUI:
                 if (disk_parent / "OpenCore.qcow2").exists():
                     custom_dir = disk_parent
 
-            # Busca mídia de instalação (BaseSystem.img) se disponível
+            # Verifica se o sistema operacional já foi instalado no disco virtual (uso real >= 4 GB)
+            disk_info = DiskProvisioner.get_disk_info(vm.disk_path) if vm.disk_path else {"disk_gb": 0}
+            disk_has_system = disk_info.get("disk_gb", 0) >= 4
+
+            # Só anexa a mídia de instalação (BaseSystem.img) se for a primeira instalação
+            # ou se o disco virtual ainda não contiver o macOS instalado (< 4 GB)
             installer_img = None
-            for cand_img in [
-                custom_dir / "BaseSystem.img" if custom_dir else None,
-                CONFIG_DIR / "images" / vm.macos_version / "BaseSystem.img",
-                Path(os.path.expanduser(f"~/.config/vhackintosh/images/{vm.macos_version}/BaseSystem.img")),
-            ]:
-                if cand_img and cand_img.exists():
-                    installer_img = str(cand_img)
-                    break
+            if is_installation or not disk_has_system:
+                for cand_img in [
+                    custom_dir / "BaseSystem.img" if custom_dir else None,
+                    CONFIG_DIR / "images" / vm.macos_version / "BaseSystem.img",
+                    Path(os.path.expanduser(f"~/.config/vhackintosh/images/{vm.macos_version}/BaseSystem.img")),
+                ]:
+                    if cand_img and cand_img.exists():
+                        installer_img = str(cand_img)
+                        break
 
             rail_dir = Path(reims_dir) / "vm" / "disks" / "rails" / vm.macos_version if reims_dir else None
             use_reims_rail = bool(reims_dir and rail_dir and rail_dir.exists() and os.path.exists(os.path.join(reims_dir, "vm", "boot-x86.sh")))
@@ -757,8 +763,7 @@ class VMTUI:
         # Sincronização Total de Energia (Host Power Sync):
         # Desligar no macOS desliga o computador físico; Reiniciar no macOS reinicia o computador físico.
         if monitor.last_reason == "guest-reset":
-            if not installer_img:
-                PowerSync.sync_host_reboot(is_kiosk_mode=True)
+            PowerSync.sync_host_reboot(is_kiosk_mode=True)
         elif monitor.last_reason == "guest-shutdown":
             PowerSync.sync_host_shutdown(is_kiosk_mode=True)
 
