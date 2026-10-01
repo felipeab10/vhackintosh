@@ -210,8 +210,9 @@ class VMTUI:
                 self._launch_vm(vm)
                 break
             elif action == "2":
-                self.store.set_auto_start(vm.id, not vm.auto_start)
-                vm.auto_start = not vm.auto_start
+                new_state = not vm.auto_start
+                self.store.set_auto_start(vm.id, new_state)
+                vm.auto_start = new_state
             elif action == "3":
                 self._edit_vm_resources(vm)
             elif action == "4":
