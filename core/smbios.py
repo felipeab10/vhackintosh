@@ -82,7 +82,12 @@ class GenSMBIOS:
         return "".join(f"{b:02X}" for b in mac_bytes)
 
     @classmethod
-    def inject_into_config_plist(cls, config_plist_path: str | Path, smbios: SMBIOSConfig) -> bool:
+    def inject_into_config_plist(
+        cls,
+        config_plist_path: str | Path,
+        smbios: SMBIOSConfig,
+        show_picker: bool = False,
+    ) -> bool:
         """Injeta a estrutura SMBIOS gerada diretamente no config.plist do OpenCore."""
         path = Path(config_plist_path)
         if not path.exists():
@@ -141,12 +146,15 @@ class GenSMBIOS:
             if "Security" not in plist_data["Misc"]:
                 plist_data["Misc"]["Security"] = {}
             plist_data["Misc"]["Security"]["ScanPolicy"] = 0
+            plist_data["Misc"]["Security"]["AllowSetDefault"] = True
 
             if "Boot" not in plist_data["Misc"]:
                 plist_data["Misc"]["Boot"] = {}
-            plist_data["Misc"]["Boot"]["HideAuxiliary"] = False
-            plist_data["Misc"]["Boot"]["ShowPicker"] = True
-            plist_data["Misc"]["Boot"]["Timeout"] = 10
+            plist_data["Misc"]["Boot"]["ShowPicker"] = show_picker
+            plist_data["Misc"]["Boot"]["PollAppleHotKeys"] = True
+            plist_data["Misc"]["Boot"]["HideAuxiliary"] = not show_picker
+            plist_data["Misc"]["Boot"]["Timeout"] = 5 if show_picker else 0
+            plist_data["Misc"]["Boot"]["TakeoffDelay"] = 0
 
             # Previne kernel panic em AppleIntelMCEReporter (típico de MacPro7,1 em VM / KVM)
             if "Kernel" not in plist_data:

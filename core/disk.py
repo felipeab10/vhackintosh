@@ -103,10 +103,14 @@ class DiskProvisioner:
                         shutil.copyfile(v_cand, ovmf_vars_path)
                         break
 
-            # 4. Injeção dos seriais GenSMBIOS no config.plist do OpenCore
-            progress.update(task2, description="Injetando seriais GenSMBIOS na partição EFI...")
-            cls._inject_smbios_to_opencore_qcow2(opencore_path, vm)
-            progress.update(task2, description="[bold green]✔ OpenCore EFI configurado com seriais da Apple![/bold green]")
+            # 4. Injeção opcional dos seriais GenSMBIOS no config.plist do OpenCore
+            try:
+                if shutil.which("guestfish"):
+                    progress.update(task2, description="Injetando seriais GenSMBIOS na partição EFI...")
+                    cls._inject_smbios_to_opencore_qcow2(opencore_path, vm)
+            except Exception as e:
+                pass
+            progress.update(task2, description="[bold green]✔ OpenCore EFI pronto para boot![/bold green]")
 
         # 5. Link/cópia do instalador se fornecido
         inst_target: Optional[Path] = None
@@ -137,11 +141,20 @@ class DiskProvisioner:
             raise RuntimeError(f"Falha ao criar disco QCOW2: {res.stderr}")
 
     @classmethod
-    def _inject_smbios_to_opencore_qcow2(cls, opencore_path: Path, vm: VMConfig) -> None:
+    def inject_opencore_config(
+        cls,
+        opencore_path: Path,
+        vm: VMConfig,
+        show_picker: Optional[bool] = None,
+    ) -> None:
         """
         Extrai o config.plist de dentro do OpenCore.qcow2 via guestfish,
-        injeta os seriais gerados pelo GenSMBIOS e faz o upload de volta.
+        injeta os seriais gerados pelo GenSMBIOS, ajustes de áudio e comportamento de boot,
+        e faz o upload de volta.
         """
+        if show_picker is None:
+            show_picker = getattr(vm, "opencore_show_picker", False)
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_plist = Path(tmp_dir) / "config.plist"
 
@@ -159,7 +172,7 @@ class DiskProvisioner:
                 subprocess.run(cmd_download, check=True)
 
             # 2. Injeta os seriais e ajustes de áudio no plist
-            GenSMBIOS.inject_into_config_plist(tmp_plist, vm.smbios)
+            GenSMBIOS.inject_into_config_plist(tmp_plist, vm.smbios, show_picker=show_picker)
 
             # 3. Upload do config.plist atualizado de volta para a imagem
             cmd_upload = [
@@ -172,6 +185,8 @@ class DiskProvisioner:
             if res_up.returncode != 0:
                 cmd_upload[4] = "/dev/sda"
                 subprocess.run(cmd_upload, check=True)
+
+    _inject_smbios_to_opencore_qcow2 = inject_opencore_config
 
     @classmethod
     def get_disk_info(cls, disk_path: str | Path) -> dict:

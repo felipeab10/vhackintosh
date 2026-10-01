@@ -45,6 +45,7 @@ class VMConfig:
     force_x11: bool = True
     display_resolution: str = "1920x1080"
     fullscreen: bool = False
+    opencore_show_picker: bool = False
     created_at: str = ""
     last_booted_at: Optional[str] = None
 

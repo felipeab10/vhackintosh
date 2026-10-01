@@ -176,7 +176,10 @@ class VMTUI:
             pci_suffix = f" [PCI: {vm.selected_gpu}]" if vm.selected_gpu else ""
             details_text.append(f"{gpu_display}{pci_suffix}\n", style="magenta")
             details_text.append(f"Auto-Start no Boot: ", style="bold")
-            details_text.append(f"{'ATIVADO' if vm.auto_start else 'DESATIVADO'}\n\n", style="bold green" if vm.auto_start else "dim")
+            details_text.append(f"{'ATIVADO' if vm.auto_start else 'DESATIVADO'}\n", style="bold green" if vm.auto_start else "dim")
+            show_picker = getattr(vm, "opencore_show_picker", False)
+            details_text.append(f"Boot do OpenCore: ", style="bold")
+            details_text.append(f"{'EXIBIR MENU (10s)' if show_picker else 'DIRETO NO MACOS (Segure ESPAÇO para opções)'}\n\n", style="yellow" if show_picker else "bold cyan")
 
             details_text.append(f"── OpenCore SMBIOS ──\n", style="dim cyan")
             details_text.append(f"Modelo: {vm.smbios.model}\n", style="dim")
@@ -193,15 +196,16 @@ class VMTUI:
             console.print("[bold cyan]Ações Disponíveis:[/bold cyan]")
             console.print(" [bold green]1[/bold green] - ▶ Iniciar esta VM")
             console.print(" [bold green]2[/bold green] - ★ Alternar Auto-Start no Boot")
-            console.print(" [bold green]3[/bold green] - ⚙ Ajustar vCPUs e Memória RAM")
-            console.print(" [bold green]4[/bold green] - 🔄 Regenerar Seriais GenSMBIOS")
+            console.print(" [bold green]3[/bold green] - ⚡ Alternar Boot do OpenCore (Direto vs Menu)")
+            console.print(" [bold green]4[/bold green] - ⚙ Ajustar vCPUs e Memória RAM")
+            console.print(" [bold green]5[/bold green] - 🔄 Regenerar Seriais GenSMBIOS")
             if has_multiple_gpus:
-                console.print(" [bold green]5[/bold green] - 🎮 Alterar Placa de Vídeo Vinculada")
+                console.print(" [bold green]6[/bold green] - 🎮 Alterar Placa de Vídeo Vinculada")
+                console.print(" [bold red]7[/bold red] - ✖ Excluir esta VM")
+                allowed_actions = ["1", "2", "3", "4", "5", "6", "7", "0"]
+            else:
                 console.print(" [bold red]6[/bold red] - ✖ Excluir esta VM")
                 allowed_actions = ["1", "2", "3", "4", "5", "6", "0"]
-            else:
-                console.print(" [bold red]5[/bold red] - ✖ Excluir esta VM")
-                allowed_actions = ["1", "2", "3", "4", "5", "0"]
             console.print(" [bold yellow]0[/bold yellow] - Voltar ao Menu Principal")
 
             action = Prompt.ask("\nEscolha uma ação", choices=allowed_actions, default="1")
@@ -214,19 +218,47 @@ class VMTUI:
                 self.store.set_auto_start(vm.id, new_state)
                 vm.auto_start = new_state
             elif action == "3":
-                self._edit_vm_resources(vm)
+                new_picker = not getattr(vm, "opencore_show_picker", False)
+                vm.opencore_show_picker = new_picker
+                self.store.update_vm(vm)
+                console.print("\n[cyan]Sincronizando config.plist da partição EFI do OpenCore...[/cyan]")
+                opencore_file = None
+                if vm.disk_path:
+                    cand = Path(vm.disk_path).parent / "OpenCore.qcow2"
+                    if cand.exists():
+                        opencore_file = cand
+                if not opencore_file:
+                    for c in [
+                        Path(os.path.expanduser(f"~/.config/vhackintosh/vms/{vm.id}/OpenCore.qcow2")),
+                        Path(f"/root/.config/vhackintosh/vms/{vm.id}/OpenCore.qcow2"),
+                    ]:
+                        if c.exists():
+                            opencore_file = c
+                            break
+                if opencore_file:
+                    try:
+                        DiskProvisioner.inject_opencore_config(opencore_file, vm, show_picker=new_picker)
+                        status_str = "EXIBIR MENU (10s)" if new_picker else "AUTO-BOOT DIRETO NO MACOS (Segure ESPAÇO no boot para opções)"
+                        console.print(f"[bold green]✔ OpenCore atualizado com sucesso: {status_str}[/bold green]")
+                    except Exception as e:
+                        console.print(f"[bold red]Erro ao regravar OpenCore.qcow2:[/bold red] {e}")
+                else:
+                    console.print("[yellow]Aviso: Arquivo OpenCore.qcow2 da VM não encontrado para atualização imediata.[/yellow]")
+                Prompt.ask("Pressione Enter para continuar")
             elif action == "4":
+                self._edit_vm_resources(vm)
+            elif action == "5":
                 new_smbios = GenSMBIOS.generate(vm.macos_version)
                 vm.smbios = new_smbios
                 self.store.update_vm(vm)
                 console.print("[bold green]Novos seriais SMBIOS gerados com sucesso![/bold green]")
                 Prompt.ask("Enter para continuar")
-            elif has_multiple_gpus and action == "5":
+            elif has_multiple_gpus and action == "6":
                 self._choose_gpu_for_vm(vm, gpus)
                 self.store.update_vm(vm)
                 console.print(f"[bold green]Placa de vídeo atualizada para: {vm.selected_gpu_name}![/bold green]")
                 Prompt.ask("Enter para continuar")
-            elif (has_multiple_gpus and action == "6") or (not has_multiple_gpus and action == "5"):
+            elif (has_multiple_gpus and action == "7") or (not has_multiple_gpus and action == "6"):
                 if Confirm.ask(f"[bold red]Tem certeza que deseja excluir a VM '{vm.name}'?[/bold red]"):
                     del_disk = Confirm.ask("Deseja apagar também o arquivo de disco virtual do SSD?")
                     self.store.delete_vm(vm.id, delete_disk=del_disk)
