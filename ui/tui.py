@@ -441,15 +441,9 @@ class VMTUI:
             Prompt.ask("Pressione Enter para voltar")
 
     def _update_upstream(self) -> None:
-        console.print("\n[bold cyan]Sincronizando novidades e reconstruindo componentes...[/bold cyan]")
-        from core.builder import SilentBuilder
-        reims_path = "/home/felipeab10/reims-vgpu"
-        if os.path.exists(reims_path):
-            SilentBuilder.build_reims_vgpu(reims_path)
-            console.print("[bold green]Componentes atualizados e compilados com sucesso![/bold green]")
-        else:
-            console.print("[yellow]Diretório reims-vgpu não encontrado.[/yellow]")
-        Prompt.ask("Enter para continuar")
+        from core.updater import SystemUpdater
+        SystemUpdater.run_full_update(force=False)
+        Prompt.ask("\nPressione Enter para continuar")
 
     def _menu_download_images(self) -> None:
         console.clear()
