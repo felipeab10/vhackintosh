@@ -115,6 +115,7 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
 ### 2.16. Pipeline de Distribuição Contínua por GitHub Releases & Auto-Updater
 - **GitHub Actions CI (`felipeab10/reims-vgpu`):** Workflow `.github/workflows/release.yml` compila na nuvem a ROM UEFI GOP (Rust) e o QEMU com backend Vulkan, empacotando em `reims-vgpu-linux-x86_64.tar.gz` com checksum SHA-256 em cada tag/release.
 - **Auto-Updater Inteligente (`core/updater.py`):** O comando `vhackintosh update` consulta a API de Releases do GitHub, baixa e descompacta os binários pré-compilados em `/opt/reims-vgpu/` com barra de progresso visual no Rich e executa `git pull` no vHackintosh, atualizando o sistema inteiro em menos de 10 segundos sem compilação local.
+- **Isolamento de Romfiles do QEMU (`-L` Flag):** Binários compilados no CI possuem prefixos de build remotos (`/home/runner/...`). O vHackintosh injeta flags `-L` apontando dinamicamente para o diretório local `vendor/qemu/pc-bios`, garantindo que ROMs essenciais (`kvmvapic.bin`, `vgabios-stdvga.bin`) sejam encontradas em qualquer ambiente.
 
 ---
 
