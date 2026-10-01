@@ -559,6 +559,9 @@ class VMTUI:
         if vm.selected_gpu:
             env_vars["REIMS_VGPU_PCI_SLOT"] = vm.selected_gpu
 
+        # Remove barra de menus GTK (Machine, View) e ativa ajuste automático de janela
+        env_vars["REIMS_VGPU_DISPLAY"] = "gtk,show-menubar=off,zoom-to-fit=on"
+
     def _launch_vm_native_qemu(
         self,
         vm: VMConfig,
@@ -670,6 +673,12 @@ class VMTUI:
             cmd.extend(["-device", f"vfio-pci,host={clean_pci},multifunction=on"])
         else:
             cmd.extend(["-vga", "std"])
+
+        # Oculta menus GTK (Machine, View) e ajusta proporção da janela / tela cheia
+        if vm.fullscreen:
+            cmd.extend(["-display", "gtk,show-menubar=off,zoom-to-fit=on", "-full-screen"])
+        else:
+            cmd.extend(["-display", "gtk,show-menubar=off,zoom-to-fit=on"])
 
         # Se estiver no console TTY puro sem display X11/Wayland ativo, inicializa via xinit
         if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
