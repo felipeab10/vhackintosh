@@ -97,10 +97,24 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
 - **Design System UI/UX Pro Max:** Interface moderna em tema Dark Sci-Fi HUD / Apple Minimalist construída em Next.js 16 (App Router), React 19, Tailwind CSS v4 e Lucide Icons.
 - **Terminal Interativo:** Demonstração interativa de hardware com Intel 12ª geração, Dual-GPU e boot KVM na landing page.
 - **Distribuição de Imagens ISO de até 4 GB:**
-  - Motor de upload particionado (*Chunked Upload*) em blocos de 15 MB com barra de progresso visual, imune a limites de timeout e proxy reverso.
+  - Motor de upload particionado (*Chunked Upload*) em blocos de 4 MB com barra de progresso visual, imune a limites de timeout e proxy reverso.
   - Limpeza automática de versões anteriores no storage após novo upload.
   - Download público via streaming com suporte a Range headers e contador global de downloads persistente.
   - Painel de administração autenticado (`/admin`) com criptografia bcrypt para senhas e suporte nativo a deploy no Coolify via Docker standalone.
+
+### 2.14. Sincronização em Tempo Real de Energia (Host Power Sync)
+- **QMP Socket Daemon (`core/power.py`):** Monitora eventos QMP em segundo plano (`/tmp/vhackintosh-qmp.sock`).
+- **Desligamento Unificado:** Ao selecionar "Desligar..." no macOS, o QEMU emite o evento `SHUTDOWN` com reason `guest-shutdown`. O host Linux executa `systemctl poweroff` e desliga a máquina física em 2 segundos.
+- **Reinicialização Unificada:** Ao selecionar "Reiniciar..." no macOS, o QEMU aciona `-no-reboot` e emite `guest-reset`. O host Linux executa `systemctl reboot` e reinicia o computador físico, retornando pelo Kiosk auto-boot do vHackintosh.
+
+### 2.15. Auto-Boot Direto do OpenCore com Revelação por Tecla de Atalho (Spacebar Hotkey)
+- **Configuração Silenciosa do Bootloader:** `ShowPicker = False`, `Timeout = 0`, `PollAppleHotKeys = True`, `AllowSetDefault = True`.
+- **Comportamento Apple Nativo:** O macOS inicia diretamente no volume padrão (`OSX`) sem telas intermediárias. Segurar ou pressionar a **barra de espaço** ou **Option/Alt** durante a inicialização abre o menu gráfico completo do OpenCore.
+- **Injeção Dinâmica via Guestfish:** O vHackintosh altera essa configuração in-place dentro de `OpenCore.qcow2` através do menu de gerenciamento da VM (opção 3).
+
+### 2.16. Pipeline de Distribuição Contínua por GitHub Releases & Auto-Updater
+- **GitHub Actions CI (`felipeab10/reims-vgpu`):** Workflow `.github/workflows/release.yml` compila na nuvem a ROM UEFI GOP (Rust) e o QEMU com backend Vulkan, empacotando em `reims-vgpu-linux-x86_64.tar.gz` com checksum SHA-256 em cada tag/release.
+- **Auto-Updater Inteligente (`core/updater.py`):** O comando `vhackintosh update` consulta a API de Releases do GitHub, baixa e descompacta os binários pré-compilados em `/opt/reims-vgpu/` com barra de progresso visual no Rich e executa `git pull` no vHackintosh, atualizando o sistema inteiro em menos de 10 segundos sem compilação local.
 
 ---
 
