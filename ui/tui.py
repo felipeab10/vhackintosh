@@ -675,7 +675,7 @@ class VMTUI:
             cmd.extend(["-vga", "std"])
 
         # Oculta menus GTK (Machine, View) e ajusta proporção da janela / tela cheia
-        if vm.fullscreen:
+        if getattr(vm, "fullscreen", False):
             cmd.extend(["-display", "gtk,show-menubar=off,zoom-to-fit=on", "-full-screen"])
         else:
             cmd.extend(["-display", "gtk,show-menubar=off,zoom-to-fit=on"])
