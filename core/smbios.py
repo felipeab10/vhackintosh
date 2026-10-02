@@ -120,7 +120,7 @@ class GenSMBIOS:
             generic["ProcessorType"] = 0
             generic["SpoofVendor"] = True
 
-            # Injeta boot-args com verbose (-v) e flags essenciais
+            # Injeta boot-args limpos (sem verbose -v) e flags essenciais para estabilidade
             if "NVRAM" not in plist_data:
                 plist_data["NVRAM"] = {}
             if "Add" not in plist_data["NVRAM"]:
@@ -130,7 +130,7 @@ class GenSMBIOS:
                 plist_data["NVRAM"]["Add"][apple_uuid] = {}
 
             plist_data["NVRAM"]["Add"][apple_uuid]["boot-args"] = (
-                "-v -lilubetaall ipc_control_port_options=0 debug=0x10A keepsyms=1 msgbuf=1048576"
+                "-lilubetaall ipc_control_port_options=0 debug=0x10A keepsyms=1 msgbuf=1048576"
             )
 
             # Habilita reinicialização limpa via registrador de reset ACPI FADT
