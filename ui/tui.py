@@ -59,7 +59,12 @@ class VMTUI:
             self._render_vm_table(vms)
 
             console.print("\n[bold cyan]Opções do Gerenciador:[/bold cyan]")
-            is_live_media = os.path.exists("/run/archiso/bootmnt")
+            is_live_media = bool(
+                shutil.which("vhackintosh-install")
+                or os.path.exists("/run/archiso")
+                or os.path.exists("/run/archiso/bootmnt")
+                or (os.path.exists("/proc/cmdline") and "archiso" in open("/proc/cmdline", "r", errors="ignore").read())
+            )
             if is_live_media:
                 console.print(" [bold yellow]★ [I][/bold yellow] - [bold magenta]INSTALAR vHackintosh OS no SSD/Disco deste Computador (Instalador)[/bold magenta]")
 

@@ -30,9 +30,12 @@ trap 'echo -e "\n${RED}Erro na execução (linha $LINENO). Verifique as mensagen
 
 # Detecta dispositivo de boot da ISO para proteger o instalador USB
 BOOT_DEV=""
-if [ -d "/run/archiso/bootmnt" ]; then
-    BOOT_DEV=$(df /run/archiso/bootmnt 2>/dev/null | awk 'NR==2 {print $1}' | sed -E 's/[0-9]+$|p[0-9]+$//' || true)
-fi
+for cand in /run/archiso/bootmnt /run/archiso/img_dev /run/archiso/cowspace /run/archiso; do
+    if [ -e "$cand" ]; then
+        BOOT_DEV=$(df "$cand" 2>/dev/null | awk 'NR==2 {print $1}' | sed -E 's/[0-9]+$|p[0-9]+$//' || true)
+        [ -n "$BOOT_DEV" ] && break
+    fi
+done
 
 echo -e "${BOLD}Detectando discos físicos conectados (filtrando unidades com >= 10 GB):${NC}\n"
 

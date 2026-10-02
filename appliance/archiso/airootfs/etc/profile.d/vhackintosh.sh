@@ -40,26 +40,16 @@ if [ "$(tty)" = "/dev/tty1" ]; then
         fi
     fi
 
-    # 2. Checagem de Conexão com a Internet (TCP HTTP/HTTPS para compatibilidade com QEMU e Proxies)
-    if ! curl -s -m 2 -I https://www.apple.com >/dev/null 2>&1 && ! curl -s -m 2 -I https://1.1.1.1 >/dev/null 2>&1; then
-        echo -e "\033[1;33m======================================================================\033[0m"
-        echo -e "\033[1;33m  AVISO: NENHUMA CONEXÃO COM A INTERNET DETECTADA                     \033[0m"
-        echo -e "\033[1;33m======================================================================\033[0m"
-        echo -e "A internet é necessária para baixar as imagens oficiais da Apple e Harnesses."
-        echo -e "Deseja configurar o Wi-Fi agora via 'nmtui'? [S/n] (Auto-continua em 6s)"
-        read -r -t 6 ans || ans="n"
-        if [[ "$ans" =~ ^[Ss]$ ]]; then
-            if command -v nmtui >/dev/null 2>&1; then
-                nmtui
-            fi
-        fi
-    fi
-
     clear
 
-    # Se estiver rodando do Pendrive/Live ISO, oferece o Instalador Bare-metal de forma clara e interativa
-    if [ -d "/run/archiso/bootmnt" ]; then
-        # Limpa qualquer buffer residual do teclado (como do nmtui)
+    # Se estiver rodando do Pendrive/Live ISO ou se o utilitário de instalação estiver disponível
+    IS_LIVE_MEDIA=0
+    if command -v vhackintosh-install >/dev/null 2>&1 || [ -d "/run/archiso" ] || [ -d "/run/archiso/bootmnt" ] || grep -q "archiso" /proc/cmdline 2>/dev/null; then
+        IS_LIVE_MEDIA=1
+    fi
+
+    if [ "$IS_LIVE_MEDIA" -eq 1 ]; then
+        # Limpa qualquer buffer residual do teclado
         while read -r -t 0.1 -n 10000 discard; do :; done 2>/dev/null || true
 
         while true; do
@@ -68,11 +58,11 @@ if [ "$(tty)" = "/dev/tty1" ]; then
             echo -e "\033[1;37m         Bem-vindo ao vHackintosh OS Appliance (Live USB)             \033[0m"
             echo -e "\033[1;36m======================================================================\033[0m\n"
 
-            # Status de Internet
+            # Status de Internet em tempo real
             if curl -s -m 2 -I https://www.apple.com >/dev/null 2>&1 || curl -s -m 2 -I https://1.1.1.1 >/dev/null 2>&1; then
-                echo -e "  \033[1;32m● Status de Conexão: Conectado à Internet\033[0m\n"
+                echo -e "  \033[1;32m● Status de Conexão: CONECTADO À INTERNET\033[0m\n"
             else
-                echo -e "  \033[1;33m● Status de Conexão: Sem Internet (conecte via opção [3] abaixo)\033[0m\n"
+                echo -e "  \033[1;33m● Status de Conexão: SEM INTERNET (conecte via opção [3] abaixo)\033[0m\n"
             fi
 
             echo -e "Escolha o modo de operação:\n"
@@ -81,8 +71,9 @@ if [ "$(tty)" = "/dev/tty1" ]; then
             echo -e "  \033[1;33m[2]\033[0m \033[1;37mExecutar em Modo Live / Demonstração (Memória RAM)\033[0m"
             echo -e "      Testa o vHackintosh sem alterar os discos físicos do computador.\n"
             echo -e "  \033[1;34m[3]\033[0m \033[1;37mConfigurar Conexão Wi-Fi / Rede (nmtui)\033[0m\n"
+            echo -e "  \033[1;31m[0]\033[0m \033[1;37mReiniciar o Computador\033[0m\n"
 
-            read -r -p "Escolha [1, 2 ou 3]: " boot_choice
+            read -r -p "Escolha [1, 2, 3 ou 0]: " boot_choice
             case "$boot_choice" in
                 1)
                     if command -v vhackintosh-install >/dev/null 2>&1; then
@@ -98,6 +89,9 @@ if [ "$(tty)" = "/dev/tty1" ]; then
                     if command -v nmtui >/dev/null 2>&1; then
                         nmtui
                     fi
+                    ;;
+                0)
+                    reboot
                     ;;
                 *)
                     echo -e "\033[1;31mOpção inválida.\033[0m"
