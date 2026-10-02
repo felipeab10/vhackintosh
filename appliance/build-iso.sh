@@ -24,7 +24,50 @@ echo -e "${CYAN}================================================================
 echo -e "${CYAN}          vHackintosh Appliance - ISO Image Builder                ${NC}"
 echo -e "${CYAN}===================================================================${NC}\n"
 
-# 1. Checagem de privilégios de superusuário
+# 1. Parsing de Argumentos e Opções
+RELEASE_TAG=""
+REIMS_SRC="/home/felipeab10/reims-vgpu"
+CUSTOM_VERSION=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -t|--tag|--release)
+            RELEASE_TAG="$2"
+            shift 2
+            ;;
+        -v|--version)
+            CUSTOM_VERSION="$2"
+            shift 2
+            ;;
+        -s|--source)
+            REIMS_SRC="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Uso: sudo $0 [opções]"
+            echo ""
+            echo "Opções:"
+            echo "  -t, --tag <TAG>       Tag da release do GitHub (ex: v1.0.0 ou latest)"
+            echo "                        Baixa os binários pré-compilados diretamente do GitHub Releases"
+            echo "  -v, --version <VER>   Versão da ISO gerada (ex: 1.0.0)"
+            echo "  -s, --source <DIR>    Diretório local do reims-vgpu (padrão: /home/felipeab10/reims-vgpu)"
+            echo "  -h, --help            Exibe esta mensagem de ajuda"
+            exit 0
+            ;;
+        *)
+            if [[ "$1" =~ ^v?[0-9]+\.[0-9]+.* ]] || [ "$1" = "latest" ]; then
+                RELEASE_TAG="$1"
+                shift
+            else
+                echo -e "${RED}Opção inválida: $1${NC}"
+                echo "Execute '$0 --help' para instruções."
+                exit 1
+            fi
+            ;;
+    esac
+done
+
+# 2. Checagem de privilégios de superusuário
 if [ "$(id -u)" -ne 0 ]; then
     echo -e "${RED}Erro: A construção de imagens de sistema de arquivos squashfs (archiso)${NC}"
     echo -e "${RED}requer privilégios de root para montar chroot e definir permissões.${NC}"
@@ -33,12 +76,20 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# 2. Checagem do utilitário mkarchiso
+# 3. Checagem do utilitário mkarchiso
 if ! command -v mkarchiso &>/dev/null; then
     echo -e "${YELLOW}Aviso: 'mkarchiso' não está instalado no sistema host.${NC}"
     echo -e "Para instalar as ferramentas oficiais do Archiso, execute:"
     echo -e "  ${GREEN}pacman -S --needed archiso${NC}\n"
     exit 1
+fi
+
+# Ajusta a versão da ISO no profiledef.sh se fornecida
+if [ -n "${CUSTOM_VERSION}" ]; then
+    sed -i "s/^iso_version=\".*\"/iso_version=\"${CUSTOM_VERSION}\"/" "${ARCHISO_PROFILE}/profiledef.sh"
+elif [ -n "${RELEASE_TAG}" ] && [ "${RELEASE_TAG}" != "latest" ]; then
+    CLEAN_VER="${RELEASE_TAG#v}"
+    sed -i "s/^iso_version=\".*\"/iso_version=\"${CLEAN_VER}\"/" "${ARCHISO_PROFILE}/profiledef.sh"
 fi
 
 # 3. Preparação dos diretórios de saída e airootfs
@@ -66,11 +117,32 @@ rsync -av \
     "${PROJECT_ROOT}/.git" \
     "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/"
 
-# 5. Cópia seletiva dos binários e ROMs do reims-vgpu (sem discos de VMs ou imagens gigantes)
-REIMS_SRC="/home/felipeab10/reims-vgpu"
+# 5. Obtenção dos binários do reims-vgpu (via GitHub Release oficial ou diretório local)
 REIMS_DEST="${ARCHISO_PROFILE}/airootfs/opt/reims-vgpu"
-if [ -d "${REIMS_SRC}" ]; then
-    echo -e "${BLUE}▶ Empacotando binários compilados do reims-vgpu e ROMs UEFI (~140 MB)...${NC}"
+mkdir -p "${REIMS_DEST}"
+
+if [ -n "${RELEASE_TAG}" ]; then
+    echo -e "${BLUE}▶ Baixando release oficial '${RELEASE_TAG}' do GitHub (felipeab10/reims-vgpu)...${NC}"
+    TMP_TAR="/tmp/reims-vgpu-${RELEASE_TAG}.tar.gz"
+
+    if [ "${RELEASE_TAG}" = "latest" ]; then
+        RELEASE_URL="https://github.com/felipeab10/reims-vgpu/releases/latest/download/reims-vgpu-linux-x86_64.tar.gz"
+    else
+        RELEASE_URL="https://github.com/felipeab10/reims-vgpu/releases/download/${RELEASE_TAG}/reims-vgpu-linux-x86_64.tar.gz"
+    fi
+
+    echo -e "URL: ${CYAN}${RELEASE_URL}${NC}"
+    curl -fL --progress-bar -o "${TMP_TAR}" "${RELEASE_URL}" || {
+        echo -e "${RED}Erro ao baixar release '${RELEASE_TAG}'. Verifique a tag ou a conexão de rede.${NC}"
+        exit 1
+    }
+
+    echo -e "${BLUE}▶ Extraindo binários pré-compilados na árvore da Appliance...${NC}"
+    tar -xzf "${TMP_TAR}" -C "${REIMS_DEST}"
+    echo "${RELEASE_TAG}" > "${REIMS_DEST}/.version"
+    rm -f "${TMP_TAR}"
+elif [ -d "${REIMS_SRC}" ]; then
+    echo -e "${BLUE}▶ Empacotando binários compilados locais de ${REIMS_SRC} (~140 MB)...${NC}"
     mkdir -p "${REIMS_DEST}/vendor/qemu/build"
     mkdir -p "${REIMS_DEST}/crates/reims-vgpu-efi"
     mkdir -p "${REIMS_DEST}/vm"
@@ -100,6 +172,11 @@ if [ -d "${REIMS_SRC}" ]; then
     if [ -d "${REIMS_SRC}/scripts" ]; then
         cp -a "${REIMS_SRC}/scripts" "${REIMS_DEST}/"
     fi
+elif [ -d "/opt/reims-vgpu" ]; then
+    echo -e "${BLUE}▶ Copiando binários de /opt/reims-vgpu...${NC}"
+    cp -a /opt/reims-vgpu/* "${REIMS_DEST}/"
+else
+    echo -e "${YELLOW}Aviso: Nenhuma release especificada e fonte local não encontrada.${NC}"
 fi
 
 # 6. Permissões de execução dos scripts da appliance

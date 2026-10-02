@@ -807,14 +807,20 @@ class VMTUI:
             console.print("  [bold green]sudo pacman -S --needed archiso[/bold green]\n")
 
         console.print(f"Script de compilação: [dim]{builder_script}[/dim]\n")
-        console.print(" [bold green]1[/bold green] - Instruções para compilar a ISO (requer sudo no terminal)")
+        console.print(" [bold green]1[/bold green] - Instruções para compilar a ISO (com tag do GitHub ou binários locais)")
         console.print(" [bold green]2[/bold green] - Instalar / Atualizar Harnesses CLI neste sistema host agora")
         console.print(" [bold yellow]0[/bold yellow] - Voltar ao Menu Principal")
 
         choice = Prompt.ask("\nEscolha uma opção", choices=["1", "2", "0"], default="0")
         if choice == "1":
-            console.print("\n[bold yellow]Para compilar a imagem ISO completa, execute no seu terminal:[/bold yellow]")
-            console.print(f"  [bold green]sudo bash {builder_script}[/bold green]\n")
+            console.print("\n[bold cyan]Opções de Compilação da Imagem ISO:[/bold cyan]\n")
+            console.print("  [bold green]• Opção A (Recomendada): Usando Release Oficial do GitHub:[/bold green]")
+            console.print(f"    [bold yellow]sudo bash {builder_script} --tag v1.0.0[/bold yellow]")
+            console.print("    [dim]Baixa os binários pré-compilados do GitHub Releases sem precisar compilar nada.[/dim]\n")
+            console.print("  [bold green]• Opção B: Usando a versão 'latest' mais recente do GitHub:[/bold green]")
+            console.print(f"    [bold yellow]sudo bash {builder_script} --tag latest[/bold yellow]\n")
+            console.print("  [bold green]• Opção C: Usando Binários Locais do Computador:[/bold green]")
+            console.print(f"    [bold yellow]sudo bash {builder_script}[/bold yellow]\n")
             Prompt.ask("Pressione Enter para continuar")
         elif choice == "2":
             setup_script = Path(__file__).resolve().parent.parent / "appliance" / "archiso" / "airootfs" / "usr" / "local" / "bin" / "setup-harness-tools.sh"
