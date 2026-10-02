@@ -105,17 +105,37 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
 ### 2.14. Sincronização em Tempo Real de Energia (Host Power Sync)
 - **QMP Socket Daemon (`core/power.py`):** Monitora eventos QMP em segundo plano (`/tmp/vhackintosh-qmp.sock`).
 - **Desligamento Unificado:** Ao selecionar "Desligar..." no macOS, o QEMU emite o evento `SHUTDOWN` com reason `guest-shutdown`. O host Linux executa `systemctl poweroff` e desliga a máquina física em 2 segundos.
-- **Reinicialização Unificada:** Ao selecionar "Reiniciar..." no macOS, o QEMU aciona `-no-reboot` e emite `guest-reset`. O host Linux executa `systemctl reboot` e reinicia o computador físico, retornando pelo Kiosk auto-boot do vHackintosh.
+- **Reinicialização Unificada com `-no-reboot`:** O QEMU, por padrão, reinicia a máquina virtual internamente sem encerrar o processo host. Para forçar a sincronização de reboot, o vHackintosh passa obrigatoriamente a flag `-no-reboot` em VMs com sistema instalado. Ao selecionar "Reiniciar..." no macOS, o QEMU termina e emite `guest-reset`/`RESET`. O host Linux executa `systemctl reboot` e reinicia o computador físico.
+- **Detecção Inteligente de VM Instalada:** O vHackintosh afere o uso real do disco virtual (`>= 4 GB`). Quando o macOS já está instalado, o disco de instalação (`BaseSystem.img`) é automaticamente desacoplado do barramento SATA, acelerando o boot e forçando o comportamento estrito de reinício do host.
 
-### 2.15. Auto-Boot Direto do OpenCore com Revelação por Tecla de Atalho (Spacebar Hotkey)
+### 2.15. Auto-Boot Direto do OpenCore, Resolução Nativa e Boot Gráfico Apple Limpo
 - **Configuração Silenciosa do Bootloader:** `ShowPicker = False`, `Timeout = 0`, `PollAppleHotKeys = True`, `AllowSetDefault = True`.
 - **Comportamento Apple Nativo:** O macOS inicia diretamente no volume padrão (`OSX`) sem telas intermediárias. Segurar ou pressionar a **barra de espaço** ou **Option/Alt** durante a inicialização abre o menu gráfico completo do OpenCore.
+- **Resolução Máxima Nativa:** Injeção de `Resolution = Max` e `ForceResolution = True` no bloco `UEFI/Output` do `config.plist`, garantindo que o firmware OVMF GOP assuma a resolução nativa máxima do monitor (1080p/2K/4K) desde o primeiro instante de boot.
+- **Remoção do Modo Verbose (`-v`):** A flag `-v` foi eliminada dos `boot-args` de produção em `core/smbios.py`. O macOS agora exibe o boot limpo e polido com o logotipo da maçã e a barra de progresso nativa da Apple.
 - **Injeção Dinâmica via Guestfish:** O vHackintosh altera essa configuração in-place dentro de `OpenCore.qcow2` através do menu de gerenciamento da VM (opção 3).
 
-### 2.16. Pipeline de Distribuição Contínua por GitHub Releases & Auto-Updater
+### 2.16. Pipeline de Distribuição Contínua por GitHub Releases, Auto-Updater & ISO Tags
 - **GitHub Actions CI (`felipeab10/reims-vgpu`):** Workflow `.github/workflows/release.yml` compila na nuvem a ROM UEFI GOP (Rust) e o QEMU com backend Vulkan, empacotando em `reims-vgpu-linux-x86_64.tar.gz` com checksum SHA-256 em cada tag/release.
 - **Auto-Updater Inteligente (`core/updater.py`):** O comando `vhackintosh update` consulta a API de Releases do GitHub, baixa e descompacta os binários pré-compilados em `/opt/reims-vgpu/` com barra de progresso visual no Rich e executa `git pull` no vHackintosh, atualizando o sistema inteiro em menos de 10 segundos sem compilação local.
 - **Isolamento de Romfiles do QEMU (`-L` Flag):** Binários compilados no CI possuem prefixos de build remotos (`/home/runner/...`). O vHackintosh injeta flags `-L` apontando dinamicamente para o diretório local `vendor/qemu/pc-bios`, garantindo que ROMs essenciais (`kvmvapic.bin`, `vgabios-stdvga.bin`) sejam encontradas em qualquer ambiente.
+- **Gerador de ISO com Parâmetro de Release (`appliance/build-iso.sh --tag <TAG>`):** O script aceita `--tag <TAG>` (ex: `v1.0.0` ou `latest`), baixando os binários pré-compilados do GitHub Releases e gerando imagens ISO prontas para pendrive USB em qualquer máquina host sem compilação local.
+
+### 2.17. Arquitetura Gráfica Kiosk, Openbox Window Manager & Suporte a Touchpads (Dell G15)
+- **Problema do X11 Puro sem Window Manager:** No modo console/appliance (inicializado via `xinit`), o servidor Xorg puro não gerencia foco de entrada nem implementa especificações EWMH (`_NET_WM_STATE_FULLSCREEN`). A janela GTK do QEMU permanecia em tamanho minúsculo (1024x768) e perdia o foco do teclado e do mouse para a janela raiz do X11, impedindo qualquer digitação ou interação.
+- **Solução com Openbox Kiosk (`/usr/local/bin/vhackintosh-xsession`):** Integração do **Openbox** como gerenciador de janelas ultra-minimalista (< 400 KB) em segundo plano. O Openbox intercepta a chamada de fullscreen do QEMU, estende a janela para 100% da tela física e garante foco exclusivo e ininterrupto para o macOS.
+- **Driver de Touchpad para Notebooks (`xf86-input-libinput`):** Inclusão obrigatória do pacote `xf86-input-libinput` e criação da configuração `/etc/X11/xorg.conf.d/40-touchpad.conf` com suporte nativo a Tapping (toque suave para clique), rolagem com dois dedos e aceleração de ponteiro para trackpads I2C de notebooks modernos (como o Dell G15 5520).
+- **Captura Automática de Cursor:** Ativação de `grab-on-hover=on` no display GTK do QEMU para captura transparente de entrada.
+
+### 2.18. Detecção Robusta de Mídia Live USB & Menu Interativo do Instalador
+- **Falha de Detecção Tradicional (`/run/archiso/bootmnt`):** Em inicializações UEFI modernas com GRUB e systemd, o ponto de montagem do pendrive pode variar, fazendo checagens rígidas de diretório falharem e omitirem o instalador do sistema operacional.
+- **Detecção Multifator de Mídia Live:** O sistema agora afere a presença do utilitário `vhackintosh-install`, os caminhos `/run/archiso`, `/run/archiso/img_dev` e os parâmetros de linha de comando do kernel em `/proc/cmdline`.
+- **Menu Inicial Interativo Estável:** O instalador do Live USB foi remodelado para eliminar contadores regressivos agressivos. O usuário é recebido por um menu estável que permite:
+  - `[1] ★ INSTALAR vHackintosh OS no SSD / Disco deste Computador (Recomendado)`
+  - `[2] Executar em Modo Live / Demonstração (Memória RAM)`
+  - `[3] Configurar Conexão Wi-Fi / Rede (nmtui)`
+  - `[0] Reiniciar Computador`
+- **Atalho Permanente no Gerenciador:** No TUI do `vhackintosh`, a opção `★ [I] - INSTALAR vHackintosh OS no SSD/Disco` permanece fixada e acessível no topo do menu sempre que o executável de instalação estiver presente.
 
 ---
 
@@ -158,3 +178,11 @@ O projeto segue as melhores práticas e especificações técnicas documentadas 
 - **2026-09-30:** Criação do repositório privado `felipeab10/vhackintosh-lp` contendo a Landing Page oficial e Portal de Distribuição em Next.js 16 com sistema de design Dark Cyber HUD / Apple Minimalist.
 - **2026-09-30:** Implementação do sistema de upload particionado (*Chunked Upload*) para ISOs de até 4 GB com limpeza automática de versões anteriores, contador global de downloads e painel administrativo `/admin` autenticado.
 - **2026-09-30:** Configuração de deploy no Coolify via Dockerfile standalone, entrypoint seguro de permissões de volume persistente e liberação de builds pnpm.
+- **2026-10-01:** Implementação do pipeline de CI no GitHub Actions (`felipeab10/reims-vgpu`) e comando `vhackintosh update` para atualização instantânea via releases oficiais pré-compiladas.
+- **2026-10-01:** Resolução de dependências de ROM BIOS do QEMU através da injeção dinâmica de caminhos `-L`.
+- **2026-10-02:** Correção da sincronização de reinicialização do host: detecção de disco com macOS instalado (`>= 4 GB`), desacoplamento automático da mídia de instalação e imposição da flag `-no-reboot` no QEMU para capturar `guest-reset` e acionar `systemctl reboot`.
+- **2026-10-02:** Configuração do template base do OpenCore com auto-boot silencioso (`ShowPicker = False`, `Timeout = 0`, `PollAppleHotKeys = True`, `AllowSetDefault = True`), resolução máxima nativa (`Resolution = Max`) e remoção da flag `-v` (verbose) dos `boot-args` para exibição limpa da maçã gráfica da Apple.
+- **2026-10-02:** Diagnóstico e resolução da tela pequena e perda de foco de entrada (teclado/touchpad) no Dell G15: integração do gerenciador de janelas Openbox Kiosk, script `vhackintosh-xsession`, driver `xf86-input-libinput` e configuração de touchpad com tapping.
+- **2026-10-02:** Aperfeiçoamento do script de verificação `appliance/verify-iso.sh` para emulação fiel do hardware bare-metal em modo tela cheia nativa sem barras de menu e com display virtio.
+- **2026-10-02:** Adição de suporte a tags de versão (`--tag <TAG>`) no script `appliance/build-iso.sh`, permitindo compilar a ISO oficial puxando binários do GitHub Releases em qualquer computador.
+- **2026-10-02:** Resolução da falha de detecção de Live USB: substituição da checagem `/run/archiso/bootmnt` por detecção multifator (`vhackintosh-install`, `/run/archiso` e `/proc/cmdline`), criando menu interativo estável sem contadores regressivos apressados e fixando a opção `★ [I]` no menu principal.
