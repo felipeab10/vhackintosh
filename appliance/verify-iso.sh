@@ -37,9 +37,9 @@ echo -e "${CYAN}        vHackintosh Appliance - QEMU ISO Boot Verifier          
 echo -e "${CYAN}===================================================================${NC}\n"
 echo -e "  • Imagem ISO:     ${GREEN}${ISO_FILE}${NC} ($(du -h "${ISO_FILE}" | cut -f1))"
 echo -e "  • Firmware UEFI:  ${GREEN}${OVMF_BIOS:-'Padrão QEMU'}${NC}"
-echo -e "  • Memória RAM:    ${YELLOW}4 GB${NC}"
-echo -e "  • vCPUs:          ${YELLOW}4 Cores${NC}\n"
-echo -e "${CYAN}Iniciando QEMU com aceleração KVM e interface gráfica...${NC}\n"
+echo -e "  • Modo Gráfico:   ${GREEN}Fullscreen Nativo 1080p (Sem menus GTK)${NC}"
+echo -e "  • Atalhos úteis:  ${YELLOW}Ctrl + Alt + F (Alterna Tela Cheia) | Ctrl + Alt + G (Libera Mouse)${NC}\n"
+echo -e "${CYAN}Iniciando QEMU Appliance em modo Kiosk Fullscreen...${NC}\n"
 
 TEST_SSD="/var/tmp/vhackintosh-test-ssd.qcow2"
 if [ ! -f "${TEST_SSD}" ]; then
@@ -47,25 +47,36 @@ if [ ! -f "${TEST_SSD}" ]; then
     qemu-img create -f qcow2 "${TEST_SSD}" 64G >/dev/null
 fi
 
+FULLSCREEN_FLAG="-full-screen"
+CLEAN_ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "--window" ] || [ "$arg" = "-w" ] || [ "$arg" = "--windowed" ]; then
+        FULLSCREEN_FLAG=""
+    else
+        CLEAN_ARGS+=("$arg")
+    fi
+done
+
 # Argumentos base do QEMU com suporte a Q35 moderno, Virtualização Nested e SSD de Teste
 QEMU_ARGS=(
     -enable-kvm
     -machine q35
     -cpu host,kvm=on
-    -m 8G
-    -smp 4
+    -m 16G
+    -smp 8
     -drive file="${TEST_SSD}",if=virtio,format=qcow2,id=ssd0
     -cdrom "${ISO_FILE}"
     -boot d
-    -vga std
-    -device virtio-net-pci,netdev=net0
-    -netdev user,id=net0
-    -device usb-ehci,id=ehci
-    -device usb-tablet
+    -vga virtio
+    -display gtk,show-menubar=off,zoom-to-fit=on,grab-on-hover=on,show-cursor=on
 )
+
+if [ -n "${FULLSCREEN_FLAG}" ]; then
+    QEMU_ARGS+=("${FULLSCREEN_FLAG}")
+fi
 
 if [ -n "${OVMF_BIOS}" ]; then
     QEMU_ARGS+=(-bios "${OVMF_BIOS}")
 fi
 
-exec qemu-system-x86_64 "${QEMU_ARGS[@]}" "$@"
+exec qemu-system-x86_64 "${QEMU_ARGS[@]}" "${CLEAN_ARGS[@]}"
