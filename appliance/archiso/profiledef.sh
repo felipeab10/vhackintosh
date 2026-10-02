@@ -21,5 +21,6 @@ file_permissions=(
   ["/usr/local/bin/vhackintosh-install"]="0:0:755"
   ["/usr/local/bin/dmg2img"]="0:0:755"
   ["/usr/local/bin/vhack-copy-system"]="0:0:755"
+  ["/usr/local/bin/vhackintosh-xsession"]="0:0:755"
   ["/opt/vhackintosh/bin/vhackintosh"]="0:0:755"
 )

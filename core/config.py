@@ -44,7 +44,7 @@ class VMConfig:
     audio_device: str = "ich9-intel-hda"  # Padrão ultimate-macOS-KVM (ich9-intel-hda + hda-duplex)
     force_x11: bool = True
     display_resolution: str = "1920x1080"
-    fullscreen: bool = False
+    fullscreen: bool = True
     opencore_show_picker: bool = False
     created_at: str = ""
     last_booted_at: Optional[str] = None

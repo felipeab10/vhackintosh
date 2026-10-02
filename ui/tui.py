@@ -735,16 +735,32 @@ class VMTUI:
         if not installer_img:
             cmd.append("-no-reboot")
 
-        # Oculta menus GTK (Machine, View), ativa cursor visível e ajusta proporção da janela / tela cheia
-        display_opts = "gtk,show-menubar=off,zoom-to-fit=on,show-cursor=on"
-        if getattr(vm, "fullscreen", False):
+        # Oculta menus GTK (Machine, View), ativa cursor visível, captura de mouse ao passar o cursor e tela cheia
+        display_opts = "gtk,show-menubar=off,zoom-to-fit=on,show-cursor=on,grab-on-hover=on"
+        is_tty = not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY")
+        if getattr(vm, "fullscreen", True) or is_tty:
             cmd.extend(["-display", display_opts, "-full-screen"])
         else:
             cmd.extend(["-display", display_opts])
 
-        # Se estiver no console TTY puro sem display X11/Wayland ativo, inicializa via xinit
-        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
-            if shutil.which("xinit"):
+        # Se estiver no console TTY puro sem display X11/Wayland ativo, inicializa via xinit gerenciado com Openbox
+        if is_tty and shutil.which("xinit"):
+            xsession_candidates = [
+                "/usr/local/bin/vhackintosh-xsession",
+                str(Path(__file__).resolve().parent.parent / "appliance" / "archiso" / "airootfs" / "usr" / "local" / "bin" / "vhackintosh-xsession"),
+            ]
+            xsession_bin = None
+            for cand in xsession_candidates:
+                if os.path.exists(cand) and os.access(cand, os.X_OK):
+                    xsession_bin = cand
+                    break
+
+            if xsession_bin:
+                cmd = ["xinit", xsession_bin] + cmd + ["--", ":0", "-nolisten", "tcp", "vt1"]
+            elif shutil.which("openbox"):
+                cmd_escaped = " ".join([f'"{arg}"' for arg in cmd])
+                cmd = ["xinit", "sh", "-c", f"openbox & exec {cmd_escaped}", "--", ":0", "-nolisten", "tcp", "vt1"]
+            else:
                 cmd = ["xinit"] + cmd + ["--", ":0"]
 
         if env_vars is None:

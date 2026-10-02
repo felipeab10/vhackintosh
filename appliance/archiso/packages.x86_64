@@ -40,6 +40,8 @@ socat
 xorg-server
 xorg-xinit
 xorg-xrandr
+xf86-input-libinput
+openbox
 mesa
 vulkan-icd-loader
 vulkan-radeon
