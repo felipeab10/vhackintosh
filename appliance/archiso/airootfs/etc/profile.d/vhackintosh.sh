@@ -57,23 +57,54 @@ if [ "$(tty)" = "/dev/tty1" ]; then
 
     clear
 
-    # Se estiver rodando do Pendrive/Live ISO, oferece o Instalador Bare-metal
+    # Se estiver rodando do Pendrive/Live ISO, oferece o Instalador Bare-metal de forma clara e interativa
     if [ -d "/run/archiso/bootmnt" ]; then
-        echo -e "\033[1;36m======================================================================\033[0m"
-        echo -e "\033[1;37m         Bem-vindo ao Instalador do vHackintosh OS Appliance          \033[0m"
-        echo -e "\033[1;36m======================================================================\033[0m\n"
-        echo -e "Escolha o modo de operação:\n"
-        echo -e "  \033[1;32m[1]\033[0m \033[1;37mInstalar vHackintosh OS no SSD / Disco deste Computador\033[0m"
-        echo -e "      Transforma o computador em um Appliance dedicado com boot direto do SSD.\n"
-        echo -e "  \033[1;33m[2]\033[0m \033[1;37mExecutar em Modo Live / Demonstração (Memória RAM)\033[0m"
-        echo -e "      Testa o vHackintosh sem alterar os discos físicos do computador.\n"
-        read -r -t 15 -p "Escolha [1 ou 2] (padrão 2 em 15s): " boot_choice || boot_choice="2"
-        if [ "$boot_choice" = "1" ]; then
-            if command -v vhackintosh-install >/dev/null 2>&1; then
-                vhackintosh-install
-                exit 0
+        # Limpa qualquer buffer residual do teclado (como do nmtui)
+        while read -r -t 0.1 -n 10000 discard; do :; done 2>/dev/null || true
+
+        while true; do
+            clear
+            echo -e "\033[1;36m======================================================================\033[0m"
+            echo -e "\033[1;37m         Bem-vindo ao vHackintosh OS Appliance (Live USB)             \033[0m"
+            echo -e "\033[1;36m======================================================================\033[0m\n"
+
+            # Status de Internet
+            if curl -s -m 2 -I https://www.apple.com >/dev/null 2>&1 || curl -s -m 2 -I https://1.1.1.1 >/dev/null 2>&1; then
+                echo -e "  \033[1;32m● Status de Conexão: Conectado à Internet\033[0m\n"
+            else
+                echo -e "  \033[1;33m● Status de Conexão: Sem Internet (conecte via opção [3] abaixo)\033[0m\n"
             fi
-        fi
+
+            echo -e "Escolha o modo de operação:\n"
+            echo -e "  \033[1;32m[1]\033[0m \033[1;37m★ INSTALAR vHackintosh OS no SSD / Disco deste Computador (Recomendado)\033[0m"
+            echo -e "      Apaga o disco selecionado e instala o sistema operacional definitivo.\n"
+            echo -e "  \033[1;33m[2]\033[0m \033[1;37mExecutar em Modo Live / Demonstração (Memória RAM)\033[0m"
+            echo -e "      Testa o vHackintosh sem alterar os discos físicos do computador.\n"
+            echo -e "  \033[1;34m[3]\033[0m \033[1;37mConfigurar Conexão Wi-Fi / Rede (nmtui)\033[0m\n"
+
+            read -r -p "Escolha [1, 2 ou 3]: " boot_choice
+            case "$boot_choice" in
+                1)
+                    if command -v vhackintosh-install >/dev/null 2>&1; then
+                        vhackintosh-install
+                        echo -e "\n\033[1;33mInstalador finalizado. Pressione Enter para voltar ao menu...\033[0m"
+                        read -r
+                    fi
+                    ;;
+                2)
+                    break
+                    ;;
+                3)
+                    if command -v nmtui >/dev/null 2>&1; then
+                        nmtui
+                    fi
+                    ;;
+                *)
+                    echo -e "\033[1;31mOpção inválida.\033[0m"
+                    sleep 1
+                    ;;
+            esac
+        done
     fi
 
     clear

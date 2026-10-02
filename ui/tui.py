@@ -59,6 +59,10 @@ class VMTUI:
             self._render_vm_table(vms)
 
             console.print("\n[bold cyan]Opções do Gerenciador:[/bold cyan]")
+            is_live_media = os.path.exists("/run/archiso/bootmnt")
+            if is_live_media:
+                console.print(" [bold yellow]★ [I][/bold yellow] - [bold magenta]INSTALAR vHackintosh OS no SSD/Disco deste Computador (Instalador)[/bold magenta]")
+
             console.print(" [bold green]1[/bold green] - Iniciar / Gerenciar uma VM")
             console.print(" [bold green]2[/bold green] - Criar Nova VM macOS (Assistente com Auto-Tuning)")
             console.print(" [bold green]3[/bold green] - Diagnóstico de Hardware & GPU Compatibility")
@@ -66,19 +70,15 @@ class VMTUI:
             console.print(" [bold green]5[/bold green] - Baixar / Gerenciar Imagens do macOS (Apple Recovery)")
             console.print(" [bold green]6[/bold green] - Teste A/B de Instalação do Zero (Apple Recovery)")
             console.print(" [bold green]7[/bold green] - Gerador de Imagem ISO Bootável (Appliance Live USB com AI Harnesses)")
-            is_live_media = os.path.exists("/run/archiso/bootmnt")
-            if is_live_media:
-                console.print(" [bold magenta]I[/bold magenta] - [bold yellow]★ INSTALAR vHackintosh OS no SSD/Disco deste Computador[/bold yellow]")
-
             console.print(" [bold red]0[/bold red] - Sair para o Terminal / Desligar")
 
             choices = ["1", "2", "3", "4", "5", "6", "7", "0"]
             if is_live_media:
-                choices.extend(["I", "i"])
+                choices.extend(["I", "i", "8"])
 
             choice = Prompt.ask("\nEscolha uma opção", choices=choices, default="1")
 
-            if choice in ("I", "i"):
+            if choice in ("I", "i", "8"):
                 if shutil.which("vhackintosh-install"):
                     cmd = ["sudo", "vhackintosh-install"] if os.geteuid() != 0 else ["vhackintosh-install"]
                     subprocess.run(cmd)
