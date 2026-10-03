@@ -7,9 +7,13 @@ from __future__ import annotations
 import os
 import json
 import fcntl
+import logging
+import dataclasses
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/vhackintosh"))
 VMS_FILE = CONFIG_DIR / "vms.json"
@@ -42,8 +46,10 @@ class VMConfig:
     selected_gpu: Optional[str] = None  # Ex: "0000:01:00.0"
     selected_gpu_name: Optional[str] = None  # Ex: "NVIDIA RTX 3050 Mobile"
     audio_device: str = "ich9-intel-hda"  # Padrão ultimate-macOS-KVM (ich9-intel-hda + hda-duplex)
-    force_x11: bool = True
-    display_resolution: str = "1920x1080"
+    # Removidos: `force_x11` (a sessão é Wayland nativo desde a migração do
+    # appliance) e `display_resolution` (a geometria é resolvida por aspect-fit
+    # no reims-vgpu, sem resolução fixa). Ambos eram código morto — nada os lia —
+    # mas `from_dict` os ignorava apenas por tolerância a campos extras.
     fullscreen: bool = True
     opencore_show_picker: bool = False
     created_at: str = ""
@@ -60,9 +66,23 @@ class VMConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> VMConfig:
+        # Tolerância a campos desconhecidos: configs gravados por versões
+        # anteriores podem conter chaves que já não existem no dataclass (por
+        # exemplo `force_x11` e `display_resolution`, removidos na migração para
+        # Wayland). Sem este filtro, `cls(**data)` levantaria TypeError e a VM
+        # sumiria do gerenciador. Os campos novos já têm default, então a
+        # ausência deles também é segura.
         smbios_data = data.pop("smbios", {})
         smbios = SMBIOSConfig(**smbios_data) if isinstance(smbios_data, dict) else SMBIOSConfig()
-        return cls(smbios=smbios, **data)
+        conhecidos = {f.name for f in dataclasses.fields(cls)}
+        extras = {k: v for k, v in data.items() if k not in conhecidos}
+        if extras:
+            logger.debug(
+                "VMConfig.from_dict: ignorando campos desconhecidos: %s",
+                ", ".join(sorted(extras)),
+            )
+        filtrado = {k: v for k, v in data.items() if k in conhecidos}
+        return cls(smbios=smbios, **filtrado)
 
 
 class VMManagerStore:
