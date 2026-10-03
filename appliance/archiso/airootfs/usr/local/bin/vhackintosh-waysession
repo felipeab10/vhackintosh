@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# /usr/local/bin/vhackintosh-waysession
+#
+# Sessão Wayland mínima (sway em modo kiosk) do vHackintosh Appliance.
+# Substitui a antiga /usr/local/bin/vhackintosh-xsession (X11 + Openbox).
+#
+# Uso: vhackintosh-waysession <comando-da-vm> [args...]
+#
+# Desenho: o sway sobe com /etc/vhackintosh/sway.conf, cuja linha `exec` aponta
+# para o cliente primário. Este script gera esse cliente em tempo de execução
+# com o comando exato da VM, de modo que a VM vira filha do sway e herda dele
+# WAYLAND_DISPLAY e SWAYSOCK. Quando a VM termina, o cliente derruba o sway e o
+# console volta para a TUI.
+#
+# O caminho do cliente NÃO é fixado aqui: ele é lido da linha `exec` da própria
+# config do sway. Assim config e script não podem divergir — a config é a única
+# fonte de verdade. Fixá-lo nos dois lugares permitiria que discordassem, e a
+# falha seria silenciosa: o sway sobe, nada aparece e a tela fica preta.
+set -u
+
+if [ "$#" -eq 0 ]; then
+    echo "vhackintosh-waysession: nenhum comando informado" >&2
+    echo "uso: vhackintosh-waysession <comando> [args...]" >&2
+    exit 2
+fi
+
+# O Wayland exige XDG_RUNTIME_DIR; o sway aborta sem ele.
+: "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
+export XDG_RUNTIME_DIR
+if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+    mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
+fi
+chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
+CONF="${VHACK_SWAY_CONF:-/etc/vhackintosh/sway.conf}"
+if [ ! -f "$CONF" ]; then
+    echo "vhackintosh-waysession: config do sway nao encontrada: $CONF" >&2
+    exit 1
+fi
+
+# Extrai o caminho do cliente primário da linha `exec` da config (primeira
+# ocorrência). É esta leitura que mantém config e script em acordo.
+APP_SH="$(sed -n 's/^[[:space:]]*exec[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' "$CONF" | head -n 1)"
+if [ -z "$APP_SH" ]; then
+    echo "vhackintosh-waysession: nenhuma diretiva 'exec' em $CONF" >&2
+    exit 1
+fi
+
+mkdir -p "$(dirname "$APP_SH")" 2>/dev/null || true
+STATUS_FILE="${APP_SH}.status"
+rm -f "$STATUS_FILE"
+
+# Gera o cliente primário. `printf '%q '` cita cada argumento para que espaços,
+# aspas e cifrões em caminhos de disco sobrevivam sem reparse.
+{
+    printf '#!/usr/bin/env bash\n'
+    printf '# Gerado por vhackintosh-waysession — nao editar.\n'
+    printf 'set -u\n'
+    printf 'VHACK_STATUS_FILE=%q\n' "$STATUS_FILE"
+    printf '%q ' "$@"
+    printf '\n__vhack_status=$?\n'
+    printf 'printf "%%s" "$__vhack_status" > "$VHACK_STATUS_FILE" 2>/dev/null || true\n'
+    # Encerra o sway; sem isto o compositor ficaria vivo sem cliente e a TUI
+    # nunca retomaria o console.
+    printf 'swaymsg exit >/dev/null 2>&1 || true\n'
+} > "$APP_SH"
+chmod 755 "$APP_SH"
+
+# O sway nao se recusa a rodar em driver proprietario NVIDIA: apenas exibe um
+# aviso (swaynag) e segue. Num kiosk esse aviso seria lixo na tela, e a variavel
+# abaixo o suprime. Usamos a env var em vez da flag `--unsupported-gpu` de
+# proposito: a flag existe mas esta oculta do usage, e uma flag desconhecida e
+# erro fatal, enquanto uma env var desconhecida e simplesmente ignorada.
+export SWAY_UNSUPPORTED_GPU=true
+
+# Sem isto o wlroots ABORTA quando nao encontra GPU com renderizacao acelerada
+# (ex.: virtio-gpu em VM de teste), com a mensagem "Software rendering detected,
+# please use the WLR_RENDERER_ALLOW_SOFTWARE environment variable to proceed".
+# Em hardware real a aceleracao e usada normalmente; esta flag so cobre o caso
+# em que o unico renderizador disponivel e o llvmpipe.
+export WLR_RENDERER_ALLOW_SOFTWARE=true
+
+sway -c "$CONF"
+SWAY_STATUS=$?
+
+# O cliente registrou o status da VM; essa e a resposta que interessa ao
+# chamador. Se o sway morreu antes (falha do compositor), cai no status do sway.
+if [ -f "$STATUS_FILE" ]; then
+    __vhack_app_status="$(cat "$STATUS_FILE" 2>/dev/null || echo "")"
+    case "$__vhack_app_status" in
+        ''|*[!0-9]*) ;;
+        *) exit "$__vhack_app_status" ;;
+    esac
+fi
+
+exit "$SWAY_STATUS"

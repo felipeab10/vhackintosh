@@ -117,7 +117,8 @@ class ABInstallerTest:
             console.print(f"  • Instalador: [bold cyan]{installer_img}[/bold cyan]\n")
 
             env = os.environ.copy()
-            env["FORCE_X11"] = "1"
+            # Sem X11: a sessão gráfica é Wayland (sway kiosk) e a janela do
+            # reims-vgpu (winit) fala Wayland nativo.
             env["REIMS_VGPU_FULLSCREEN"] = fullscreen
             env["REIMS_VGPU_BACKEND"] = "vulkan"
             env["REIMS_VGPU_WINDOW"] = "1"

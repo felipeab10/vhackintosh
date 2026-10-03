@@ -4,7 +4,11 @@
 # ==============================================================================
 
 export PYTHONUNBUFFERED=1
-export FORCE_X11=1
+# Sem FORCE_X11: a sessão gráfica do appliance é Wayland (sway kiosk). Exportar
+# FORCE_X11/USE_X11 faria o harness do reims-vgpu (vm/boot-x86.sh) desfazer o
+# WAYLAND_DISPLAY herdado, forçar WINIT_UNIX_BACKEND=x11 e apontar DISPLAY=:1 —
+# endereço onde não há servidor X algum, já que não instalamos Xorg nem
+# XWayland. O resultado seria uma janela que nunca aparece.
 
 # Ajusta caminhos padrão
 if [ -d "/opt/vhackintosh" ]; then

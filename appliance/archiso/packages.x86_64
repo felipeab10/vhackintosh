@@ -36,22 +36,34 @@ dnsmasq
 iptables
 socat
 
-# Gráficos X11 e Vulkan (Aceleração reims-vgpu)
-xorg-server
-xorg-xinit
-xorg-xrandr
-xf86-input-libinput
-openbox
+# Wayland mínimo + Vulkan (Aceleração reims-vgpu)
+#
+# A sessão gráfica do appliance é o sway em modo kiosk; a janela do reims-vgpu
+# (winit) fala Wayland nativo. Não há Xorg, xinit, Openbox nem XWayland.
+#
+# Observação honesta: libxcb/xcb-util-* continuam instalados, mas como
+# dependência transitiva do wlroots e do gtk3 (qemu-desktop). São bibliotecas
+# cliente, não um servidor X nem uma sessão X — nenhum processo Xorg roda.
+#
+# libseat (via seatd), wayland-protocols, libinput, libxkbcommon e opengl-driver
+# entram sozinhos como dependências do wlroots/sway; abaixo só o que queremos
+# declarado explicitamente.
+#
+# `swaybg` parece opcional mas não é: o sway SEMPRE tenta executá-lo (default
+# embutido de `swaybg_command`, mesmo sem diretiva `bg` na config). Faltando o
+# pacote, o sway registra "failed to execute 'swaybg'" e o fundo do output fica
+# indefinido. São 41 KB instalados.
+sway
+swaybg
+wayland
+libinput
+ttf-dejavu
 mesa
 vulkan-icd-loader
 vulkan-radeon
 vulkan-intel
 vulkan-mesa-layers
 libdrm
-libx11
-libxrandr
-libxcursor
-libxinerama
 
 # Áudio de Baixa Latência (PipeWire / ICH9 HDA)
 pipewire

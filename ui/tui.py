@@ -655,7 +655,10 @@ class VMTUI:
             use_reims_rail = bool(reims_dir and rail_dir and rail_dir.exists() and os.path.exists(os.path.join(reims_dir, "vm", "boot-x86.sh")))
 
             env_vars = os.environ.copy()
-            env_vars["FORCE_X11"] = "1"
+            # Sem X11: a sessão gráfica do appliance é Wayland (sway kiosk) e a
+            # janela do reims-vgpu (winit) fala Wayland nativo. Não exportamos
+            # mais FORCE_X11 — o backend de janelamento passa a ser decidido pelo
+            # próprio winit a partir da sessão em que a VM é iniciada.
             env_vars["REIMS_VGPU_FULLSCREEN"] = "1"
             env_vars["REIMS_VGPU_BACKEND"] = "vulkan"
             env_vars["REIMS_VGPU_WINDOW"] = "1"
@@ -977,25 +980,27 @@ class VMTUI:
         else:
             cmd.extend(["-display", display_opts])
 
-        # Se estiver no console TTY puro sem display X11/Wayland ativo, inicializa via xinit gerenciado com Openbox
-        if is_tty and shutil.which("xinit"):
-            xsession_candidates = [
-                "/usr/local/bin/vhackintosh-xsession",
-                str(Path(__file__).resolve().parent.parent / "appliance" / "archiso" / "airootfs" / "usr" / "local" / "bin" / "vhackintosh-xsession"),
+        # Em console TTY puro (appliance) não existe servidor gráfico e a VM
+        # precisa de um. Usamos a sessão Wayland mínima (sway em modo kiosk), que
+        # substituiu a antiga sessão X11 + Openbox iniciada por xinit.
+        if is_tty:
+            waysession_candidates = [
+                "/usr/local/bin/vhackintosh-waysession",
+                str(Path(__file__).resolve().parent.parent / "appliance" / "archiso" / "airootfs" / "usr" / "local" / "bin" / "vhackintosh-waysession"),
             ]
-            xsession_bin = None
-            for cand in xsession_candidates:
+            waysession_bin = None
+            for cand in waysession_candidates:
                 if os.path.exists(cand) and os.access(cand, os.X_OK):
-                    xsession_bin = cand
+                    waysession_bin = cand
                     break
 
-            if xsession_bin:
-                cmd = ["xinit", xsession_bin] + cmd + ["--", ":0", "-nolisten", "tcp", "vt1"]
-            elif shutil.which("openbox"):
-                cmd_escaped = " ".join([f'"{arg}"' for arg in cmd])
-                cmd = ["xinit", "sh", "-c", f"openbox & exec {cmd_escaped}", "--", ":0", "-nolisten", "tcp", "vt1"]
+            if waysession_bin:
+                cmd = [waysession_bin] + cmd
             else:
-                cmd = ["xinit"] + cmd + ["--", ":0"]
+                console.print(
+                    "[bold yellow]Aviso: vhackintosh-waysession não encontrado e não há "
+                    "sessão gráfica ativa. A VM não conseguirá abrir a janela.[/bold yellow]"
+                )
 
         if env_vars is None:
             env_vars = os.environ.copy()
@@ -1021,7 +1026,7 @@ class VMTUI:
         console.print("projetado especificamente para rodar máquinas virtuais macOS com aceleração gráfica.\n")
         console.print("[bold green]Recursos integrados na ISO:[/bold green]")
         console.print("  • Kernel Linux com otimizações KVM para macOS (MSRs ignorados, nested virtualization)")
-        console.print("  • Pilha gráfica Vulkan + X11 otimizada para o driver reims-vgpu")
+        console.print("  • Pilha gráfica Vulkan + Wayland nativo (sway em modo kiosk, sem X11)")
         console.print("  • Subsistema de áudio PipeWire de baixa latência (Intel ICH9 HDA)")
         console.print("  • Auto-login no console com interface Kiosk do vHackintosh")
         console.print("  • [bold magenta]AI Coding Harnesses CLI integrados:[/bold magenta]")

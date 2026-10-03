@@ -77,7 +77,7 @@ class GPUChecker:
         if vendor_name == "NVIDIA":
             reims_compatible = True
             passthrough_compatible = False  # macOS moderno não tem driver bare metal para Turing/Ampere/Ada
-            recommendation = "Reims vGPU (Aceleração Metal sobre Vulkan com modo X11/Xwayland recomendado)"
+            recommendation = "Reims vGPU (Aceleração Metal sobre Vulkan em sessão Wayland nativa)"
         elif vendor_name == "AMD":
             reims_compatible = True
             # GPUs AMD Polaris/Navi suportam VFIO passthrough nativo no macOS
