@@ -363,6 +363,23 @@ echo "vhackintosh-host" > /mnt/etc/hostname
 rm -f /mnt/etc/mkinitcpio.conf.d/archiso.conf 2>/dev/null || true
 rm -f /mnt/etc/systemd/system-generators/systemd-gpt-auto-generator 2>/dev/null || true
 
+# Marca positivamente o sistema como INSTALADO em disco.
+# Esta evidência é lida por `vhackintosh-mode` e desativa o menu de Live USB,
+# evitando que o instalador seja oferecido novamente a cada boot. Deve ser
+# gravada APÓS a cópia rsync (que usa --delete) para não ser removida.
+mkdir -p /mnt/etc/vhackintosh
+cat <<EOF > /mnt/etc/vhackintosh/installed
+mode=installed
+installed_at=$(date -Is 2>/dev/null || date)
+installer_version=1.0.0
+target_disk=${TARGET_DISK}
+efi_partition=${PART_EFI}
+root_partition=${PART_ROOT}
+root_fstype=${ROOT_FSTYPE}
+EOF
+chmod 644 /mnt/etc/vhackintosh/installed
+echo -e "  • Registrado marcador de instalação em /etc/vhackintosh/installed"
+
 # Permissões de execução dos binários
 chmod +x /mnt/opt/vhackintosh/bin/* 2>/dev/null || true
 chmod +x /mnt/usr/local/bin/* 2>/dev/null || true

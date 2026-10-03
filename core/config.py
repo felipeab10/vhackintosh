@@ -48,6 +48,12 @@ class VMConfig:
     opencore_show_picker: bool = False
     created_at: str = ""
     last_booted_at: Optional[str] = None
+    # Ciclo de vida da instalação do macOS (ver core/install_phase.py).
+    # Enquanto não for "installed", o host NUNCA é reiniciado/desligado junto
+    # com o guest — reboots intermediários do instalador são absorvidos pelo QEMU.
+    install_phase: str = "pending"  # "pending" | "installing" | "installed"
+    install_reboots: int = 0        # reboots de guest observados durante a vida da VM
+    install_evidence: str = "none"  # "none" | "partial" | "complete" (última sonda de disco)
 
     def to_dict(self) -> dict:
         return asdict(self)

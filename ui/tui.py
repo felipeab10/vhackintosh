@@ -23,6 +23,20 @@ from core.config import VMConfig, VMManagerStore, ExclusiveVMLock, CONFIG_DIR
 from core.hardware import HardwareAdvisor
 from core.gpu import GPUChecker
 from core.readiness import SystemReadinessChecker
+from core.mode import detect_system_mode, has_installer_binary
+from core.install_phase import (
+    InstallPhase,
+    InstallEvidence,
+    InstallPhaseResolver,
+    InstallProbe,
+    LaunchPolicy,
+    DiskProbe,
+    classify_evidence,
+    summarize_probe,
+    phase_label,
+    phase_short_label,
+    normalize_phase,
+)
 from core.smbios import GenSMBIOS
 from core.downloader import MacOSDownloader, MACOS_PRODUCTS
 from core.disk import DiskProvisioner
@@ -37,8 +51,12 @@ class VMTUI:
     def __init__(self, store: VMManagerStore):
         self.store = store
         self.lock = ExclusiveVMLock()
+        # Detectado uma única vez: o modo de execução não muda durante a sessão.
+        self.system_mode = detect_system_mode()
+        self.installer_available = has_installer_binary()
 
     def run_main_loop(self) -> None:
+        self._backfill_install_phases()
         while True:
             console.clear()
             console.print(render_banner())
@@ -46,6 +64,9 @@ class VMTUI:
             running_vm = self.lock.get_running_vm_info()
             if running_vm:
                 console.print(f"[bold red]● VM Ativa em Execução: {running_vm}[/bold red]\n")
+
+            if self.system_mode == "live":
+                console.print("[bold cyan]● Mídia Live (pendrive/ISO) — instale no disco pela opção [I] ou use em modo demonstração.[/bold cyan]\n")
 
             # Checagem de prontidão do sistema (Virtualização BIOS e Internet)
             readiness = SystemReadinessChecker.check_all()
@@ -59,13 +80,12 @@ class VMTUI:
             self._render_vm_table(vms)
 
             console.print("\n[bold cyan]Opções do Gerenciador:[/bold cyan]")
-            is_live_media = bool(
-                shutil.which("vhackintosh-install")
-                or os.path.exists("/run/archiso")
-                or os.path.exists("/run/archiso/bootmnt")
-                or (os.path.exists("/proc/cmdline") and "archiso" in open("/proc/cmdline", "r", errors="ignore").read())
-            )
-            if is_live_media:
+
+            # O instalador bare-metal permanece sempre acessível quando presente.
+            # Ele é copiado para o sistema definitivo por design, portanto a sua
+            # existência NÃO indica Live USB (ver core.mode.detect_system_mode).
+            installer_available = self.installer_available
+            if installer_available:
                 console.print(" [bold yellow]★ [I][/bold yellow] - [bold magenta]INSTALAR vHackintosh OS no SSD/Disco deste Computador (Instalador)[/bold magenta]")
 
             console.print(" [bold green]1[/bold green] - Iniciar / Gerenciar uma VM")
@@ -78,7 +98,7 @@ class VMTUI:
             console.print(" [bold red]0[/bold red] - Sair para o Terminal / Desligar")
 
             choices = ["1", "2", "3", "4", "5", "6", "7", "0"]
-            if is_live_media:
+            if installer_available:
                 choices.extend(["I", "i", "8"])
 
             choice = Prompt.ask("\nEscolha uma opção", choices=choices, default="1")
@@ -109,11 +129,42 @@ class VMTUI:
                 console.print("[dim]Até logo![/dim]")
                 break
 
+    def _backfill_install_phases(self) -> None:
+        """
+        Resolve a fase de VMs ainda não verificadas (``install_phase == pending``)
+        consultando o disco uma única vez por sessão e persistindo o resultado.
+
+        NUNCA promove para ``INSTALLED`` — apenas registra ``pending`` ou
+        ``installing``. Isso mantém a sincronização de energia do host desativada
+        por segurança até a confirmação explícita do usuário.
+        """
+        try:
+            vms = self.store.list_vms()
+        except Exception:
+            return
+
+        unverified = [
+            vm for vm in vms
+            if normalize_phase(getattr(vm, "install_phase", None)) is InstallPhase.PENDING
+        ]
+        if not unverified:
+            return
+
+        console.print("[dim]Verificando o estado de instalação das VMs cadastradas...[/dim]")
+        for vm in unverified:
+            probe = InstallProbe.probe(vm.disk_path) if vm.disk_path else DiskProbe()
+            vm.install_evidence = classify_evidence(probe).value
+            vm.install_phase = InstallPhaseResolver.resolve_phase(vm, probe=probe).value
+            self.store.update_vm(vm)
+            console.print(f"  [dim]{vm.name}: {summarize_probe(probe)} → {vm.install_phase}[/dim]")
+        console.print()
+
     def _render_vm_table(self, vms: list[VMConfig]) -> None:
         table = Table(title="Máquinas Virtuais macOS Instaladas", border_style="cyan", header_style="bold magenta")
         table.add_column("#", justify="center", style="bold yellow", width=4)
         table.add_column("Nome da VM", style="bold white")
         table.add_column("Versão macOS", style="cyan")
+        table.add_column("Status", justify="center")
         table.add_column("vCPUs", justify="center")
         table.add_column("RAM", justify="center")
         table.add_column("Disco", justify="center")
@@ -121,17 +172,19 @@ class VMTUI:
         table.add_column("Auto-Start", justify="center")
 
         if not vms:
-            table.add_row("-", "Nenhuma VM cadastrada ainda", "-", "-", "-", "-", "-", "-")
+            table.add_row("-", "Nenhuma VM cadastrada ainda", "-", "-", "-", "-", "-", "-", "-")
         else:
             for idx, vm in enumerate(vms, start=1):
                 auto_str = "[bold green]★ SIM[/bold green]" if vm.auto_start else "[dim]NÃO[/dim]"
                 gpu_str = vm.selected_gpu_name or vm.gpu_mode
                 if len(gpu_str) > 24:
                     gpu_str = gpu_str[:21] + "..."
+                phase = normalize_phase(getattr(vm, "install_phase", None))
                 table.add_row(
                     str(idx),
                     vm.name,
                     vm.macos_version.capitalize(),
+                    phase_short_label(phase, getattr(vm, "install_evidence", None)),
                     f"{vm.vcpus} vCPUs",
                     f"{vm.ram_gb} GB",
                     f"{vm.disk_size_gb} GB",
@@ -140,6 +193,47 @@ class VMTUI:
                 )
 
         console.print(table)
+
+    def _toggle_install_phase(self, vm: VMConfig) -> None:
+        """Alterna manualmente a fase da instalação do macOS desta VM."""
+        console.clear()
+        console.print(render_banner())
+        console.print("[bold cyan]Estado da Instalação do macOS[/bold cyan]\n")
+
+        current = normalize_phase(getattr(vm, "install_phase", None))
+        probe = InstallProbe.probe(vm.disk_path) if vm.disk_path else DiskProbe()
+        vm.install_evidence = classify_evidence(probe).value
+        self.store.update_vm(vm)
+
+        console.print(f"Fase atual: {phase_label(current)}")
+        console.print(f"Reboots registrados: {getattr(vm, 'install_reboots', 0)}")
+        console.print(f"Sonda de disco: [dim]{summarize_probe(probe)}[/dim]\n")
+
+        if probe.looks_like_complete_install:
+            console.print("[bold green]Evidência: existe um sistema macOS instalado neste disco.[/bold green]")
+        elif probe.has_any_system_data:
+            console.print("[yellow]Evidência: o disco tem dados, mas a instalação parece incompleta.[/yellow]")
+        else:
+            console.print("[yellow]Evidência: nenhum sistema detectado no disco.[/yellow]")
+
+        console.print("\n[bold]Efeito da fase na execução da VM:[/bold]")
+        console.print("  [bold green]INSTALADO[/bold green]  → mídia de instalação desacoplada, [bold]sincronização de energia ATIVA[/bold]")
+        console.print("                  (reiniciar/desligar no macOS reinicia/desliga o computador)")
+        console.print("  [bold yellow]INSTALANDO[/bold yellow] → mídia de instalação anexada, reboots contidos na VM")
+        console.print("                  ([bold]o computador físico NUNCA é reiniciado[/bold])\n")
+
+        if current is InstallPhase.INSTALLED:
+            if Confirm.ask("Voltar esta VM para o modo INSTALAÇÃO (desativa a sincronização de energia)?", default=False):
+                vm.install_phase = InstallPhase.INSTALLING.value
+                self.store.update_vm(vm)
+                console.print("[bold yellow]✔ VM em modo INSTALAÇÃO. O host não será reiniciado.[/bold yellow]")
+        else:
+            if Confirm.ask("Marcar o macOS como INSTALADO (ativa a sincronização de energia do host)?", default=False):
+                vm.install_phase = InstallPhase.INSTALLED.value
+                self.store.update_vm(vm)
+                console.print("[bold green]✔ VM marcada como INSTALADA. O host acompanhará reboots/desligamentos.[/bold green]")
+
+        Prompt.ask("\nPressione Enter para continuar")
 
     def _menu_manage_vms(self, vms: list[VMConfig]) -> None:
         if not vms:
@@ -184,7 +278,17 @@ class VMTUI:
             details_text.append(f"{'ATIVADO' if vm.auto_start else 'DESATIVADO'}\n", style="bold green" if vm.auto_start else "dim")
             show_picker = getattr(vm, "opencore_show_picker", False)
             details_text.append(f"Boot do OpenCore: ", style="bold")
-            details_text.append(f"{'EXIBIR MENU (10s)' if show_picker else 'DIRETO NO MACOS (Segure ESPAÇO para opções)'}\n\n", style="yellow" if show_picker else "bold cyan")
+            details_text.append(f"{'EXIBIR MENU (10s)' if show_picker else 'DIRETO NO MACOS (Segure ESPAÇO para opções)'}\n", style="yellow" if show_picker else "bold cyan")
+            current_phase = normalize_phase(getattr(vm, "install_phase", None))
+            details_text.append(f"Instalação do macOS: ", style="bold")
+            details_text.append(f"{phase_label(current_phase)}\n")
+            details_text.append(f"Reboots da instalação: ", style="bold")
+            details_text.append(f"{getattr(vm, 'install_reboots', 0)}\n")
+            details_text.append(f"Sincronização de energia do host: ", style="bold")
+            if current_phase is InstallPhase.INSTALLED:
+                details_text.append("ATIVADA (o PC reinicia/desliga junto com o macOS)\n\n", style="bold green")
+            else:
+                details_text.append("DESATIVADA (o PC não reinicia durante a instalação)\n\n", style="bold yellow")
 
             details_text.append(f"── OpenCore SMBIOS ──\n", style="dim cyan")
             details_text.append(f"Modelo: {vm.smbios.model}\n", style="dim")
@@ -204,13 +308,14 @@ class VMTUI:
             console.print(" [bold green]3[/bold green] - ⚡ Alternar Boot do OpenCore (Direto vs Menu)")
             console.print(" [bold green]4[/bold green] - ⚙ Ajustar vCPUs e Memória RAM")
             console.print(" [bold green]5[/bold green] - 🔄 Regenerar Seriais GenSMBIOS")
+            console.print(" [bold magenta]i[/bold magenta] - ⏳ Alternar Estado da Instalação do macOS (Instalando / Instalado)")
             if has_multiple_gpus:
                 console.print(" [bold green]6[/bold green] - 🎮 Alterar Placa de Vídeo Vinculada")
                 console.print(" [bold red]7[/bold red] - ✖ Excluir esta VM")
-                allowed_actions = ["1", "2", "3", "4", "5", "6", "7", "0"]
+                allowed_actions = ["1", "2", "3", "4", "5", "6", "7", "i", "I", "0"]
             else:
                 console.print(" [bold red]6[/bold red] - ✖ Excluir esta VM")
-                allowed_actions = ["1", "2", "3", "4", "5", "6", "0"]
+                allowed_actions = ["1", "2", "3", "4", "5", "6", "i", "I", "0"]
             console.print(" [bold yellow]0[/bold yellow] - Voltar ao Menu Principal")
 
             action = Prompt.ask("\nEscolha uma ação", choices=allowed_actions, default="1")
@@ -218,6 +323,8 @@ class VMTUI:
             if action == "1":
                 self._launch_vm(vm)
                 break
+            elif action in ("i", "I"):
+                self._toggle_install_phase(vm)
             elif action == "2":
                 new_state = not vm.auto_start
                 self.store.set_auto_start(vm.id, new_state)
@@ -509,14 +616,32 @@ class VMTUI:
                 if (disk_parent / "OpenCore.qcow2").exists():
                     custom_dir = disk_parent
 
-            # Verifica se o sistema operacional já foi instalado no disco virtual (uso real >= 4 GB)
-            disk_info = DiskProvisioner.get_disk_info(vm.disk_path) if vm.disk_path else {"disk_gb": 0}
-            disk_has_system = disk_info.get("disk_gb", 0) >= 4
+            # ------------------------------------------------------------------
+            # Fase do ciclo de vida da instalação do macOS.
+            # Esta decisão governa TRÊS comportamentos críticos:
+            #   1. acoplamento da mídia de instalação (BaseSystem.img);
+            #   2. a flag -no-reboot do QEMU;
+            #   3. a Sincronização de Energia do Host (reboot/poweroff do PC).
+            # Enquanto a instalação não estiver concluída, o host NUNCA é
+            # reiniciado — reboots intermediários da Apple ficam contidos no QEMU.
+            # ------------------------------------------------------------------
+            probe = InstallProbe.probe(vm.disk_path) if vm.disk_path else DiskProbe()
+            policy = InstallPhaseResolver.build_policy(
+                vm, force_installation=is_installation, probe=probe
+            )
+            vm.install_phase = policy.phase.value
+            vm.install_evidence = classify_evidence(probe).value
+            vm.last_booted_at = datetime.datetime.now().isoformat(timespec="seconds")
+            self.store.update_vm(vm)
 
-            # Só anexa a mídia de instalação (BaseSystem.img) se for a primeira instalação
-            # ou se o disco virtual ainda não contiver o macOS instalado (< 4 GB)
+            console.print(f"[cyan]Estado da instalação:[/cyan] {phase_label(policy.phase)}")
+            console.print(f"[dim]{policy.reason}[/dim]")
+            if policy.is_installing:
+                console.print("[dim]Reboots do instalador serão absorvidos pela VM. O computador físico não será reiniciado.[/dim]\n")
+
+            # Mídia de instalação só é anexada enquanto a instalação não terminou.
             installer_img = None
-            if is_installation or not disk_has_system:
+            if policy.attach_installer:
                 for cand_img in [
                     custom_dir / "BaseSystem.img" if custom_dir else None,
                     CONFIG_DIR / "images" / vm.macos_version / "BaseSystem.img",
@@ -539,7 +664,11 @@ class VMTUI:
             env_vars["CPUS"] = str(vm.vcpus)
             env_vars["RAM"] = f"{vm.ram_gb}G"
             env_vars["AUDIO_DEVICE"] = vm.audio_device or "ich9-intel-hda"
-            env_vars["QEMU_REBOOT_ACTION"] = "reset"
+            # O harness rail traduz esta variável em `-action reboot=shutdown`.
+            # - "reset" durante a instalação: o QEMU absorve os reboots da Apple.
+            # - "exit" após instalado: o reboot do guest encerra o QEMU e o host
+            #   pode acompanhar (mesma semântica do -no-reboot do motor nativo).
+            env_vars["QEMU_REBOOT_ACTION"] = "reset" if policy.is_installing else "exit"
 
             # Aplica diretivas de aceleração gráfica para a GPU vinculada
             self._apply_gpu_environment(vm, env_vars)
@@ -554,20 +683,112 @@ class VMTUI:
                     env_vars["DISK_MASTER"] = str(vm.disk_path)
                     env_vars["OPENCORE_MASTER"] = str(custom_dir / "OpenCore.qcow2")
 
-                subprocess.run([
-                    "bash", boot_script,
-                    "--rail", vm.macos_version,
-                    "--persistent",
-                    "--device", "reims-vgpu-pci",
-                ], env=env_vars)
+                # Fixa o RUN_DIR do rail para sabermos exatamente onde o socket QMP
+                # é publicado (`$RUN_DIR/qmp.path`), permitindo monitorar os eventos
+                # de energia do guest também pelo caminho rail.
+                rail_run_dir = os.path.join(reims_dir, "vm", "disks", "run")
+                env_vars["RUN_DIR"] = rail_run_dir
+
+                from core.power import QMPPowerMonitor
+
+                rail_monitor = QMPPowerMonitor(
+                    sock_path=os.path.join(rail_run_dir, "qmp.sock"),
+                    path_file=os.path.join(rail_run_dir, "qmp.path"),
+                )
+                rail_monitor.start()
+                try:
+                    rail_proc = subprocess.Popen([
+                        "bash", boot_script,
+                        "--rail", vm.macos_version,
+                        "--persistent",
+                        "--device", "reims-vgpu-pci",
+                    ], env=env_vars)
+                    rail_proc.wait()
+                finally:
+                    rail_monitor.stop()
+
+                self._apply_host_power_policy(vm, policy, rail_monitor)
             else:
-                self._launch_vm_native_qemu(vm, custom_dir, installer_img, env_vars=env_vars)
+                self._launch_vm_native_qemu(
+                    vm, custom_dir, installer_img, env_vars=env_vars, policy=policy
+                )
+
+            # Reavalia a fase após o encerramento e oferece concluir a instalação.
+            self._post_vm_phase_update(vm, policy)
 
             console.print("\n[bold yellow]VM finalizada.[/bold yellow]")
             if sys.stdin.isatty():
                 Prompt.ask("Pressione Enter para retornar ao gerenciador")
         finally:
             self.lock.release()
+
+    def _apply_host_power_policy(self, vm: VMConfig, policy: LaunchPolicy, monitor) -> None:
+        """
+        Contabiliza reboots do guest e aplica (ou bloqueia) a sincronização de
+        energia do host, de forma idêntica para o motor nativo e para o rail.
+
+        GARANTIA: durante a instalação o computador físico NUNCA é
+        reiniciado/desligado — era exatamente isso que interrompia a instalação.
+        """
+        if getattr(monitor, "reset_count", 0):
+            vm.install_reboots = int(getattr(vm, "install_reboots", 0)) + monitor.reset_count
+            self.store.update_vm(vm)
+
+        if not policy.enable_host_power_sync:
+            console.print(
+                "\n[bold yellow]⏳ Instalação em andamento: o computador físico NÃO será "
+                "reiniciado/desligado.[/bold yellow]"
+            )
+            if getattr(monitor, "reset_count", 0):
+                console.print(f"[dim]Reboots absorvidos pela VM nesta sessão: {monitor.reset_count}[/dim]")
+            return
+
+        from core.power import PowerSync
+
+        if monitor.last_reason == "guest-reset":
+            PowerSync.sync_host_reboot(is_kiosk_mode=True)
+        elif monitor.last_reason == "guest-shutdown":
+            PowerSync.sync_host_shutdown(is_kiosk_mode=True)
+
+    def _post_vm_phase_update(self, vm: VMConfig, policy: LaunchPolicy) -> None:
+        """
+        Reavalia o disco após a VM encerrar e oferece marcar a instalação como
+        concluída. A promoção para INSTALLED exige confirmação explícita, pois um
+        falso positivo reativaria o reboot do host no meio da instalação.
+        """
+        if policy.phase is InstallPhase.INSTALLED:
+            return
+
+        probe = InstallProbe.probe(vm.disk_path) if vm.disk_path else DiskProbe()
+        console.print(f"\n[cyan]Sonda do disco da VM:[/cyan] [dim]{summarize_probe(probe)}[/dim]")
+        vm.install_evidence = classify_evidence(probe).value
+
+        if not probe.looks_like_complete_install:
+            vm.install_phase = InstallPhase.INSTALLING.value
+            self.store.update_vm(vm)
+            console.print("[yellow]A instalação ainda NÃO está concluída.[/yellow]")
+            console.print("[dim]Sincronização de energia do host permanece DESATIVADA (o PC não reinicia com a VM).[/dim]")
+            return
+
+        console.print("[bold green]✔ Foi detectado um sistema macOS instalado no disco desta VM.[/bold green]")
+        if not sys.stdin.isatty():
+            vm.install_phase = InstallPhase.INSTALLING.value
+            self.store.update_vm(vm)
+            return
+
+        if Confirm.ask(
+            "Marcar a instalação como CONCLUÍDA e ativar a sincronização de energia do host "
+            "(reiniciar/desligar no macOS reinicia/desliga o computador)?",
+            default=True,
+        ):
+            vm.install_phase = InstallPhase.INSTALLED.value
+            vm.install_reboots = int(getattr(vm, "install_reboots", 0))
+            self.store.update_vm(vm)
+            console.print("[bold green]✔ Sincronização de energia do host ATIVADA para esta VM.[/bold green]")
+        else:
+            vm.install_phase = InstallPhase.INSTALLING.value
+            self.store.update_vm(vm)
+            console.print("[yellow]Mantida em modo INSTALAÇÃO: o host não será reiniciado/desligado.[/yellow]")
 
     def _apply_gpu_environment(self, vm: VMConfig, env_vars: dict) -> None:
         if not vm.selected_gpu_name and not vm.selected_gpu:
@@ -606,8 +827,12 @@ class VMTUI:
         custom_dir: Optional[Path],
         installer_img: Optional[str],
         env_vars: Optional[dict] = None,
+        policy: Optional[LaunchPolicy] = None,
     ) -> None:
         console.print("[cyan]Inicializando motor KVM nativo para macOS...[/cyan]")
+
+        if policy is None:
+            policy = InstallPhaseResolver.build_policy(vm)
 
         # Localiza OVMF_CODE e OVMF_VARS
         ovmf_code = None
@@ -737,7 +962,11 @@ class VMTUI:
             "-qmp", f"unix:{sock_path},server=on,wait=off",
         ])
 
-        if not installer_img:
+        # A flag -no-reboot força o QEMU a encerrar quando o guest pede reboot,
+        # permitindo ao host acompanhar. Isso SÓ é seguro quando o macOS já está
+        # instalado: durante a instalação os reboots da Apple precisam ser
+        # absorvidos internamente pelo QEMU.
+        if policy.enable_host_power_sync:
             cmd.append("-no-reboot")
 
         # Oculta menus GTK (Machine, View), ativa cursor visível, captura de mouse ao passar o cursor e tela cheia
@@ -772,7 +1001,7 @@ class VMTUI:
             env_vars = os.environ.copy()
             self._apply_gpu_environment(vm, env_vars)
 
-        from core.power import QMPPowerMonitor, PowerSync
+        from core.power import QMPPowerMonitor
         monitor = QMPPowerMonitor(sock_path)
         monitor.start()
 
@@ -781,12 +1010,8 @@ class VMTUI:
         finally:
             monitor.stop()
 
-        # Sincronização Total de Energia (Host Power Sync):
-        # Desligar no macOS desliga o computador físico; Reiniciar no macOS reinicia o computador físico.
-        if monitor.last_reason == "guest-reset":
-            PowerSync.sync_host_reboot(is_kiosk_mode=True)
-        elif monitor.last_reason == "guest-shutdown":
-            PowerSync.sync_host_shutdown(is_kiosk_mode=True)
+        # Contabiliza reboots e aplica a política de energia do host.
+        self._apply_host_power_policy(vm, policy, monitor)
 
     def _menu_build_iso(self) -> None:
         console.clear()

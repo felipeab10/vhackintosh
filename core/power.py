@@ -11,6 +11,7 @@ import json
 import socket
 import threading
 import subprocess
+from pathlib import Path
 from typing import Optional
 from rich.console import Console
 
@@ -20,9 +21,21 @@ console = Console()
 class QMPPowerMonitor:
     """Monitora eventos QMP para detectar desligamento vs reinicialização do guest."""
 
-    def __init__(self, sock_path: str = "/tmp/vhackintosh-qmp.sock"):
+    def __init__(
+        self,
+        sock_path: str = "/tmp/vhackintosh-qmp.sock",
+        path_file: Optional[str] = None,
+        discovery_timeout_sec: float = 60.0,
+    ):
         self.sock_path = sock_path
+        # Arquivo opcional que contém o caminho real do socket QMP. Usado pelo
+        # harness rail do reims-vgpu, que cria o socket em um diretório temporário
+        # e publica o caminho em `$RUN_DIR/qmp.path`.
+        self.path_file = path_file
+        self.discovery_timeout_sec = discovery_timeout_sec
         self.last_reason: Optional[str] = None
+        self.reset_count: int = 0
+        self.shutdown_count: int = 0
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -31,20 +44,32 @@ class QMPPowerMonitor:
         self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._thread.start()
 
+    def _resolve_socket_path(self) -> Optional[str]:
+        """Descobre o socket QMP: caminho fixo ou publicado em `qmp.path`."""
+        if os.path.exists(self.sock_path):
+            return self.sock_path
+        if self.path_file and os.path.exists(self.path_file):
+            try:
+                candidate = Path(self.path_file).read_text(encoding="utf-8").strip()
+            except Exception:
+                candidate = ""
+            if candidate and os.path.exists(candidate):
+                return candidate
+        return None
+
     def _monitor_loop(self) -> None:
         s = None
-        for _ in range(40):
-            if self._stop_event.is_set():
-                return
-            if os.path.exists(self.sock_path):
+        deadline = time.time() + max(self.discovery_timeout_sec, 10.0)
+        while time.time() < deadline and not self._stop_event.is_set():
+            candidate = self._resolve_socket_path()
+            if candidate:
                 try:
                     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    s.connect(self.sock_path)
+                    s.connect(candidate)
                     break
                 except Exception:
-                    time.sleep(0.25)
-            else:
-                time.sleep(0.25)
+                    s = None
+            time.sleep(0.25)
 
         if not s:
             return
@@ -84,16 +109,21 @@ class QMPPowerMonitor:
                             ev = msg.get("event")
                             if ev == "RESET":
                                 self.last_reason = "guest-reset"
+                                self.reset_count += 1
                             elif ev == "SHUTDOWN":
                                 data_obj = msg.get("data", {})
                                 reason = data_obj.get("reason")
                                 if reason == "guest-reset":
                                     self.last_reason = "guest-reset"
+                                    self.reset_count += 1
                                 elif reason == "guest-shutdown":
                                     if self.last_reason != "guest-reset":
                                         self.last_reason = "guest-shutdown"
-                                elif not self.last_reason:
-                                    self.last_reason = "guest-shutdown"
+                                    self.shutdown_count += 1
+                                else:
+                                    if not self.last_reason:
+                                        self.last_reason = "guest-shutdown"
+                                    self.shutdown_count += 1
                         except Exception:
                             pass
                 except socket.timeout:

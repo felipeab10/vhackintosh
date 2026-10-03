@@ -19,6 +19,7 @@ file_permissions=(
   ["/usr/local/bin/vhackintosh"]="0:0:755"
   ["/usr/local/bin/setup-harness-tools.sh"]="0:0:755"
   ["/usr/local/bin/vhackintosh-install"]="0:0:755"
+  ["/usr/local/bin/vhackintosh-mode"]="0:0:755"
   ["/usr/local/bin/dmg2img"]="0:0:755"
   ["/usr/local/bin/vhack-copy-system"]="0:0:755"
   ["/usr/local/bin/vhackintosh-xsession"]="0:0:755"

@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# vHackintosh OS — Detector Canônico do Modo de Execução
+# ==============================================================================
+# Imprime exatamente uma palavra em stdout:
+#   live      -> rodando do pendrive / imagem ISO Archiso (overlayfs / squashfs)
+#   installed -> sistema definitivo gravado em disco (HD, SSD NVMe, etc.)
+#
+# IMPORTANTE: a presença do binário `vhackintosh-install` NÃO é utilizada como
+# sinal de Live USB. O instalador é copiado propositalmente para o sistema
+# definitivo (atalho permanente [I] no gerenciador TUI), portanto ele existe
+# nos dois modos e não distingue nada.
+# ==============================================================================
+
+# Desativa a expansão de globs para os casos abaixo não casarem com arquivos.
+set -o noglob 2>/dev/null || true
+
+# ------------------------------------------------------------------------------
+# 1. Marcador explícito gravado pelo instalador bare-metal (prioridade máxima).
+#    É a evidência positiva e definitiva de que o sistema está instalado.
+# ------------------------------------------------------------------------------
+if [ -f /etc/vhackintosh/installed ]; then
+    echo "installed"
+    exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# 2. Descobre a origem (dispositivo) e o tipo do sistema de arquivos raiz.
+# ------------------------------------------------------------------------------
+ROOT_SRC=""
+ROOT_FSTYPE=""
+
+if command -v findmnt >/dev/null 2>&1; then
+    ROOT_SRC="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+    ROOT_FSTYPE="$(findmnt -n -o FSTYPE / 2>/dev/null || true)"
+fi
+
+if [ -z "$ROOT_SRC" ] && [ -r /proc/mounts ]; then
+    ROOT_SRC="$(awk '$2 == "/" { print $1; exit }' /proc/mounts 2>/dev/null || true)"
+    ROOT_FSTYPE="$(awk '$2 == "/" { print $3; exit }' /proc/mounts 2>/dev/null || true)"
+fi
+
+# ------------------------------------------------------------------------------
+# 3. Sistemas de arquivos de camada somente-leitura = Live ISO.
+#    O Archiso sempre monta a raiz como overlayfs sobre squashfs.
+# ------------------------------------------------------------------------------
+case "$ROOT_FSTYPE" in
+    overlay|squashfs|erofs)
+        echo "live"
+        exit 0
+        ;;
+esac
+
+# ------------------------------------------------------------------------------
+# 4. Raiz em dispositivo de loop (imagem .iso montada) = Live ISO.
+# ------------------------------------------------------------------------------
+case "$ROOT_SRC" in
+    /dev/loop*)
+        echo "live"
+        exit 0
+        ;;
+esac
+
+# ------------------------------------------------------------------------------
+# 5. Raiz em dispositivo de bloco real (NVMe/SATA/USB) = sistema instalado.
+# ------------------------------------------------------------------------------
+case "$ROOT_SRC" in
+    /dev/*)
+        echo "installed"
+        exit 0
+        ;;
+esac
+
+# ------------------------------------------------------------------------------
+# 6. Fallbacks específicos do Archiso (initramfs, cowspace e cmdline do kernel).
+#    Usa apenas parâmetros exclusivos do live boot — a string genérica "archiso"
+#    é ignorada de propósito para não casar com sistemas já instalados.
+# ------------------------------------------------------------------------------
+if [ -d /run/archiso ] || [ -d /run/archiso/bootmnt ]; then
+    echo "live"
+    exit 0
+fi
+
+if grep -qE '(^| )(archisobasedir|archisosearchuuid|img_dev|img_loop)=' /proc/cmdline 2>/dev/null; then
+    echo "live"
+    exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# Padrão seguro: se a raiz não é identificável, assume instalação em disco.
+# O gerenciador TUI continua oferecendo a reinstalação via atalho [I].
+# ------------------------------------------------------------------------------
+echo "installed"

@@ -120,7 +120,10 @@ class GenSMBIOS:
             generic["ProcessorType"] = 0
             generic["SpoofVendor"] = True
 
-            # Injeta boot-args limpos (sem verbose -v) e flags essenciais para estabilidade
+            # Injeta boot-args. A flag "-v" (verbose) é mantida INTENCIONALMENTE
+            # para diagnóstico de kernel panic durante a instalação do macOS.
+            # Ver docs/soul.md §2.15 — remover apenas quando a instalação estiver
+            # estável e o boot gráfico limpo da Apple for priorizado.
             if "NVRAM" not in plist_data:
                 plist_data["NVRAM"] = {}
             if "Add" not in plist_data["NVRAM"]:
@@ -130,7 +133,7 @@ class GenSMBIOS:
                 plist_data["NVRAM"]["Add"][apple_uuid] = {}
 
             plist_data["NVRAM"]["Add"][apple_uuid]["boot-args"] = (
-                "-lilubetaall ipc_control_port_options=0 debug=0x10A keepsyms=1 msgbuf=1048576"
+                "-v -lilubetaall ipc_control_port_options=0 debug=0x10A keepsyms=1 msgbuf=1048576"
             )
 
             # Habilita reinicialização limpa via registrador de reset ACPI FADT

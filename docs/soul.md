@@ -106,13 +106,21 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
 - **QMP Socket Daemon (`core/power.py`):** Monitora eventos QMP em segundo plano (`/tmp/vhackintosh-qmp.sock`).
 - **Desligamento Unificado:** Ao selecionar "Desligar..." no macOS, o QEMU emite o evento `SHUTDOWN` com reason `guest-shutdown`. O host Linux executa `systemctl poweroff` e desliga a máquina física em 2 segundos.
 - **Reinicialização Unificada com `-no-reboot`:** O QEMU, por padrão, reinicia a máquina virtual internamente sem encerrar o processo host. Para forçar a sincronização de reboot, o vHackintosh passa obrigatoriamente a flag `-no-reboot` em VMs com sistema instalado. Ao selecionar "Reiniciar..." no macOS, o QEMU termina e emite `guest-reset`/`RESET`. O host Linux executa `systemctl reboot` e reinicia o computador físico.
-- **Detecção Inteligente de VM Instalada:** O vHackintosh afere o uso real do disco virtual (`>= 4 GB`). Quando o macOS já está instalado, o disco de instalação (`BaseSystem.img`) é automaticamente desacoplado do barramento SATA, acelerando o boot e forçando o comportamento estrito de reinício do host.
+- **Detecção de VM Instalada por Fase Explícita (`core/install_phase.py`):** Substituiu a heurística frágil de uso real do disco (`>= 4 GB`). O vHackintosh agora rastreia uma fase persistida por VM (`VMConfig.install_phase`: `pending` / `installing` / `installed`) e só desacopla a mídia `BaseSystem.img`, aplica `-no-reboot` e ativa o *Host Power Sync* quando a fase é `installed`.
+- **Garantia Contra Reboot do Host Durante a Instalação:** A instalação do macOS é multi-estágio e grava vários GB já na primeira fase — a heurística de `4 GB` marcava o sistema como pronto cedo demais, fazendo um reboot intermediário da Apple encerrar o QEMU e **reiniciar o computador físico no meio da instalação**. Agora, enquanto a fase não for `installed`, os reboots do instalador são absorvidos internamente pelo QEMU e o host **nunca** reinicia/desliga.
+- **Confirmação Explícita de Conclusão:** Ao encerrar a VM em fase de instalação, uma sonda somente-leitura do disco (`guestfish --ro` + `qemu-img info`) verifica a presença do container APFS e o uso real. Havendo evidência de instalação completa, o gerenciador **pergunta** ao usuário se deve marcar como concluída e ativar a sincronização de energia. A promoção automática é proibida por design: um falso positivo reativaria exatamente o bug original.
+- **Alternância Manual no Gerenciador:** A opção `[i]` no painel da VM permite alternar entre `INSTALANDO` e `INSTALADO` a qualquer momento, com exibição da evidência detectada no disco e do efeito sobre o comportamento de energia.
+- **Status Visível na TUI:** A tabela principal ganhou a coluna `Status` e o painel de detalhes exibe a fase, o número de reboots do instalador contabilizados via QMP (`QMPPowerMonitor.reset_count`) e se a sincronização de energia do host está ativa.
+- **Paridade Total no Motor Rail (`boot-x86.sh`):** O harness rail do reims-vgpu nunca reiniciava o host (não possui chamadas a `systemctl`), o que significava que ele também **nunca** acompanhava o reboot do macOS após a instalação. Agora o TUI traduz a fase em `QEMU_REBOOT_ACTION`:
+  - `reset` durante a instalação — o QEMU absorve os reboots da Apple e o host permanece ligado;
+  - `exit` após instalado — equivale semanticamente ao `-no-reboot` do motor nativo: `-action reboot=shutdown` faz o reboot do guest encerrar o QEMU com evento QMP `guest-reset`, permitindo ao host acompanhar.
+- **Descoberta Dinâmica do Socket QMP:** O rail cria o socket em diretório temporário e publica o caminho em `$RUN_DIR/qmp.path`. O `QMPPowerMonitor` passou a aceitar `path_file` e resolve o socket real em tempo de execução, unificando a sincronização de energia entre os motores nativo e rail via o helper `_apply_host_power_policy`.
 
 ### 2.15. Auto-Boot Direto do OpenCore, Resolução Nativa e Boot Gráfico Apple Limpo
 - **Configuração Silenciosa do Bootloader:** `ShowPicker = False`, `Timeout = 0`, `PollAppleHotKeys = True`, `AllowSetDefault = True`.
 - **Comportamento Apple Nativo:** O macOS inicia diretamente no volume padrão (`OSX`) sem telas intermediárias. Segurar ou pressionar a **barra de espaço** ou **Option/Alt** durante a inicialização abre o menu gráfico completo do OpenCore.
 - **Resolução Máxima Nativa:** Injeção de `Resolution = Max` e `ForceResolution = True` no bloco `UEFI/Output` do `config.plist`, garantindo que o firmware OVMF GOP assuma a resolução nativa máxima do monitor (1080p/2K/4K) desde o primeiro instante de boot.
-- **Remoção do Modo Verbose (`-v`):** A flag `-v` foi eliminada dos `boot-args` de produção em `core/smbios.py`. O macOS agora exibe o boot limpo e polido com o logotipo da maçã e a barra de progresso nativa da Apple.
+- **Modo Verbose (`-v`) MANTIDO Temporariamente para Diagnóstico:** A flag `-v` foi **reativada** nos `boot-args` de `core/smbios.py` (junto de `keepsyms=1`, `debug=0x10A` e `msgbuf=1048576`) para permitir visualizar texto de **kernel panic** durante a depuração da instalação do macOS. O boot gráfico limpo da Apple (§2.15 original) fica adiado até que o fluxo de instalação esteja estável — remover a flag apenas quando a instalação estiver confiável.
 - **Injeção Dinâmica via Guestfish:** O vHackintosh altera essa configuração in-place dentro de `OpenCore.qcow2` através do menu de gerenciamento da VM (opção 3).
 
 ### 2.16. Pipeline de Distribuição Contínua por GitHub Releases, Auto-Updater & ISO Tags
@@ -129,13 +137,19 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
 
 ### 2.18. Detecção Robusta de Mídia Live USB & Menu Interativo do Instalador
 - **Falha de Detecção Tradicional (`/run/archiso/bootmnt`):** Em inicializações UEFI modernas com GRUB e systemd, o ponto de montagem do pendrive pode variar, fazendo checagens rígidas de diretório falharem e omitirem o instalador do sistema operacional.
-- **Detecção Multifator de Mídia Live:** O sistema agora afere a presença do utilitário `vhackintosh-install`, os caminhos `/run/archiso`, `/run/archiso/img_dev` e os parâmetros de linha de comando do kernel em `/proc/cmdline`.
-- **Menu Inicial Interativo Estável:** O instalador do Live USB foi remodelado para eliminar contadores regressivos agressivos. O usuário é recebido por um menu estável que permite:
-  - `[1] ★ INSTALAR vHackintosh OS no SSD / Disco deste Computador (Recomendado)`
-  - `[2] Executar em Modo Live / Demonstração (Memória RAM)`
-  - `[3] Configurar Conexão Wi-Fi / Rede (nmtui)`
-  - `[0] Reiniciar Computador`
-- **Atalho Permanente no Gerenciador:** No TUI do `vhackintosh`, a opção `★ [I] - INSTALAR vHackintosh OS no SSD/Disco` permanece fixada e acessível no topo do menu sempre que o executável de instalação estiver presente.
+- **Falso Positivo em Sistemas Instalados (`vhackintosh-install`):** A presença do binário do instalador era tratada como sinal de Live USB, mas ele é copiado propositalmente para o sistema definitivo (atalho permanente `[I]`). Resultado: o menu de instalação reaparecia a cada boot do sistema já instalado no SSD.
+- **Detector Canônico de Modo (`/usr/local/bin/vhackintosh-mode`):** Fonte única de verdade que imprime `live` ou `installed`, com precedência determinística:
+  1. Marcador positivo `/etc/vhackintosh/installed` (gravado pelo instalador bare-metal);
+  2. Tipo do sistema de arquivos raiz (`overlay`/`squashfs`/`erofs` ⇒ Live);
+  3. Origem da raiz (`/dev/loop*` ⇒ Live; `/dev/*` ⇒ instalado);
+  4. Fallbacks exclusivos do Archiso (`/run/archiso` e parâmetros `archisobasedir`/`archisosearchuuid`/`img_dev`/`img_loop`), ignorando a string genérica `archiso`.
+- **Menu Inicial Condicional:** O menu do `tty1` agora se adapta ao contexto real de execução:
+  - **Live USB:** menu completo com `[1] Instalar no disco`, `[2] Modo Live/Demonstração`, `[3] Wi-Fi` e `[0] Reiniciar`.
+  - **Instalado + sem Internet:** menu enxuto com `[1] Configurar Wi-Fi (nmtui)`, `[2] Continuar sem Internet` e `[0] Reiniciar`.
+  - **Instalado + com Internet:** segue direto para o gerenciador (zero atrito), sem menu intermediário.
+- **Detecção Multifator de Mídia Live:** O sistema afere os caminhos `/run/archiso`, `/run/archiso/img_dev` e parâmetros exclusivos da linha de comando do kernel em `/proc/cmdline`.
+- **Marcador de Instalação (`/etc/vhackintosh/installed`):** Evidência positiva gravada pelo `vhackintosh-install` logo após a cópia do sistema (após o `rsync --delete`), contendo data, disco-alvo e partições. É o critério de maior prioridade e resolve também instalações antigas com initramfs residual do Archiso.
+- **Atalho Permanente no Gerenciador:** No TUI do `vhackintosh`, a opção `★ [I] - INSTALAR vHackintosh OS no SSD/Disco` permanece fixada e acessível sempre que o executável de instalação estiver presente, independentemente de a sessão ser Live ou instalada (`core/mode.py`).
 
 ---
 
@@ -186,3 +200,8 @@ O projeto segue as melhores práticas e especificações técnicas documentadas 
 - **2026-10-02:** Aperfeiçoamento do script de verificação `appliance/verify-iso.sh` para emulação fiel do hardware bare-metal em modo tela cheia nativa sem barras de menu e com display virtio.
 - **2026-10-02:** Adição de suporte a tags de versão (`--tag <TAG>`) no script `appliance/build-iso.sh`, permitindo compilar a ISO oficial puxando binários do GitHub Releases em qualquer computador.
 - **2026-10-02:** Resolução da falha de detecção de Live USB: substituição da checagem `/run/archiso/bootmnt` por detecção multifator (`vhackintosh-install`, `/run/archiso` e `/proc/cmdline`), criando menu interativo estável sem contadores regressivos apressados e fixando a opção `★ [I]` no menu principal.
+- **2026-10-03:** Correção do reaparecimento indevido do menu de instalação em sistemas já gravados no SSD: o binário `vhackintosh-install` deixou de ser usado como sinal de Live USB (ele é copiado para o disco por design). Criado o detector canônico `vhackintosh-mode`, o marcador positivo `/etc/vhackintosh/installed` e o menu condicional no `tty1` (Live ⇒ instalar; Instalado sem Internet ⇒ Wi-Fi; Instalado com Internet ⇒ vai direto ao gerenciador).
+- **2026-10-03:** Correção do reboot do computador físico durante a instalação do macOS: a heurística `uso do disco >= 4 GB` foi substituída pelo rastreamento explícito de fase (`VMConfig.install_phase` em `core/install_phase.py`). O *Host Power Sync* e a flag `-no-reboot` agora só são aplicados quando a fase é `installed`, e a conclusão exige confirmação do usuário a partir de sonda somente-leitura do disco (`guestfish --ro`). Adicionados status de instalação na TUI, contador de reboots via QMP e alternância manual `[i]`.
+- **2026-10-03:** Reativação temporária da flag `-v` (verbose) nos `boot-args` do OpenCore, para permitir o diagnóstico de kernel panic durante a depuração da instalação do macOS.
+- **2026-10-03:** Correção do menu de rede indevido em sistema instalado e já conectado (reportado em VM de teste com rede por cabo ativa). A checagem de conectividade rodava **antes** de o DHCP concluir a negociação e concluía "SEM INTERNET", exibindo o menu de configuração onde ele não era necessário. Adicionada a espera `vhack_wait_internet` baseada em `nm-online -t`, que retorna de imediato quando já há conexão ativa (caso feliz: ~0s; cenário do usuário com DHCP lento: ~2s; pior caso sem rede alguma: ~7s). O `ping` também foi corrigido para `8.8.8.8` e restrito a uma única sondagem ICMP, já que nunca é o primeiro critério.
+- **2026-10-03:** Paridade de sincronização de energia no motor rail: o TUI passou a definir `QEMU_REBOOT_ACTION` conforme a fase (`reset` instalando / `exit` instalado) e a monitorar o socket QMP do rail via descoberta dinâmica (`$RUN_DIR/qmp.path`), com a lógica unificada no helper `_apply_host_power_policy`.
