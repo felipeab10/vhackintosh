@@ -1050,7 +1050,7 @@ class VMTUI:
         if choice == "1":
             console.print("\n[bold cyan]Opções de Compilação da Imagem ISO:[/bold cyan]\n")
             console.print("  [bold green]• Opção A (Recomendada): Usando Release Oficial do GitHub:[/bold green]")
-            console.print(f"    [bold yellow]sudo bash {builder_script} --tag v1.0.0[/bold yellow]")
+            console.print(f"    [bold yellow]sudo bash {builder_script} --tag v1.0.1[/bold yellow]")
             console.print("    [dim]Baixa os binários pré-compilados do GitHub Releases sem precisar compilar nada.[/dim]\n")
             console.print("  [bold green]• Opção B: Usando a versão 'latest' mais recente do GitHub:[/bold green]")
             console.print(f"    [bold yellow]sudo bash {builder_script} --tag latest[/bold yellow]\n")
