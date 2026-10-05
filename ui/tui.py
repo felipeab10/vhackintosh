@@ -1075,7 +1075,7 @@ class VMTUI:
             f"[bold yellow]O reims-vgpu precisa ser compilado[/bold yellow]\n"
             f"[dim]Motivo: {state.reason}[/dim]\n\n"
             f"A primeira compilação leva cerca de 5 minutos e roda uma única vez.\n"
-            f"Depois disso ela só repete quando o fonte do fork mudar.",
+            f"Depois disso ela só repete quando a fonte do repositório do reims-vgpu atualizar.",
             border_style="yellow",
         ))
         if not Confirm.ask("Compilar agora?", default=True):
