@@ -20,6 +20,7 @@ from rich.layout import Layout
 from rich.text import Text
 
 from core.config import VMConfig, VMManagerStore, ExclusiveVMLock, CONFIG_DIR
+from core.reims_build import evaluate as evaluate_reims_build, build as build_reims_vgpu
 from core.hardware import HardwareAdvisor
 from core.gpu import GPUChecker
 from core.readiness import SystemReadinessChecker
@@ -609,6 +610,12 @@ class VMTUI:
                     reims_dir = cand
                     break
 
+            # Compila o reims-vgpu quando a árvore trouxer fontes e o binário
+            # estiver ausente ou defasado. É aqui que um patch novo deixa de
+            # ficar invisível para a VM.
+            if reims_dir and not self._ensure_reims_built(reims_dir):
+                console.print("[yellow]Prosseguindo sem compilar — a VM usará o binário existente.[/yellow]\n")
+
             # Se a VM possui disco e OpenCore próprios no diretório
             custom_dir = None
             if vm.disk_path and os.path.exists(vm.disk_path):
@@ -1017,6 +1024,98 @@ class VMTUI:
 
         # Contabiliza reboots e aplica a política de energia do host.
         self._apply_host_power_policy(vm, policy, monitor)
+
+    def _ensure_reims_built(self, reims_dir: Optional[str]) -> bool:
+        """Garante que o binário do reims-vgpu corresponda ao fonte.
+
+        A ISO leva as **fontes** do reims-vgpu, então aqui é onde o appliance as
+        compila. Sem isso o QEMU em uso poderia ser um binário antigo sem que
+        nada avisasse — foi exatamente o que aconteceu com o patch do
+        `wait_idle`, que ficou em `vendor/qemu/build/` enquanto o teste usava
+        `/usr/bin/qemu-system-x86_64`.
+
+        Devolve True se pode seguir (nada a fazer ou build concluído).
+        """
+        state = evaluate_reims_build(explicit=reims_dir)
+        if state.reims_dir is None:
+            return False
+
+        if not state.sources_present:
+            # Árvore só com binário (ISO de release): nada a compilar.
+            return bool(state.binary_path and state.binary_path.exists())
+
+        if not state.needs_build:
+            return True
+
+        console.print()
+        console.print(Panel(
+            f"[bold yellow]O reims-vgpu precisa ser compilado[/bold yellow]\n"
+            f"[dim]Motivo: {state.reason}[/dim]\n\n"
+            f"A primeira compilação leva cerca de 5 minutos e roda uma única vez.\n"
+            f"Depois disso ela só repete quando o fonte do fork mudar.",
+            border_style="yellow",
+        ))
+        if not Confirm.ask("Compilar agora?", default=True):
+            console.print("[yellow]Compilação recusada — a VM pode usar um binário desatualizado.[/yellow]")
+            return False
+
+        from rich.progress import (
+            Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn,
+        )
+
+        result = {"ok": False}
+        with Progress(
+            SpinnerColumn(spinner_name="dots"),
+            TextColumn("[bold cyan]{task.description}[/bold cyan]"),
+            BarColumn(bar_width=36),
+            TextColumn("[bold green]{task.percentage:>3.0f}%[/bold green]"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Preparando...", total=100)
+            current = {"name": ""}
+
+            def on_start(name: str, _expected: float) -> None:
+                current["name"] = name
+                progress.update(task, description=f"Compilando {name}...")
+
+            def on_progress(pct: float) -> None:
+                progress.update(task, completed=pct)
+
+            def on_done(name: str, ok: bool) -> None:
+                if not ok:
+                    progress.update(
+                        task,
+                        description=f"[bold red]Falha ao compilar {name}[/bold red]",
+                    )
+
+            try:
+                result["ok"] = build_reims_vgpu(
+                    state.reims_dir,
+                    on_start=on_start,
+                    on_done=on_done,
+                    progress=on_progress,
+                )
+            except Exception as exc:  # noqa: BLE001 — a TUI não pode morrer aqui
+                progress.update(task, description=f"[bold red]Erro: {exc}[/bold red]")
+
+            if result["ok"]:
+                progress.update(task, completed=100.0, description="[bold green]Concluído[/bold green]")
+
+        if not result["ok"]:
+            from core.reims_build import tail_log
+            console.print("[bold red]A compilação do reims-vgpu falhou.[/bold red]")
+            for log_name in ("build-qemu-reims.log", "build-rom.log"):
+                snippet = tail_log(log_name, lines=12)
+                if snippet:
+                    console.print(f"[dim]--- {log_name} ---[/dim]")
+                    console.print(snippet)
+            console.print("[dim]Logs completos em ~/.config/vhackintosh/logs/[/dim]")
+            Prompt.ask("Pressione Enter para continuar")
+            return False
+
+        console.print("[bold green]reims-vgpu compilado com sucesso.[/bold green]\n")
+        return True
 
     def _menu_build_iso(self) -> None:
         console.clear()

@@ -95,6 +95,27 @@ python-textual
 python-psutil
 python-setuptools
 
+# Toolchain de build do reims-vgpu (Vulkan) — a ISO leva as FONTES do fork e o
+# appliance compila na máquina do usuário, uma vez, com stamp de conteúdo. Isso
+# evita o caso do binário defasado em uso sem ninguém notar. Custo medido de um
+# build frio completo (98 crates Rust + 1950 objetos C do QEMU): ~4,5 min, com
+# Rust e C compilando em paralelo.
+#
+# O `rust` do Arch já traz `cargo`. O QEMU não baixa meson/ninja: ele usa os do
+# sistema (verificado no configure). As crates NÃO são baixadas, e sim lidas de
+# `vendor/cargo` (deps vendorizadas, `cargo vendor --versioned-dirs`), então o
+# build funciona offline — o appliance pode não ter internet no primeiro boot.
+rust
+meson
+ninja
+glib2
+pixman
+zlib
+pkgconf
+clang
+gcc
+make
+
 # Runtimes e CLI Tools para Harnesses de IA (Claude Code, OpenCode, Codex)
 nodejs
 npm

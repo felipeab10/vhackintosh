@@ -172,6 +172,59 @@ elif [ -d "${REIMS_SRC}" ]; then
     if [ -d "${REIMS_SRC}/scripts" ]; then
         cp -a "${REIMS_SRC}/scripts" "${REIMS_DEST}/"
     fi
+
+    # Fontes do fork: a ISO leva o código e o appliance compila na máquina do
+    # usuário (com stamp de conteúdo, uma vez só). Isso impede o cenário de
+    # "binário velho em uso sem ninguém notar". O `.git` NÃO vai (732 MB); o
+    # stamp é por hash de conteúdo, não por data nem por revisão de VCS.
+    echo -e "${BLUE}▶ Empacotando fontes do reims-vgpu para build sob demanda...${NC}"
+    for src_file in Cargo.toml Cargo.lock; do
+        [ -f "${REIMS_SRC}/${src_file}" ] && cp -a "${REIMS_SRC}/${src_file}" "${REIMS_DEST}/"
+    done
+    if [ -d "${REIMS_SRC}/crates" ]; then
+        rsync -a --exclude='target' --exclude='*.pyc' \
+            "${REIMS_SRC}/crates/" "${REIMS_DEST}/crates/"
+    fi
+
+    # Fonte do QEMU (submódulo). Sem o `.git` do submódulo — o
+    # `scripts/qemu-version.sh` testa `[ -e .git ]` e degrada sozinho quando ele
+    # não existe, o que já foi verificado num build completo.
+    if [ -d "${REIMS_SRC}/vendor/qemu" ]; then
+        echo -e "${BLUE}▶ Empacotando fonte do QEMU (submódulo, sem build/)...${NC}"
+        rsync -a --exclude='build' --exclude='.git' \
+            "${REIMS_SRC}/vendor/qemu/" "${REIMS_DEST}/vendor/qemu/"
+    fi
+
+    # Dependências Rust vendorizadas (~279 MB) para o build funcionar offline:
+    # o appliance pode não ter internet no primeiro boot. Geradas na hora
+    # quando faltarem, para não versionar 279 MB no repositório.
+    if [ ! -d "${REIMS_SRC}/vendor/cargo" ]; then
+        echo -e "${BLUE}▶ Gerando dependências Rust vendorizadas (cargo vendor)...${NC}"
+        if command -v cargo >/dev/null 2>&1; then
+            ( cd "${REIMS_SRC}" && cargo vendor --versioned-dirs vendor/cargo ) \
+                > /tmp/vendored-config-$$.toml 2>/dev/null || \
+                echo -e "${YELLOW}Aviso: 'cargo vendor' falhou — o build no appliance exigirá internet.${NC}"
+        else
+            echo -e "${YELLOW}Aviso: cargo ausente — o build no appliance exigirá internet.${NC}"
+        fi
+    fi
+    if [ -d "${REIMS_SRC}/vendor/cargo" ]; then
+        echo -e "${BLUE}▶ Empacotando dependências Rust vendorizadas...${NC}"
+        rsync -a "${REIMS_SRC}/vendor/cargo/" "${REIMS_DEST}/vendor/cargo/"
+    fi
+    mkdir -p "${REIMS_DEST}/.cargo"
+    cat > "${REIMS_DEST}/.cargo/config.toml" <<'CARGOCFG'
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/steelbrain/metal2vulkan.git?rev=9e0e99a41dc3cb8bb7e288b531f1698a79fd4b1c"]
+git = "https://github.com/steelbrain/metal2vulkan.git"
+rev = "9e0e99a41dc3cb8bb7e288b531f1698a79fd4b1c"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor/cargo"
+CARGOCFG
 elif [ -d "/opt/reims-vgpu" ]; then
     echo -e "${BLUE}▶ Copiando binários de /opt/reims-vgpu...${NC}"
     cp -a /opt/reims-vgpu/* "${REIMS_DEST}/"
