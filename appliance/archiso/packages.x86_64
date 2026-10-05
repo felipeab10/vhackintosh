@@ -116,6 +116,18 @@ clang
 gcc
 make
 
+# LLVM tools (`llvm-dis`) — exigido em RUNTIME, não só no build.
+# O metal2vulkan executa `llvm-dis` para desmontar o AIR da Apple a cada shader
+# ainda não cacheado, e o `vm/boot-x86.sh:require_shader_toolchain` aborta o
+# boot se ele não estiver no PATH ("llvm-dis not found in PATH"). O `clang` traz
+# o `llvm-libs` (a libLLVM.so já estava na ISO), mas NÃO traz os binários do
+# pacote `llvm` — sem esta linha o rail morre antes de abrir a janela.
+# Custo: 28 MiB de download / 138 MiB instalados.
+llvm
+# `spirv-val`(daqui) também é exigido pelo require_shader_toolchain. Já era
+# trazido de forma implícita; declarado agora para não depender de sorte.
+spirv-tools
+
 # Runtimes e CLI Tools para Harnesses de IA (Claude Code, OpenCode, Codex)
 nodejs
 npm
