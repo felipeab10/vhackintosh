@@ -25,4 +25,14 @@ file_permissions=(
   ["/usr/local/bin/vhackintosh-waysession"]="0:0:755"
   ["/etc/vhackintosh/sway.conf"]="0:0:644"
   ["/opt/vhackintosh/bin/vhackintosh"]="0:0:755"
+  # O mkarchiso copia o airootfs com `cp -af --no-preserve=ownership,mode` e só
+  # reaplica os modos listados aqui — e esta lista **não aceita glob**. Sem as
+  # duas linhas abaixo, todo /opt/reims-vgpu chega na ISO como 0644, e o
+  # `./configure` do QEMU (invocado pelo qemu-build.sh) morre com
+  # "Permission denied". Uma barra final faz o mkarchiso aplicar `chmod -R`.
+  # Efeito colateral aceito: arquivos de dados dessas árvores também ficam 755,
+  # o que é inofensivo. O `core/reims_build.py` restaura os bits exatos em
+  # tempo de execução, então ISOs já gravadas também funcionam.
+  ["/opt/reims-vgpu/vendor/qemu/"]="0:0:755"
+  ["/opt/reims-vgpu/scripts/"]="0:0:755"
 )

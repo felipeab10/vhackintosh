@@ -69,6 +69,75 @@ def has_sources(reims_dir: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Bit de execução
+# ---------------------------------------------------------------------------
+
+# O `mkarchiso` copia o airootfs com `cp -af --no-preserve=ownership,mode`
+# (linha 323 do script do Arch) e depois só reaplica os modos listados em
+# `file_permissions`, que **não aceita glob**. Resultado: todo arquivo fora
+# dessa lista chega na ISO como 0644 — inclusive `vendor/qemu/configure`, que o
+# `qemu-build.sh` invoca como `./configure`, produzindo
+# `./configure: Permission denied`.
+#
+# A correção tem duas camadas: aqui (restauramos o bit em tempo de execução, o
+# que também cobre ISOs já gravadas) e no `profiledef.sh` (para as próximas).
+# Só tocamos em arquivos que *começam* com `#!`: assim o bit nunca é dado a
+# dados de teste, `.rom` ou `.so`.
+_EXEC_SCAN_DIRS = ("vendor/qemu", "scripts", "vm", "crates")
+_EXEC_SKIP_PARTS = {"build", "target", ".git", "tests", "docs", "roms", "subprojects"}
+
+
+def _has_shebang(path: Path) -> bool:
+    """Um `#!` de verdade, não um atributo interno do Rust.
+
+    `crates/**/tests.rs` começa com `#![allow(...)]`, que é `#!` seguido de
+    `[`. Um shebang real aponta para um interpretador (`/bin/sh`, `env python`).
+    """
+    try:
+        with open(path, "rb") as fh:
+            first = fh.readline(256)
+    except OSError:
+        return False
+    if not first.startswith(b"#!"):
+        return False
+    rest = first[2:].lstrip()
+    return bool(rest) and rest[:1] not in (b"[", b"\n")
+
+
+def ensure_executable_bits(reims_dir: Path, log: Optional[Callable[[str], None]] = None) -> int:
+    """Restaura o bit +x em scripts com shebang. Devolve quantos corrigiu.
+
+    Idempotente e barato: numa árvore já correta não altera nada.
+    """
+    fixed = 0
+    for rel in _EXEC_SCAN_DIRS:
+        root = reims_dir / rel
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            try:
+                if not path.is_file() or path.is_symlink():
+                    continue
+                if any(part in _EXEC_SKIP_PARTS for part in path.parts):
+                    continue
+                mode = path.stat().st_mode
+                if mode & 0o111:
+                    continue  # já executável
+                if not _has_shebang(path):
+                    continue
+                path.chmod(mode | 0o755)
+                fixed += 1
+            except OSError:
+                continue
+    if log:
+        if fixed:
+            log(f"{fixed} script(s) de build recuperaram o bit de execução")
+        else:
+            log("bits de execução já estavam corretos")
+    return fixed
+
+
+# ---------------------------------------------------------------------------
 # Stamp por conteúdo
 # ---------------------------------------------------------------------------
 
@@ -250,6 +319,11 @@ def build(
     script = reims_dir / "scripts" / "qemu-build" / "qemu-build.sh"
     if not script.exists():
         raise BuildError(f"script de build ausente: {script}")
+
+    # A ISO entrega a árvore em 0644 (ver `ensure_executable_bits`); sem isto o
+    # `./configure` do QEMU falha com "Permission denied" logo na primeira
+    # etapa. Restauramos antes de qualquer coisa.
+    ensure_executable_bits(reims_dir, log=lambda msg: print(f"  {msg}"))
 
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
