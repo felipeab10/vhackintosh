@@ -35,4 +35,10 @@ file_permissions=(
   # tempo de execução, então ISOs já gravadas também funcionam.
   ["/opt/reims-vgpu/vendor/qemu/"]="0:0:755"
   ["/opt/reims-vgpu/scripts/"]="0:0:755"
+  # `crates/` e `vm/` faltavam. O `vm/boot-x86.sh` executa diretamente
+  # `crates/reims-vgpu-efi/scripts/.../reims-vgpu-efi-rom.sh` (com `[ -x ]`
+  # antes, em require_shader_toolchain: "EFI ROM builder not executable") — e na
+  # ISO anterior ele chegou 0644.
+  ["/opt/reims-vgpu/crates/"]="0:0:755"
+  ["/opt/reims-vgpu/vm/"]="0:0:755"
 )

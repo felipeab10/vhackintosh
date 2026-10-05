@@ -23,6 +23,7 @@ from core.config import VMConfig, VMManagerStore, ExclusiveVMLock, CONFIG_DIR
 from core.reims_build import (
     evaluate as evaluate_reims_build,
     build as build_reims_vgpu,
+    ensure_executable_bits,
     QEMU_BIN_REL as REIMS_QEMU_BIN_REL,
 )
 from core.hardware import HardwareAdvisor
@@ -1050,6 +1051,17 @@ class VMTUI:
 
         def binary_present() -> bool:
             return (state.reims_dir / REIMS_QEMU_BIN_REL).exists()
+
+        # Os bits de execução são restaurados aqui, e não só dentro de `build()`:
+        # o `vm/boot-x86.sh` exige `[ -x ]` em
+        # `crates/reims-vgpu-efi/scripts/.../reims-vgpu-efi-rom.sh` e morre com
+        # "EFI ROM builder not executable" — inclusive no caminho em que o build
+        # é pulado (stamp atualizado) ou recusado. Custo medido: 0,15 s, e 0 na
+        # segunda vez, porque só toca no que está errado.
+        try:
+            ensure_executable_bits(state.reims_dir)
+        except Exception:  # noqa: BLE001 — melhor tentar lançar do que abortar
+            pass
 
         if not state.sources_present:
             # Árvore só com binário (ISO de release): nada a compilar.
