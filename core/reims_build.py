@@ -104,6 +104,36 @@ def _has_shebang(path: Path) -> bool:
     return bool(rest) and rest[:1] not in (b"[", b"\n")
 
 
+# O `configure` do QEMU se recusa a usar um `build/` que ele não criou; o
+# contrato é este arquivo-marker. A ISO pode trazer `vendor/qemu/build/`
+# contendo só o binário pré-compilado (fallback para quem recusa compilar), e
+# nesse estado o build falha com
+#   ERROR: ./build dir already exists and was not previously created by configure
+CONFIGURE_MARKER = Path("vendor/qemu/build/auto-created-by-configure")
+
+
+def prepare_build_dir(reims_dir: Path, log: Optional[Callable[[str], None]] = None) -> None:
+    """Deixa o `build/` num estado em que o `configure` do QEMU o aceite.
+
+    Só age quando o `build/` existe **sem** `build.ninja` — isto é, não é um
+    build de verdade, e sim o diretório com o binário enviado pela ISO. Nesse
+    caso o `configure` vai apagá-lo de qualquer forma; o marker apenas o
+    autoriza a fazê-lo.
+    """
+    build = reims_dir / "vendor" / "qemu" / "build"
+    marker = reims_dir / CONFIGURE_MARKER
+    if not build.is_dir() or marker.exists():
+        return
+    if (build / "build.ninja").exists():
+        return  # árvore já configurada: o incremental funciona, não mexer
+    try:
+        marker.touch()
+        if log:
+            log("build/ pré-existente marcado como descartável (exigência do configure)")
+    except OSError:
+        pass
+
+
 def ensure_executable_bits(reims_dir: Path, log: Optional[Callable[[str], None]] = None) -> int:
     """Restaura o bit +x em scripts com shebang. Devolve quantos corrigiu.
 
@@ -324,6 +354,10 @@ def build(
     # `./configure` do QEMU falha com "Permission denied" logo na primeira
     # etapa. Restauramos antes de qualquer coisa.
     ensure_executable_bits(reims_dir, log=lambda msg: print(f"  {msg}"))
+
+    # E o `build/` que a ISO envia (só com o binário) precisa do marker do
+    # próprio QEMU, senão o configure aborta. Ver `prepare_build_dir`.
+    prepare_build_dir(reims_dir, log=lambda msg: print(f"  {msg}"))
 
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 

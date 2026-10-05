@@ -152,6 +152,21 @@ elif [ -d "${REIMS_SRC}" ]; then
         cp -a "${REIMS_SRC}/vendor/qemu/build/qemu-system-x86_64" "${REIMS_DEST}/vendor/qemu/build/"
     fi
 
+    # O `configure` do QEMU recusa um `build/` que ele não criou:
+    #   MARKER=build/auto-created-by-configure
+    #   if test -e build; then
+    #       if test -f $MARKER; then rm -rf build
+    #       else echo "ERROR: ./build dir already exists ..."; exit 1
+    # Sem o marker, o build no appliance morre aqui — foi exatamente o erro
+    # observado. O marker é o contrato do próprio QEMU para dizer "pode apagar
+    # este diretório", então marcamos o `build/` que enviamos: assim ele serve
+    # de fallback se o usuário recusar compilar, e o `configure` o descarta
+    # sozinho quando a compilação começa de fato.
+    if [ -d "${REIMS_DEST}/vendor/qemu/build" ] && \
+       [ ! -f "${REIMS_DEST}/vendor/qemu/build/build.ninja" ]; then
+        touch "${REIMS_DEST}/vendor/qemu/build/auto-created-by-configure"
+    fi
+
     # PC-BIOS
     if [ -d "${REIMS_SRC}/vendor/qemu/pc-bios" ]; then
         cp -a "${REIMS_SRC}/vendor/qemu/pc-bios" "${REIMS_DEST}/vendor/qemu/"

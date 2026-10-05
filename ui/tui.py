@@ -20,7 +20,11 @@ from rich.layout import Layout
 from rich.text import Text
 
 from core.config import VMConfig, VMManagerStore, ExclusiveVMLock, CONFIG_DIR
-from core.reims_build import evaluate as evaluate_reims_build, build as build_reims_vgpu
+from core.reims_build import (
+    evaluate as evaluate_reims_build,
+    build as build_reims_vgpu,
+    QEMU_BIN_REL as REIMS_QEMU_BIN_REL,
+)
 from core.hardware import HardwareAdvisor
 from core.gpu import GPUChecker
 from core.readiness import SystemReadinessChecker
@@ -614,7 +618,9 @@ class VMTUI:
             # estiver ausente ou defasado. É aqui que um patch novo deixa de
             # ficar invisível para a VM.
             if reims_dir and not self._ensure_reims_built(reims_dir):
-                console.print("[yellow]Prosseguindo sem compilar — a VM usará o binário existente.[/yellow]\n")
+                console.print("[bold red]Sem um binário do QEMU não é possível iniciar a VM.[/bold red]")
+                Prompt.ask("Pressione Enter para continuar")
+                return
 
             # Se a VM possui disco e OpenCore próprios no diretório
             custom_dir = None
@@ -1034,15 +1040,20 @@ class VMTUI:
         `wait_idle`, que ficou em `vendor/qemu/build/` enquanto o teste usava
         `/usr/bin/qemu-system-x86_64`.
 
-        Devolve True se pode seguir (nada a fazer ou build concluído).
+        Devolve True se pode seguir (nada a fazer ou build concluído). Devolve
+        False **apenas** quando não há binário algum para lançar a VM — recusar
+        compilar com um binário existente continua sendo um caminho válido.
         """
         state = evaluate_reims_build(explicit=reims_dir)
         if state.reims_dir is None:
             return False
 
+        def binary_present() -> bool:
+            return (state.reims_dir / REIMS_QEMU_BIN_REL).exists()
+
         if not state.sources_present:
             # Árvore só com binário (ISO de release): nada a compilar.
-            return bool(state.binary_path and state.binary_path.exists())
+            return binary_present()
 
         if not state.needs_build:
             return True
@@ -1056,7 +1067,17 @@ class VMTUI:
             border_style="yellow",
         ))
         if not Confirm.ask("Compilar agora?", default=True):
-            console.print("[yellow]Compilação recusada — a VM pode usar um binário desatualizado.[/yellow]")
+            if binary_present():
+                console.print(
+                    "[yellow]Compilação recusada — a VM usará o binário que já existe "
+                    "(pode estar desatualizado em relação ao fonte).[/yellow]\n"
+                )
+                return True
+            console.print(
+                "[bold red]Compilação recusada e não há binário algum: a VM não pode "
+                "ser lançada.[/bold red]"
+            )
+            Prompt.ask("Pressione Enter para continuar")
             return False
 
         from rich.progress import (
@@ -1112,7 +1133,17 @@ class VMTUI:
                     console.print(snippet)
             console.print("[dim]Logs completos em ~/.config/vhackintosh/logs/[/dim]")
             Prompt.ask("Pressione Enter para continuar")
-            return False
+            # O configure do QEMU apaga o build/ antes de reconfigurar, então uma
+            # falha pode ter levado o binário anterior junto. Se não sobrou
+            # nenhum, não há o que lançar — e dizer o contrário seria mentira.
+            if not binary_present():
+                console.print(
+                    "[bold red]O binário anterior também foi perdido na tentativa de "
+                    "build — a VM não pode ser lançada até a compilação funcionar.[/bold red]"
+                )
+                return False
+            console.print("[yellow]Seguindo com o binário anterior.[/yellow]\n")
+            return True
 
         console.print("[bold green]reims-vgpu compilado com sucesso.[/bold green]\n")
         return True
