@@ -65,15 +65,23 @@ class GPUChecker:
             vendor_name = "AMD"
         elif vendor_id == "8086":
             vendor_name = "Intel"
+        elif vendor_id == "1234":
+            vendor_name = "QEMU Standard VGA"
+        elif vendor_id == "1b36":
+            vendor_name = "Red Hat QEMU"
+        elif vendor_id == "15ad":
+            vendor_name = "VMware SVGA"
+        elif vendor_id == "80ee":
+            vendor_name = "VirtualBox Graphics"
 
         iommu_group = cls._get_iommu_group(pci_slot)
         is_vfio = cls._check_vfio_driver(pci_slot)
 
         # Compatibilidade com Reims vGPU (Vulkan):
         # NVIDIA GTX 900+, RTX series, AMD GCN 4+, Intel Gen9+ possuem suporte Vulkan 1.2+
-        reims_compatible = True
+        reims_compatible = False
         passthrough_compatible = False
-        recommendation = ""
+        recommendation = "Incompatível com Reims vGPU (controlador gráfico sem suporte Vulkan 1.2+)"
 
         if vendor_name == "NVIDIA":
             reims_compatible = True
@@ -88,6 +96,10 @@ class GPUChecker:
             reims_compatible = True
             passthrough_compatible = False
             recommendation = "Reims vGPU (iGPU Vulkan)"
+        elif vendor_id in ("1234", "1b36", "15ad", "80ee"):
+            reims_compatible = False
+            passthrough_compatible = False
+            recommendation = "Controlador gráfico emulado/virtual — sem suporte a aceleração Vulkan de hardware"
 
         return GPUDevice(
             pci_slot=pci_slot,

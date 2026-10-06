@@ -51,7 +51,7 @@ class SystemReadinessChecker:
         kvm_check = cls._check_virtualization()
         checks.append(kvm_check)
         if not kvm_check.passed and kvm_check.is_critical:
-            critical_errors.append(kvm_check.status_text)
+            critical_errors.append(f"{kvm_check.name}: {kvm_check.details}")
 
         # 2. Checagem de Conectividade com a Internet
         net_check = cls._check_internet()
@@ -60,6 +60,8 @@ class SystemReadinessChecker:
         # 3. Checagem de Gráficos e Vulkan (reims-vgpu)
         gpu_check = cls._check_gpu_vulkan()
         checks.append(gpu_check)
+        if not gpu_check.passed and gpu_check.is_critical:
+            critical_errors.append(f"{gpu_check.name}: {gpu_check.details}")
 
         # 4. Checagem de Memória RAM
         ram_check = cls._check_ram()
@@ -69,7 +71,7 @@ class SystemReadinessChecker:
         disk_check = cls._check_disk_space()
         checks.append(disk_check)
 
-        can_run = kvm_check.passed
+        can_run = kvm_check.passed and gpu_check.passed
         has_net = net_check.passed
 
         return ReadinessReport(

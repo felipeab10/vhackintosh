@@ -192,12 +192,22 @@ class VMTUI:
             if self.system_mode == "live":
                 console.print("[bold cyan]● Mídia Live (pendrive/ISO) — instale no disco pela opção [I] ou use em modo demonstração.[/bold cyan]\n")
 
-            # Checagem de prontidão do sistema (Virtualização BIOS e Internet)
+            # Checagem de prontidão do sistema (Virtualização BIOS, Vulkan e Internet)
             readiness = SystemReadinessChecker.check_all()
             if not readiness.can_run_vms:
-                console.print("[bold red]⚠ ATENÇÃO: Virtualização por hardware (VT-x / AMD SVM) DESATIVADA na BIOS![/bold red]")
-                console.print("[yellow]Acesse o setup da placa-mãe (BIOS) e ative a virtualização para poder iniciar VMs.[/yellow]\n")
-            elif not readiness.has_internet:
+                for check in readiness.checks:
+                    if not check.passed and check.is_critical:
+                        if check.category == "Virtualização":
+                            console.print(f"[bold red]⚠ ATENÇÃO: {check.name} ({check.status_text})[/bold red]")
+                            console.print(f"[yellow]{check.details}[/yellow]")
+                            if check.remediation:
+                                console.print(f"[dim]{check.remediation}[/dim]\n")
+                        elif check.category == "Gráficos":
+                            console.print(f"[bold red]⚠ ATENÇÃO: Hardware Gráfico Incompatível com o Reims vGPU ({check.status_text})[/bold red]")
+                            console.print(f"[yellow]{check.details}[/yellow]")
+                            if check.remediation:
+                                console.print(f"[dim]{check.remediation}[/dim]\n")
+            if not readiness.has_internet:
                 console.print("[yellow]⚠ Aviso de Rede: Sem conexão com a Internet (downloads Apple e AI indisponíveis).[/yellow]\n")
 
             vms = self.store.list_vms()
@@ -213,7 +223,10 @@ class VMTUI:
                 console.print(" [bold yellow]★ [I][/bold yellow] - [bold magenta]INSTALAR vHackintosh OS no SSD/Disco deste Computador (Instalador)[/bold magenta]")
 
             console.print(" [bold green]1[/bold green] - Iniciar / Gerenciar uma VM")
-            console.print(" [bold green]2[/bold green] - Criar Nova VM macOS (Assistente com Auto-Tuning)")
+            if not readiness.can_run_vms:
+                console.print(" [dim]2[/dim] - [dim]Criar Nova VM macOS (Bloqueado: Hardware Incompatível)[/dim]")
+            else:
+                console.print(" [bold green]2[/bold green] - Criar Nova VM macOS (Assistente com Auto-Tuning)")
             console.print(" [bold green]3[/bold green] - Diagnóstico de Hardware & GPU Compatibility")
             console.print(" [bold green]4[/bold green] - Atualizar Componentes Upstream (reims-vgpu)")
             console.print(" [bold green]5[/bold green] - Baixar / Gerenciar Imagens do macOS (Apple Recovery)")
@@ -508,6 +521,42 @@ class VMTUI:
         console.clear()
         console.print(render_banner())
         console.print("[bold cyan]Assistente de Criação de VM macOS[/bold cyan]\n")
+
+        # ------------------------------------------------------------------
+        # Validação antecipada de hardware (KVM e Vulkan 1.2+):
+        # Impede o usuário de gastar tempo digitando nome, configurando CPU/RAM
+        # e provisionando disco virtual caso o hardware não suporte.
+        # ------------------------------------------------------------------
+        readiness = SystemReadinessChecker.check_all()
+        if not readiness.can_run_vms:
+            crit_msgs = []
+            for c in readiness.checks:
+                if not c.passed and c.is_critical:
+                    crit_msgs.append(f"• [bold white]{c.name}:[/bold white] {c.details}")
+                    if c.remediation:
+                        crit_msgs.append(f"  [dim]Solução: {c.remediation}[/dim]")
+
+            erros_str = "\n".join(crit_msgs)
+
+            console.print(Panel(
+                f"[bold red]Criação Bloqueada: Requisitos de Hardware Não Atendidos[/bold red]\n\n"
+                f"[bold]Problemas detectados:[/bold]\n{erros_str}\n\n"
+                "O vHackintosh utiliza exclusivamente o Reims vGPU (Vulkan 1.2+ em GPU física)\n"
+                "e aceleração KVM por hardware. Sem esses recursos, máquinas virtuais macOS não\n"
+                "podem ser executadas.\n\n"
+                "[bold yellow]Ambiente incompatível típico:[/bold yellow]\n"
+                "• Você está testando o appliance dentro de uma máquina virtual emulada\n"
+                "  (ex: QEMU nested com -vga std) sem GPU Passthrough;\n"
+                "• A placa gráfica do computador é antiga ou não suporta Vulkan 1.2+;\n"
+                "• A virtualização VT-x / AMD-V está desativada no setup da BIOS.\n\n"
+                "[dim]Para utilizar o vHackintosh com aceleração gráfica, instale-o diretamente no disco (bare-metal)\n"
+                "de um computador compatível com GPU Intel (Gen9+), NVIDIA (GTX 900+) ou AMD.[/dim]",
+                title="Hardware Incompatível",
+                border_style="red",
+            ))
+            if sys.stdin.isatty():
+                Prompt.ask("Pressione Enter para retornar ao menu")
+            return
 
         # Análise automática de hardware
         profile = HardwareAdvisor.analyze()

@@ -29,6 +29,26 @@ class ABInstallerTest:
         console.clear()
         console.print(render_banner())
         console.print("[bold cyan]── Teste de Criação e Instalação de VM macOS do Zero ──[/bold cyan]\n")
+
+        # Validação antecipada de hardware
+        from core.readiness import SystemReadinessChecker
+        readiness = SystemReadinessChecker.check_all()
+        if not readiness.can_run_vms:
+            crit_msgs = []
+            for c in readiness.checks:
+                if not c.passed and c.is_critical:
+                    crit_msgs.append(f"• [bold white]{c.name}:[/bold white] {c.details}")
+
+            console.print(Panel(
+                "[bold red]Teste Abortado: Requisitos de Hardware Não Atendidos[/bold red]\n\n"
+                + "\n".join(crit_msgs) + "\n\n"
+                "O teste de instalação exige GPU física com Vulkan 1.2+ e KVM ativo.",
+                title="Hardware Incompatível",
+                border_style="red"
+            ))
+            Prompt.ask("Pressione Enter para voltar")
+            return
+
         console.print("[white]Este assistente provisiona uma VM limpa com disco zerado, injeta novos seriais SMBIOS[/white]")
         console.print("[white]e inicializa o instalador oficial da Apple (BaseSystem) para validar o comportamento.[/white]")
         console.print("[dim]Áudio corrigido ativado por padrão: ich9-intel-hda + hda-duplex (ultimate-macOS-KVM standard).[/dim]\n")
