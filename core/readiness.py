@@ -195,41 +195,29 @@ class SystemReadinessChecker:
     @classmethod
     def _check_gpu_vulkan(cls) -> CheckResult:
         """Verifica a presença de nós DRM e drivers Vulkan para o reims-vgpu."""
-        has_render_node = os.path.exists("/dev/dri/renderD128")
-        
-        has_icd = False
-        icd_dir = Path("/usr/share/vulkan/icd.d")
-        if icd_dir.exists() and any(icd_dir.glob("*.json")):
-            has_icd = True
+        from core.gpu import GPUChecker
+        vulkan_ok, vulkan_msg = GPUChecker.check_vulkan_host_readiness()
 
-        if has_render_node and has_icd:
+        if vulkan_ok:
             return CheckResult(
                 category="Gráficos",
-                name="Aceleração Vulkan / DRM",
+                name="Aceleração Vulkan 1.2+ (Reims vGPU)",
                 passed=True,
                 status_text="Suportado & Pronto",
-                details="Nó DRM (/dev/dri/renderD128) e manifestos Vulkan detectados para o reims-vgpu.",
-                is_critical=False
-            )
-        elif has_render_node:
-            return CheckResult(
-                category="Gráficos",
-                name="Aceleração Gráfica",
-                passed=True,
-                status_text="Básico (Render Node Ativo)",
-                details="Dispositivo gráfico renderD128 detectado.",
-                is_critical=False
+                details=f"{vulkan_msg} Reims vGPU totalmente funcional.",
+                is_critical=True
             )
         else:
             return CheckResult(
                 category="Gráficos",
-                name="Aceleração Gráfica",
+                name="Aceleração Vulkan 1.2+ (Reims vGPU)",
                 passed=False,
-                status_text="Atenção",
-                details="Nó /dev/dri/renderD128 não encontrado. Pode degradar o desempenho de renderização.",
-                remediation="Certifique-se de que os drivers de GPU (Mesa / Vulkan) estão carregados.",
-                is_critical=False
+                status_text="INCOMPATÍVEL",
+                details=f"{vulkan_msg} O Reims vGPU requer GPU física com Vulkan 1.2+.",
+                remediation="Instale em bare-metal com GPU física (Intel Gen9+, NVIDIA GTX 900+ ou AMD GCN 4+) ou configure GPU Passthrough se estiver em ambiente virtualizado.",
+                is_critical=True
             )
+
 
     @classmethod
     def _check_ram(cls) -> CheckResult:

@@ -733,6 +733,33 @@ class VMTUI:
                     reims_dir = cand
                     break
 
+            # ------------------------------------------------------------------
+            # Verificação prévia de hardware (Vulkan 1.2+):
+            # O Reims vGPU é estritamente obrigatório e exige aceleração física Vulkan.
+            # Se o host estiver em ambiente emulado (ex: QEMU aninhado sem passthrough)
+            # ou em GPU legada sem Vulkan, interrompemos IMEDIATAMENTE antes de pedir
+            # compilação ou gastar tempo do usuário.
+            # ------------------------------------------------------------------
+            vulkan_ok, vulkan_msg = GPUChecker.check_vulkan_host_readiness()
+            if not vulkan_ok:
+                console.print(Panel(
+                    f"[bold red]ERRO: Hardware Gráfico Incompatível com o Reims vGPU[/bold red]\n\n"
+                    f"[bold]Diagnóstico:[/bold] {vulkan_msg}\n\n"
+                    "O Reims vGPU é o motor gráfico obrigatório do vHackintosh e exige\n"
+                    "suporte direto à API Vulkan 1.2+ com pelo menos uma GPU física.\n\n"
+                    "[bold yellow]Possíveis causas:[/bold yellow]\n"
+                    "• Você está testando o appliance dentro de uma máquina virtual emulada\n"
+                    "  (ex: QEMU nested com -vga std) sem GPU PCI Passthrough.\n"
+                    "• A GPU física da máquina é antiga e não suporta Vulkan 1.2+.\n"
+                    "• Os drivers Vulkan do host não foram carregados corretamente.\n\n"
+                    "[dim]Para executar o macOS com aceleração, instale o vHackintosh diretamente\n"
+                    "no hardware físico (bare-metal) de um computador compatível.[/dim]",
+                    border_style="red",
+                ))
+                if sys.stdin.isatty():
+                    Prompt.ask("Pressione Enter para retornar")
+                return
+
             # Compila o reims-vgpu quando a árvore trouxer fontes e o binário
             # estiver ausente ou defasado. É aqui que um patch novo deixa de
             # ficar invisível para a VM.
