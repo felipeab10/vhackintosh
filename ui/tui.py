@@ -220,7 +220,10 @@ class VMTUI:
             # existência NÃO indica Live USB (ver core.mode.detect_system_mode).
             installer_available = self.installer_available
             if installer_available:
-                console.print(" [bold yellow]★ [I][/bold yellow] - [bold magenta]INSTALAR vHackintosh OS no SSD/Disco deste Computador (Instalador)[/bold magenta]")
+                if not readiness.can_run_vms:
+                    console.print(" [dim]★ [I][/dim] - [dim]INSTALAR vHackintosh OS no SSD/Disco (Bloqueado: Hardware Incompatível)[/dim]")
+                else:
+                    console.print(" [bold yellow]★ [I][/bold yellow] - [bold magenta]INSTALAR vHackintosh OS no SSD/Disco deste Computador (Instalador)[/bold magenta]")
 
             console.print(" [bold green]1[/bold green] - Iniciar / Gerenciar uma VM")
             if not readiness.can_run_vms:
@@ -241,7 +244,20 @@ class VMTUI:
             choice = Prompt.ask("\nEscolha uma opção", choices=choices, default="1")
 
             if choice in ("I", "i", "8"):
-                if shutil.which("vhackintosh-install"):
+                if not readiness.can_run_vms:
+                    console.print(Panel(
+                        f"[bold red]Instalação Bloqueada: Requisitos de Hardware Não Atendidos[/bold red]\n\n"
+                        "A instalação do vHackintosh OS neste computador foi bloqueada porque o hardware\n"
+                        "não atende aos requisitos mínimos obrigatórios (KVM na BIOS e GPU Vulkan 1.2+).\n\n"
+                        "Instalar o sistema no SSD apagaria todos os dados do disco sem que fosse possível\n"
+                        "executar máquinas virtuais macOS com aceleração gráfica posteriormente.\n\n"
+                        "[dim]Instale diretamente no hardware de um computador físico compatível com Intel/AMD/NVIDIA.[/dim]",
+                        title="Hardware Incompatível",
+                        border_style="red"
+                    ))
+                    if sys.stdin.isatty():
+                        Prompt.ask("Pressione Enter para continuar")
+                elif shutil.which("vhackintosh-install"):
                     cmd = ["sudo", "vhackintosh-install"] if os.geteuid() != 0 else ["vhackintosh-install"]
                     subprocess.run(cmd)
                 else:
