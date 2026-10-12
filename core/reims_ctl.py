@@ -9,8 +9,10 @@ QMP fica no socket fixo `<vmdir>/qmp.sock`, que o monitor já observa.
 
 O que o appliance fixa no `vm.toml`:
 - `cpus`/`memory_mib` vêm da sugestão por host (`core/hardware.py`);
-- `cpu_model = "Haswell-noTSX"`, pareado com o Cpuid1 Haswell do OpenCore do
-  template (`templates/README.md`) — modelo fixo, quantidade por host;
+- `cpu_model = "Skylake-Client-noTSX-IBRS"`, o default medido do upstream
+  (docs/qemu.md, "x86-64 macOS guests: the CPU model") — model 94 que o XNU
+  conhece, boota com ou sem o spoof de CPUID do OpenCore do template
+  (`templates/README.md`); modelo fixo, quantidade por host;
 - `extra_args = ["-action", "reboot=shutdown"]` preserva o contrato do
   appliance: um reboot do convidado **encerra** o QEMU e o laço da TUI
   relança (a alternativa, DeviceReset no lugar, é o que congela o host —
@@ -212,7 +214,12 @@ def write_vm_toml(
         'opencore_format = "qcow2"',
         'firmware_code = "OVMF_CODE.fd"',
         'firmware_vars = "OVMF_VARS.fd"',
-        'cpu_model = "Haswell-noTSX"',
+        # Skylake-Client-noTSX-IBRS: é o default medido do upstream
+        # (docs/qemu.md, "x86-64 macOS guests: the CPU model") — model 94 que o
+        # XNU conhece, boota com ou sem o spoof de CPUID do OpenCore, e não tem
+        # AVX-512 (cujo estado o XNU bagunça em host AMD). O Haswell-noTSX que
+        # antes fixávamos só boota atrás do spoof do ULTMOS.
+        'cpu_model = "Skylake-Client-noTSX-IBRS"',
         # cpu_flags com +vmx/+svm quando o host tem nested (core/virt.py) — o
         # ponto único de launch é este arquivo (D6/D7).
         f"cpu_flags = {s(cpu_flags_str())}",

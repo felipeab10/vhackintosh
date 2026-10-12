@@ -15,7 +15,11 @@ pra pasta da VM e injeta os seriais GenSMBIOS com `guestfish`).
 ## A config que funciona (resumo do `config.plist`)
 
 - **`Kernel > Emulate > Cpuid1Data`** = `54 06 05 00 …` com máscara `ff ff ff 00`
-  — emula Haswell (CPUID 0x050654); pareia com `-cpu Haswell-noTSX` no QEMU
+  — emula Haswell (CPUID 0x050654). O appliance hoje usa
+  `-cpu Skylake-Client-noTSX-IBRS` (default medido do reims-vgpu —
+  docs/qemu.md, "x86-64 macOS guests: the CPU model": model 94 que o XNU
+  conhece e boota **com ou sem** este spoof); o spoof do ULTMOS continua aqui,
+  inofensivo, e foi o que garantiu o boot quando o modelo era Haswell-noTSX.
 - **`Kernel > Emulate > DummyPowerManagement`** = true
 - **boot-args** = `keepsyms=1 tlbto_us=0 vti=9` (quirks do QEMU/paravirt)
 - **`Misc > Boot`**: `ShowPicker` true, `Timeout` 45 s, `PollAppleHotKeys` true
@@ -23,7 +27,9 @@ pra pasta da VM e injeta os seriais GenSMBIOS com `guestfish`).
 Depois de instalar o macOS no guest, gravar `METAL_ERROR_MODE=5` em
 `/Library/Preferences/.GlobalPreferences` (no volume *- Data) — sem isso o
 `iconservicesagent` entra em crash-loop no Tahoe x86-64 e o desktop fica sem
-Dock/ícones. É o fix documentado no reims-vgpu.
+Dock/ícones. É o fix documentado no reims-vgpu; num install **novo** o desktop
+nem sobe sem ele — faça-o do Recovery (OpenCore > Recovery, Utilities >
+Terminal, no volume *Data; ver docs/qemu.md, "Metal's error mode").
 
 ## Proveniência e licença
 
