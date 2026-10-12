@@ -30,6 +30,15 @@ from pathlib import Path
 from typing import Optional
 
 from core.config import VMConfig, CONFIG_DIR
+from core.virt import cpu_flags as _nested_cpu_flags
+
+# Baseline de CPU flags do q35-x86_64 do reims-ctl (vm.rs); o appliance só
+# acrescenta +vmx/+svm quando o host tem nested habilitado (core/virt.py).
+_BASE_CPU_FLAGS = "+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check"
+
+
+def cpu_flags_str() -> str:
+    return _nested_cpu_flags(_BASE_CPU_FLAGS)
 
 # O mesmo diretório de `core/disk.py` (VM_STORAGE_BASE) — calculado aqui para
 # não importar o disk.py (que puxa rich) neste módulo de launch.
@@ -204,7 +213,9 @@ def write_vm_toml(
         'firmware_code = "OVMF_CODE.fd"',
         'firmware_vars = "OVMF_VARS.fd"',
         'cpu_model = "Haswell-noTSX"',
-        'cpu_flags = "+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check"',
+        # cpu_flags com +vmx/+svm quando o host tem nested (core/virt.py) — o
+        # ponto único de launch é este arquivo (D6/D7).
+        f"cpu_flags = {s(cpu_flags_str())}",
         "disk_port = 3",
     ]
 
@@ -251,9 +262,18 @@ class ReimsCtlSession:
 
     _PID_RE = re.compile(r"pid (\d+)")
 
-    def __init__(self, argv: list[str], env: Optional[dict] = None) -> None:
+    def __init__(
+        self,
+        argv: list[str],
+        env: Optional[dict] = None,
+        on_ready: Optional[object] = None,
+    ) -> None:
         self.argv = argv
         self.env = env
+        # Chamado UMA vez, logo que o `reims-ctl start` conclui (QMP já
+        # respondendo — o start só retorna com o socket acessível). Serve p/
+        # auto-anexar USBs marcados (grupo 3); falhas aqui nunca derrubam a VM.
+        self.on_ready = on_ready
 
     def wait(self) -> int:
         proc = subprocess.run(
@@ -273,6 +293,12 @@ class ReimsCtlSession:
         if proc.returncode != 0 and "already runs" not in out:
             # Falha de preflight/build com um "pid" citado no erro: não adota.
             return proc.returncode
+
+        if self.on_ready is not None:
+            try:
+                self.on_ready()
+            except Exception as exc:  # noqa: BLE001 — anexo é melhor-esforço
+                print(f"  aviso: pós-start falhou ({exc}); a VM segue normalmente")
 
         pid = int(m.group(1))
         while _pid_alive(pid):

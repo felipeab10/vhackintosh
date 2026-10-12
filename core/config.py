@@ -60,6 +60,10 @@ class VMConfig:
     install_phase: str = "pending"  # "pending" | "installing" | "installed"
     install_reboots: int = 0        # reboots de guest observados durante a vida da VM
     install_evidence: str = "none"  # "none" | "partial" | "complete" (última sonda de disco)
+    # Dispositivos USB do host marcados para anexar sempre nesta VM, como
+    # "1050:0407" (vendor:product) — anexados via QMP logo que a VM sobe
+    # (change appliance-i18n…, grupo 3: pen drive plugado antes do boot).
+    usb_auto_attach: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)

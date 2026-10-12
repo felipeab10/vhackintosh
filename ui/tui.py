@@ -21,6 +21,7 @@ from rich.layout import Layout
 from rich.text import Text
 
 from core.config import VMConfig, VMManagerStore, ExclusiveVMLock, CONFIG_DIR
+from core import i18n
 from core.reims_build import (
     evaluate as evaluate_reims_build,
     build as build_reims_vgpu,
@@ -182,6 +183,10 @@ class VMTUI:
         self.installer_available = has_installer_binary()
 
     def run_main_loop(self) -> None:
+        # Primeira tela do appliance (specs/language-selection): enquanto o
+        # idioma não estiver escolhido, nada mais aparece — nem o banner com
+        # opções, nem a prontidão.
+        self._language_screen()
         self._backfill_install_phases()
         while True:
             console.clear()
@@ -189,10 +194,10 @@ class VMTUI:
 
             running_vm = self.lock.get_running_vm_info()
             if running_vm:
-                console.print(f"[bold red]● VM Ativa em Execução: {running_vm}[/bold red]\n")
+                console.print(i18n.t("tui.main.running_vm", vm=running_vm))
 
             if self.system_mode == "live":
-                console.print("[bold cyan]● Mídia Live (pendrive/ISO) — instale no disco pela opção [I] ou use em modo demonstração.[/bold cyan]\n")
+                console.print(i18n.t("tui.main.live_media"))
 
             # Checagem de prontidão do sistema (Virtualização BIOS, Vulkan e Internet)
             readiness = SystemReadinessChecker.check_all()
@@ -200,22 +205,22 @@ class VMTUI:
                 for check in readiness.checks:
                     if not check.passed and check.is_critical:
                         if check.category == "Virtualização":
-                            console.print(f"[bold red]⚠ ATENÇÃO: {check.name} ({check.status_text})[/bold red]")
+                            console.print(i18n.t("tui.main.attention", name=check.name, status=check.status_text))
                             console.print(f"[yellow]{check.details}[/yellow]")
                             if check.remediation:
                                 console.print(f"[dim]{check.remediation}[/dim]\n")
                         elif check.category == "Gráficos":
-                            console.print(f"[bold red]⚠ ATENÇÃO: Hardware Gráfico Incompatível com o Reims vGPU ({check.status_text})[/bold red]")
+                            console.print(i18n.t("tui.main.attention_gpu", status=check.status_text))
                             console.print(f"[yellow]{check.details}[/yellow]")
                             if check.remediation:
                                 console.print(f"[dim]{check.remediation}[/dim]\n")
             if not readiness.has_internet:
-                console.print("[yellow]⚠ Aviso de Rede: Sem conexão com a Internet (downloads Apple e AI indisponíveis).[/yellow]\n")
+                console.print(i18n.t("tui.main.no_internet"))
 
             vms = self.store.list_vms()
             self._render_vm_table(vms)
 
-            console.print("\n[bold cyan]Opções do Gerenciador:[/bold cyan]")
+            console.print(i18n.t("tui.menu.title"))
 
             # O instalador bare-metal permanece sempre acessível quando presente.
             # Ele é copiado para o sistema definitivo por design, portanto a sua
@@ -223,48 +228,43 @@ class VMTUI:
             installer_available = self.installer_available
             if installer_available:
                 if not readiness.can_run_vms:
-                    console.print(" [dim]★ [I][/dim] - [dim]INSTALAR vHackintosh OS no SSD/Disco (Bloqueado: Hardware Incompatível)[/dim]")
+                    console.print(i18n.t("tui.menu.install_locked"))
                 else:
-                    console.print(" [bold yellow]★ [I][/bold yellow] - [bold magenta]INSTALAR vHackintosh OS no SSD/Disco deste Computador (Instalador)[/bold magenta]")
+                    console.print(i18n.t("tui.menu.install"))
 
-            console.print(" [bold green]1[/bold green] - Iniciar / Gerenciar uma VM")
+            console.print(i18n.t("tui.menu.start_vm"))
             if not readiness.can_run_vms:
-                console.print(" [dim]2[/dim] - [dim]Criar Nova VM macOS (Bloqueado: Hardware Incompatível)[/dim]")
+                console.print(i18n.t("tui.menu.create_vm_locked"))
             else:
-                console.print(" [bold green]2[/bold green] - Criar Nova VM macOS (Assistente com Auto-Tuning)")
-            console.print(" [bold green]3[/bold green] - Diagnóstico de Hardware & GPU Compatibility")
-            console.print(" [bold green]4[/bold green] - Atualizar Componentes Upstream (reims-vgpu)")
-            console.print(" [bold green]5[/bold green] - Baixar / Gerenciar Imagens do macOS (Apple Recovery)")
-            console.print(" [bold green]6[/bold green] - Teste A/B de Instalação do Zero (Apple Recovery)")
-            console.print(" [bold green]7[/bold green] - Gerador de Imagem ISO Bootável (Appliance Live USB com AI Harnesses)")
-            console.print(" [bold red]0[/bold red] - Sair para o Terminal / Desligar")
+                console.print(i18n.t("tui.menu.create_vm"))
+            console.print(i18n.t("tui.menu.diagnostics"))
+            console.print(i18n.t("tui.menu.update_upstream"))
+            console.print(i18n.t("tui.menu.download_images"))
+            console.print(i18n.t("tui.menu.ab_test"))
+            console.print(i18n.t("tui.menu.build_iso"))
+            console.print(i18n.t("tui.menu.exit"))
 
             choices = ["1", "2", "3", "4", "5", "6", "7", "0"]
             if installer_available:
                 choices.extend(["I", "i", "8"])
 
-            choice = Prompt.ask("\nEscolha uma opção", choices=choices, default="1")
+            choice = Prompt.ask(i18n.t("tui.menu.prompt_choice"), choices=choices, default="1")
 
             if choice in ("I", "i", "8"):
                 if not readiness.can_run_vms:
                     console.print(Panel(
-                        f"[bold red]Instalação Bloqueada: Requisitos de Hardware Não Atendidos[/bold red]\n\n"
-                        "A instalação do vHackintosh OS neste computador foi bloqueada porque o hardware\n"
-                        "não atende aos requisitos mínimos obrigatórios (KVM na BIOS e GPU Vulkan 1.2+).\n\n"
-                        "Instalar o sistema no SSD apagaria todos os dados do disco sem que fosse possível\n"
-                        "executar máquinas virtuais macOS com aceleração gráfica posteriormente.\n\n"
-                        "[dim]Instale diretamente no hardware de um computador físico compatível com Intel/AMD/NVIDIA.[/dim]",
-                        title="Hardware Incompatível",
+                        i18n.t("tui.install_blocked.panel"),
+                        title=i18n.t("tui.install_blocked.title"),
                         border_style="red"
                     ))
                     if sys.stdin.isatty():
-                        Prompt.ask("Pressione Enter para continuar")
+                        Prompt.ask(i18n.t("tui.prompt.enter_continue"))
                 elif shutil.which("vhackintosh-install"):
                     cmd = ["sudo", "vhackintosh-install"] if os.geteuid() != 0 else ["vhackintosh-install"]
                     subprocess.run(cmd)
                 else:
-                    console.print("[red]Instalador 'vhackintosh-install' não encontrado.[/red]")
-                    Prompt.ask("Enter para continuar")
+                    console.print(i18n.t("tui.install_cli.missing"))
+                    Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
             elif choice == "1":
                 self._menu_manage_vms(vms)
             elif choice == "2":
@@ -281,7 +281,7 @@ class VMTUI:
             elif choice == "7":
                 self._menu_build_iso()
             elif choice == "0":
-                console.print("[dim]Até logo![/dim]")
+                console.print(i18n.t("tui.menu.goodbye"))
                 break
 
     def _backfill_install_phases(self) -> None:
@@ -305,7 +305,7 @@ class VMTUI:
         if not unverified:
             return
 
-        console.print("[dim]Verificando o estado de instalação das VMs cadastradas...[/dim]")
+        console.print(i18n.t("tui.backfill.checking"))
         for vm in unverified:
             probe = InstallProbe.probe(vm.disk_path) if vm.disk_path else DiskProbe()
             vm.install_evidence = classify_evidence(probe).value
@@ -314,23 +314,171 @@ class VMTUI:
             console.print(f"  [dim]{vm.name}: {summarize_probe(probe)} → {vm.install_phase}[/dim]")
         console.print()
 
+    def _language_screen(self) -> None:
+        """Tela de idioma: a primeira do appliance, antes de qualquer outra.
+
+        Spec language-selection: só aparece enquanto o settings não tem
+        `language` (instalação nova); depois disso vale a persistência e a
+        troca fica por `vhackintosh-lang pt|en`. Idioma inválido não é
+        possível aqui (as opções são exatamente os suportados).
+        """
+        if i18n.has_language_choice():
+            return
+        console.clear()
+        console.print(render_banner())
+        console.print(Panel(
+            i18n.t("lang.subtitle"),
+            title=f"[bold cyan]{i18n.t('lang.title')}[/bold cyan]",
+            border_style="cyan",
+        ))
+        options = list(i18n.LANGUAGES)
+        for idx, code in enumerate(options, 1):
+            console.print(f" [bold green]{idx}[/bold green] - {i18n.LANGUAGES[code]}")
+        choice = Prompt.ask(
+            "\n" + i18n.t("lang.choice"),
+            choices=[str(i) for i in range(1, len(options) + 1)],
+            default="1",
+        )
+        i18n.set_language(options[int(choice) - 1])
+        console.print(f"[green]{i18n.t('lang.set', language=i18n.LANGUAGES[i18n.get_language()])}[/green]")
+        time.sleep(1.0)
+
+    def _menu_usb_devices(self, vm: VMConfig) -> None:
+        """Hotplug de USB do host na VM viva (specs/host-device-passthrough).
+
+        QMP `device_add usb-host`/`device_del` (D3): sem relançar a VM e sem
+        mexer no argv — que é do reims-ctl. "Anexar sempre" (★) persiste no
+        `usb_auto_attach` da VM e o boot seguinte liga o dispositivo sozinho
+        (cenário do spec: pen drive plugado antes do boot).
+        """
+        from core import passthrough
+
+        sock = reims_ctl.qmp_socket(vm)
+        if not passthrough.probe_qmp(sock):
+            console.print(
+                i18n.t("tui.usb.not_running")
+            )
+            console.print(
+                i18n.t("tui.usb.auto_hint")
+            )
+            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+            return
+
+        auto_ids = set(getattr(vm, "usb_auto_attach", []) or [])
+        while True:
+            console.clear()
+            console.print(Panel(
+                i18n.t("tui.usb.title", name=vm.name),
+                border_style="green",
+            ))
+            try:
+                devices = passthrough.list_usb_devices()
+                attached = passthrough.attached_ids(sock)
+            except passthrough.QmpError as exc:
+                console.print(i18n.t("tui.usb.qmp_failed", error=exc.message))
+                Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+                return
+
+            if not devices:
+                console.print(i18n.t("tui.usb.none"))
+            for idx, dev in enumerate(devices, 1):
+                mark = "●" if dev.qmp_id in attached else "○"
+                star = i18n.t("tui.usb.always") if f"{dev.vendor_id}:{dev.product_id}" in auto_ids else ""
+                console.print(
+                    f" [bold]{idx}[/bold]{mark} {dev.short_label} "
+                    f"[{dev.vendor_id}:{dev.product_id}]{star}"
+                )
+            # Degradação explícita (spec host-device-passthrough 3.4): o que o
+            # host não tem, dizemos — sem impedir o uso do resto do menu.
+            try:
+                extras = passthrough.list_attachable_extra()
+            except Exception:  # noqa: BLE001 — degradação nunca quebra o menu
+                extras = {}
+            if not extras.get("camera"):
+                console.print(i18n.t("tui.usb.no_camera"))
+            if not extras.get("wireless"):
+                console.print(i18n.t("tui.usb.no_wireless"))
+
+            nums = [str(i) for i in range(1, len(devices) + 1)]
+            autos = [f"a{i}" for i in nums]
+            sel = Prompt.ask(
+                i18n.t("tui.usb.prompt_help"),
+                choices=nums + autos + ["n", "0"],
+                default="0",
+            )
+            if sel == "0":
+                return
+            if sel == "n":
+                continue
+
+            auto = sel.startswith("a")
+            dev = devices[int(sel.lstrip("a")) - 1]
+            key = f"{dev.vendor_id}:{dev.product_id}"
+            try:
+                if dev.qmp_id in attached:
+                    passthrough.detach(sock, dev)
+                    console.print(i18n.t("tui.usb.detached", device=dev.short_label))
+                else:
+                    passthrough.attach(sock, dev)
+                    console.print(i18n.t("tui.usb.attached", device=dev.short_label))
+                if auto:
+                    if key in auto_ids:
+                        auto_ids.discard(key)
+                    else:
+                        auto_ids.add(key)
+                    vm.usb_auto_attach = sorted(auto_ids)
+                    self.store.update_vm(vm)
+            except passthrough.QmpError as exc:
+                console.print(i18n.t("tui.usb.hotplug_failed", error=exc.message))
+            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+
+    def _usb_auto_attach(self, vm: VMConfig) -> None:
+        """Anexa os USBs marcados 'anexar sempre' logo que a VM sobe.
+
+        Chamado pelo `ReimsCtlSession.on_ready` (o `reims-ctl start` só
+        retorna com o QMP respondendo). Melhor-esforço: qualquer falha avisa
+        e a VM segue normalmente.
+        """
+        wanted = getattr(vm, "usb_auto_attach", []) or []
+        if not wanted:
+            return
+        from core import passthrough
+
+        sock = reims_ctl.qmp_socket(vm)
+        try:
+            devices = {
+                f"{d.vendor_id}:{d.product_id}": d
+                for d in passthrough.list_usb_devices()
+            }
+        except Exception:  # noqa: BLE001 — auto-anexo nunca derruba a VM
+            return
+        for key in wanted:
+            dev = devices.get(key)
+            if not dev:
+                continue
+            try:
+                passthrough.attach(sock, dev)
+                print(i18n.t("tui.usb.auto_attached", device=dev.short_label))
+            except Exception as exc:  # noqa: BLE001
+                print(i18n.t("tui.usb.auto_failed", device=dev.short_label, error=exc))
+
     def _render_vm_table(self, vms: list[VMConfig]) -> None:
-        table = Table(title="Máquinas Virtuais macOS Instaladas", border_style="cyan", header_style="bold magenta")
+        table = Table(title=i18n.t("tui.vm.table.title"), border_style="cyan", header_style="bold magenta")
         table.add_column("#", justify="center", style="bold yellow", width=4)
-        table.add_column("Nome da VM", style="bold white")
-        table.add_column("Versão macOS", style="cyan")
+        table.add_column(i18n.t("tui.vm.col.name"), style="bold white")
+        table.add_column(i18n.t("tui.vm.col.macos_version"), style="cyan")
         table.add_column("Status", justify="center")
         table.add_column("vCPUs", justify="center")
         table.add_column("RAM", justify="center")
-        table.add_column("Disco", justify="center")
-        table.add_column("Gráficos", justify="center")
+        table.add_column(i18n.t("tui.vm.col.disk"), justify="center")
+        table.add_column(i18n.t("tui.vm.col.graphics"), justify="center")
         table.add_column("Auto-Start", justify="center")
 
         if not vms:
-            table.add_row("-", "Nenhuma VM cadastrada ainda", "-", "-", "-", "-", "-", "-", "-")
+            table.add_row("-", i18n.t("tui.vm.table.empty"), "-", "-", "-", "-", "-", "-", "-")
         else:
             for idx, vm in enumerate(vms, start=1):
-                auto_str = "[bold green]★ SIM[/bold green]" if vm.auto_start else "[dim]NÃO[/dim]"
+                auto_str = i18n.t("tui.vm.table.auto_yes") if vm.auto_start else i18n.t("tui.vm.table.auto_no")
                 gpu_str = vm.selected_gpu_name or vm.gpu_mode
                 if len(gpu_str) > 24:
                     gpu_str = gpu_str[:21] + "..."
@@ -353,51 +501,51 @@ class VMTUI:
         """Alterna manualmente a fase da instalação do macOS desta VM."""
         console.clear()
         console.print(render_banner())
-        console.print("[bold cyan]Estado da Instalação do macOS[/bold cyan]\n")
+        console.print(i18n.t("tui.phase.title"))
 
         current = normalize_phase(getattr(vm, "install_phase", None))
         probe = InstallProbe.probe(vm.disk_path) if vm.disk_path else DiskProbe()
         vm.install_evidence = classify_evidence(probe).value
         self.store.update_vm(vm)
 
-        console.print(f"Fase atual: {phase_label(current)}")
-        console.print(f"Reboots registrados: {getattr(vm, 'install_reboots', 0)}")
-        console.print(f"Sonda de disco: [dim]{summarize_probe(probe)}[/dim]\n")
+        console.print(i18n.t("tui.phase.current", phase=phase_label(current)))
+        console.print(i18n.t("tui.phase.reboots", count=getattr(vm, "install_reboots", 0)))
+        console.print(i18n.t("tui.phase.disk_probe", probe=summarize_probe(probe)))
 
         if probe.looks_like_complete_install:
-            console.print("[bold green]Evidência: existe um sistema macOS instalado neste disco.[/bold green]")
+            console.print(i18n.t("tui.phase.evidence_installed"))
         elif probe.has_any_system_data:
-            console.print("[yellow]Evidência: o disco tem dados, mas a instalação parece incompleta.[/yellow]")
+            console.print(i18n.t("tui.phase.evidence_partial"))
         else:
-            console.print("[yellow]Evidência: nenhum sistema detectado no disco.[/yellow]")
+            console.print(i18n.t("tui.phase.evidence_none"))
 
-        console.print("\n[bold]Efeito da fase na execução da VM:[/bold]")
-        console.print("  [bold green]INSTALADO[/bold green]  → mídia de instalação desacoplada, [bold]sincronização de energia ATIVA[/bold]")
-        console.print("                  (reiniciar/desligar no macOS reinicia/desliga o computador)")
-        console.print("  [bold yellow]INSTALANDO[/bold yellow] → mídia de instalação anexada, reboots contidos na VM")
-        console.print("                  ([bold]o computador físico NUNCA é reiniciado[/bold])\n")
+        console.print(i18n.t("tui.phase.effect.title"))
+        console.print(i18n.t("tui.phase.effect.installed"))
+        console.print(i18n.t("tui.phase.effect.installed_note"))
+        console.print(i18n.t("tui.phase.effect.installing"))
+        console.print(i18n.t("tui.phase.effect.installing_note"))
 
         if current is InstallPhase.INSTALLED:
-            if Confirm.ask("Voltar esta VM para o modo INSTALAÇÃO (desativa a sincronização de energia)?", default=False):
+            if Confirm.ask(i18n.t("tui.phase.confirm.revert"), default=False):
                 vm.install_phase = InstallPhase.INSTALLING.value
                 self.store.update_vm(vm)
-                console.print("[bold yellow]✔ VM em modo INSTALAÇÃO. O host não será reiniciado.[/bold yellow]")
+                console.print(i18n.t("tui.phase.reverted"))
         else:
-            if Confirm.ask("Marcar o macOS como INSTALADO (ativa a sincronização de energia do host)?", default=False):
+            if Confirm.ask(i18n.t("tui.phase.confirm.mark_installed"), default=False):
                 vm.install_phase = InstallPhase.INSTALLED.value
                 self.store.update_vm(vm)
-                console.print("[bold green]✔ VM marcada como INSTALADA. O host acompanhará reboots/desligamentos.[/bold green]")
+                console.print(i18n.t("tui.phase.marked_installed"))
 
-        Prompt.ask("\nPressione Enter para continuar")
+        Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))
 
     def _menu_manage_vms(self, vms: list[VMConfig]) -> None:
         if not vms:
-            console.print("[yellow]Nenhuma VM cadastrada. Crie uma nova VM primeiro![/yellow]")
-            Prompt.ask("Pressione Enter para continuar")
+            console.print(i18n.t("tui.vm.manage.none"))
+            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
             return
 
         choices = [str(i) for i in range(1, len(vms) + 1)] + ["b"]
-        idx_str = Prompt.ask("\nDigite o número da VM para gerenciar (ou [b] para voltar)", choices=choices)
+        idx_str = Prompt.ask(i18n.t("tui.vm.manage.prompt"), choices=choices)
         if idx_str == "b":
             return
 
@@ -411,73 +559,76 @@ class VMTUI:
 
             # Painel com todas as especificações da VM
             details_text = Text()
-            details_text.append(f"Nome da VM: ", style="bold")
+            details_text.append(i18n.t("tui.vm.details.name"), style="bold")
             details_text.append(f"{vm.name}\n", style="bold green")
-            details_text.append(f"Versão do macOS: ", style="bold")
+            details_text.append(i18n.t("tui.vm.details.macos_version"), style="bold")
             details_text.append(f"{vm.macos_version.capitalize()}\n", style="cyan")
-            details_text.append(f"Processamento: ", style="bold")
+            details_text.append(i18n.t("tui.vm.details.processing"), style="bold")
             details_text.append(f"{vm.vcpus} vCPUs\n", style="white")
-            details_text.append(f"Memória RAM: ", style="bold")
+            details_text.append(i18n.t("tui.vm.details.ram"), style="bold")
             details_text.append(f"{vm.ram_gb} GB\n", style="white")
             # Informações de disco
             disk_info = DiskProvisioner.get_disk_info(vm.disk_path) if vm.disk_path else {"virtual_gb": vm.disk_size_gb, "disk_gb": 0}
-            details_text.append(f"Disco Virtual: ", style="bold")
-            details_text.append(f"{vm.disk_size_gb} GB alocados (Uso real no host: {disk_info['disk_gb']} GB)\n", style="white")
-            details_text.append(f"Arquivo de Disco: ", style="bold")
-            details_text.append(f"{vm.disk_path or 'Padrão'}\n", style="dim")
-            details_text.append(f"Adaptador Gráfico: ", style="bold")
+            details_text.append(i18n.t("tui.vm.details.virtual_disk"), style="bold")
+            details_text.append(i18n.t("tui.vm.details.disk_usage", size=vm.disk_size_gb, used=disk_info["disk_gb"]), style="white")
+            details_text.append(i18n.t("tui.vm.details.disk_file"), style="bold")
+            details_text.append(i18n.t("tui.vm.details.disk_path", path=vm.disk_path or i18n.t("tui.vm.details.default")), style="dim")
+            details_text.append(i18n.t("tui.vm.details.gpu_adapter"), style="bold")
             gpu_display = vm.selected_gpu_name or vm.gpu_mode
             pci_suffix = f" [PCI: {vm.selected_gpu}]" if vm.selected_gpu else ""
             details_text.append(f"{gpu_display}{pci_suffix}\n", style="magenta")
-            details_text.append(f"Auto-Start no Boot: ", style="bold")
-            details_text.append(f"{'ATIVADO' if vm.auto_start else 'DESATIVADO'}\n", style="bold green" if vm.auto_start else "dim")
+            details_text.append(i18n.t("tui.vm.details.autostart"), style="bold")
+            details_text.append((i18n.t("tui.vm.details.enabled") if vm.auto_start else i18n.t("tui.vm.details.disabled")) + "\n", style="bold green" if vm.auto_start else "dim")
             show_picker = getattr(vm, "opencore_show_picker", False)
-            details_text.append(f"Boot do OpenCore: ", style="bold")
-            details_text.append(f"{'EXIBIR MENU (10s)' if show_picker else 'DIRETO NO MACOS (Segure ESPAÇO para opções)'}\n", style="yellow" if show_picker else "bold cyan")
+            details_text.append(i18n.t("tui.vm.details.opencore_boot"), style="bold")
+            details_text.append((i18n.t("tui.vm.details.picker_menu") if show_picker else i18n.t("tui.vm.details.picker_direct")) + "\n", style="yellow" if show_picker else "bold cyan")
             current_phase = normalize_phase(getattr(vm, "install_phase", None))
-            details_text.append(f"Instalação do macOS: ", style="bold")
+            details_text.append(i18n.t("tui.vm.details.install_state"), style="bold")
             details_text.append(f"{phase_label(current_phase)}\n")
-            details_text.append(f"Reboots da instalação: ", style="bold")
+            details_text.append(i18n.t("tui.vm.details.install_reboots"), style="bold")
             details_text.append(f"{getattr(vm, 'install_reboots', 0)}\n")
-            details_text.append(f"Sincronização de energia do host: ", style="bold")
+            details_text.append(i18n.t("tui.vm.details.host_power_sync"), style="bold")
             if current_phase is InstallPhase.INSTALLED:
-                details_text.append("ATIVADA (o PC reinicia/desliga junto com o macOS)\n\n", style="bold green")
+                details_text.append(i18n.t("tui.vm.details.sync_on"), style="bold green")
             else:
-                details_text.append("DESATIVADA (o PC não reinicia durante a instalação)\n\n", style="bold yellow")
+                details_text.append(i18n.t("tui.vm.details.sync_off"), style="bold yellow")
 
-            details_text.append(f"── OpenCore SMBIOS ──\n", style="dim cyan")
-            details_text.append(f"Modelo: {vm.smbios.model}\n", style="dim")
-            details_text.append(f"Serial: {vm.smbios.serial_number}\n", style="dim")
-            details_text.append(f"MLB: {vm.smbios.board_serial}\n", style="dim")
-            details_text.append(f"SmUUID: {vm.smbios.smuuid}\n", style="dim")
+            details_text.append("── OpenCore SMBIOS ──\n", style="dim cyan")
+            details_text.append(i18n.t("tui.vm.details.smbios_model", value=vm.smbios.model), style="dim")
+            details_text.append(i18n.t("tui.vm.details.smbios_serial", value=vm.smbios.serial_number), style="dim")
+            details_text.append(i18n.t("tui.vm.details.smbios_mlb", value=vm.smbios.board_serial), style="dim")
+            details_text.append(i18n.t("tui.vm.details.smbios_smuuid", value=vm.smbios.smuuid), style="dim")
 
-            panel = Panel(details_text, title=f"[bold green]Gerenciamento da VM: {vm.name}[/bold green]", border_style="green")
+            panel = Panel(details_text, title=i18n.t("tui.vm.details.title", name=vm.name), border_style="green")
             console.print(panel)
 
             gpus = GPUChecker.list_gpus()
             has_multiple_gpus = len(gpus) > 1
 
-            console.print("[bold cyan]Ações Disponíveis:[/bold cyan]")
-            console.print(" [bold green]1[/bold green] - ▶ Iniciar esta VM")
-            console.print(" [bold green]2[/bold green] - ★ Alternar Auto-Start no Boot")
-            console.print(" [bold green]3[/bold green] - ⚡ Alternar Boot do OpenCore (Direto vs Menu)")
-            console.print(" [bold green]4[/bold green] - ⚙ Ajustar vCPUs e Memória RAM")
-            console.print(" [bold green]5[/bold green] - 🔄 Regenerar Seriais GenSMBIOS")
-            console.print(" [bold magenta]i[/bold magenta] - ⏳ Alternar Estado da Instalação do macOS (Instalando / Instalado)")
+            console.print(i18n.t("tui.vm.actions.title"))
+            console.print(i18n.t("tui.vm.actions.start"))
+            console.print(i18n.t("tui.vm.actions.toggle_autostart"))
+            console.print(i18n.t("tui.vm.actions.toggle_picker"))
+            console.print(i18n.t("tui.vm.actions.adjust_resources"))
+            console.print(i18n.t("tui.vm.actions.regenerate_serials"))
+            console.print(i18n.t("tui.vm.actions.usb"))
+            console.print(i18n.t("tui.vm.actions.toggle_phase"))
             if has_multiple_gpus:
-                console.print(" [bold green]6[/bold green] - 🎮 Alterar Placa de Vídeo Vinculada")
-                console.print(" [bold red]7[/bold red] - ✖ Excluir esta VM")
-                allowed_actions = ["1", "2", "3", "4", "5", "6", "7", "i", "I", "0"]
+                console.print(i18n.t("tui.vm.actions.change_gpu"))
+                console.print(i18n.t("tui.vm.actions.delete"))
+                allowed_actions = ["1", "2", "3", "4", "5", "6", "7", "d", "D", "i", "I", "0"]
             else:
-                console.print(" [bold red]6[/bold red] - ✖ Excluir esta VM")
-                allowed_actions = ["1", "2", "3", "4", "5", "6", "i", "I", "0"]
-            console.print(" [bold yellow]0[/bold yellow] - Voltar ao Menu Principal")
+                console.print(i18n.t("tui.vm.actions.delete"))
+                allowed_actions = ["1", "2", "3", "4", "5", "6", "d", "D", "i", "I", "0"]
+            console.print(i18n.t("tui.vm.actions.back"))
 
-            action = Prompt.ask("\nEscolha uma ação", choices=allowed_actions, default="1")
+            action = Prompt.ask(i18n.t("tui.vm.actions.prompt"), choices=allowed_actions, default="1")
 
             if action == "1":
                 self._launch_vm(vm)
                 break
+            elif action in ("d", "D"):
+                self._menu_usb_devices(vm)
             elif action in ("i", "I"):
                 self._toggle_install_phase(vm)
             elif action == "2":
@@ -488,7 +639,7 @@ class VMTUI:
                 new_picker = not getattr(vm, "opencore_show_picker", False)
                 vm.opencore_show_picker = new_picker
                 self.store.update_vm(vm)
-                console.print("\n[cyan]Sincronizando config.plist da partição EFI do OpenCore...[/cyan]")
+                console.print(i18n.t("tui.opencore.syncing"))
                 opencore_file = None
                 if vm.disk_path:
                     cand = Path(vm.disk_path).parent / "OpenCore.qcow2"
@@ -505,32 +656,32 @@ class VMTUI:
                 if opencore_file:
                     try:
                         DiskProvisioner.inject_opencore_config(opencore_file, vm, show_picker=new_picker)
-                        status_str = "EXIBIR MENU (10s)" if new_picker else "AUTO-BOOT DIRETO NO MACOS (Segure ESPAÇO no boot para opções)"
-                        console.print(f"[bold green]✔ OpenCore atualizado com sucesso: {status_str}[/bold green]")
+                        status_str = i18n.t("tui.vm.details.picker_menu") if new_picker else i18n.t("tui.opencore.autoboot_direct")
+                        console.print(i18n.t("tui.opencore.updated", status=status_str))
                     except Exception as e:
-                        console.print(f"[bold red]Erro ao regravar OpenCore.qcow2:[/bold red] {e}")
+                        console.print(i18n.t("tui.opencore.write_error", error=e))
                 else:
-                    console.print("[yellow]Aviso: Arquivo OpenCore.qcow2 da VM não encontrado para atualização imediata.[/yellow]")
-                Prompt.ask("Pressione Enter para continuar")
+                    console.print(i18n.t("tui.opencore.not_found"))
+                Prompt.ask(i18n.t("tui.prompt.enter_continue"))
             elif action == "4":
                 self._edit_vm_resources(vm)
             elif action == "5":
                 new_smbios = GenSMBIOS.generate(vm.macos_version)
                 vm.smbios = new_smbios
                 self.store.update_vm(vm)
-                console.print("[bold green]Novos seriais SMBIOS gerados com sucesso![/bold green]")
-                Prompt.ask("Enter para continuar")
+                console.print(i18n.t("tui.smbios.generated"))
+                Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
             elif has_multiple_gpus and action == "6":
                 self._choose_gpu_for_vm(vm, gpus)
                 self.store.update_vm(vm)
-                console.print(f"[bold green]Placa de vídeo atualizada para: {vm.selected_gpu_name}![/bold green]")
-                Prompt.ask("Enter para continuar")
+                console.print(i18n.t("tui.gpu.updated", name=vm.selected_gpu_name))
+                Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
             elif (has_multiple_gpus and action == "7") or (not has_multiple_gpus and action == "6"):
-                if Confirm.ask(f"[bold red]Tem certeza que deseja excluir a VM '{vm.name}'?[/bold red]"):
-                    del_disk = Confirm.ask("Deseja apagar também o arquivo de disco virtual do SSD?")
+                if Confirm.ask(i18n.t("tui.vm.delete.confirm", name=vm.name)):
+                    del_disk = Confirm.ask(i18n.t("tui.vm.delete.disk"))
                     self.store.delete_vm(vm.id, delete_disk=del_disk)
-                    console.print("[green]VM excluída com sucesso.[/green]")
-                    Prompt.ask("Enter para continuar")
+                    console.print(i18n.t("tui.vm.delete.done"))
+                    Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
                     break
             elif action == "0":
                 break
@@ -538,7 +689,7 @@ class VMTUI:
     def _wizard_create_vm(self) -> None:
         console.clear()
         console.print(render_banner())
-        console.print("[bold cyan]Assistente de Criação de VM macOS[/bold cyan]\n")
+        console.print(i18n.t("tui.wizard.title"))
 
         # ------------------------------------------------------------------
         # Validação antecipada de hardware (KVM e Vulkan 1.2+):
@@ -550,58 +701,47 @@ class VMTUI:
             crit_msgs = []
             for c in readiness.checks:
                 if not c.passed and c.is_critical:
-                    crit_msgs.append(f"• [bold white]{c.name}:[/bold white] {c.details}")
+                    crit_msgs.append(i18n.t("tui.wizard.crit_check", name=c.name, details=c.details))
                     if c.remediation:
-                        crit_msgs.append(f"  [dim]Solução: {c.remediation}[/dim]")
+                        crit_msgs.append(i18n.t("tui.wizard.remediation", remediation=c.remediation))
 
             erros_str = "\n".join(crit_msgs)
 
             console.print(Panel(
-                f"[bold red]Criação Bloqueada: Requisitos de Hardware Não Atendidos[/bold red]\n\n"
-                f"[bold]Problemas detectados:[/bold]\n{erros_str}\n\n"
-                "O vHackintosh utiliza exclusivamente o Reims vGPU (Vulkan 1.2+ em GPU física)\n"
-                "e aceleração KVM por hardware. Sem esses recursos, máquinas virtuais macOS não\n"
-                "podem ser executadas.\n\n"
-                "[bold yellow]Ambiente incompatível típico:[/bold yellow]\n"
-                "• Você está testando o appliance dentro de uma máquina virtual emulada\n"
-                "  (ex: QEMU nested com -vga std) sem GPU Passthrough;\n"
-                "• A placa gráfica do computador é antiga ou não suporta Vulkan 1.2+;\n"
-                "• A virtualização VT-x / AMD-V está desativada no setup da BIOS.\n\n"
-                "[dim]Para utilizar o vHackintosh com aceleração gráfica, instale-o diretamente no disco (bare-metal)\n"
-                "de um computador compatível com GPU Intel (Gen9+), NVIDIA (GTX 900+) ou AMD.[/dim]",
-                title="Hardware Incompatível",
+                i18n.t("tui.wizard.blocked", errors=erros_str),
+                title=i18n.t("tui.install_blocked.title"),
                 border_style="red",
             ))
             if sys.stdin.isatty():
-                Prompt.ask("Pressione Enter para retornar ao menu")
+                Prompt.ask(i18n.t("tui.prompt.enter_return_menu"))
             return
 
         # Análise automática de hardware
         profile = HardwareAdvisor.analyze()
 
         # 1. Nome da VM
-        name = Prompt.ask("Digite um nome para a VM", default="macOS Workstation")
+        name = Prompt.ask(i18n.t("tui.wizard.name.prompt"), default="macOS Workstation")
         vm_id = name.lower().replace(" ", "-") + "-" + str(uuid.uuid4())[:4]
 
         # 2. Versão do macOS
-        console.print("\n[bold]Escolha a versão do macOS:[/bold]")
-        console.print(" 1 - macOS Tahoe 26 (Experimental Reims vGPU)")
-        console.print(" 2 - macOS Sequoia 15 (Recomendada / Estável)")
-        console.print(" 3 - macOS Ventura 13 (Legado Estável)")
-        ver_opt = Prompt.ask("Versão", choices=["1", "2", "3"], default="2")
+        console.print(i18n.t("tui.wizard.version.title"))
+        console.print(i18n.t("tui.wizard.option.tahoe"))
+        console.print(i18n.t("tui.wizard.option.sequoia"))
+        console.print(i18n.t("tui.wizard.option.ventura"))
+        ver_opt = Prompt.ask(i18n.t("tui.wizard.version.prompt"), choices=["1", "2", "3"], default="2")
         version_map = {"1": "tahoe", "2": "sequoia", "3": "ventura"}
         macos_version = version_map[ver_opt]
 
         # 3. vCPUs recomendadas
-        console.print(f"\n[cyan]Topologia de CPU detectada:[/cyan] {profile.cpu.model_name} ({profile.cpu.total_threads} threads)")
-        vcpus = IntPrompt.ask("Quantidade de vCPUs", default=profile.cpu.suggested_vcpus)
+        console.print(i18n.t("tui.wizard.cpu.topology", model=profile.cpu.model_name, threads=profile.cpu.total_threads))
+        vcpus = IntPrompt.ask(i18n.t("tui.wizard.vcpus.prompt"), default=profile.cpu.suggested_vcpus)
 
         # 4. RAM recomendada
-        console.print(f"[cyan]RAM Total do Host:[/cyan] {profile.ram.total_gb} GB")
-        ram_gb = IntPrompt.ask("Quantidade de Memória RAM (GB)", default=profile.ram.suggested_vm_ram_gb)
+        console.print(i18n.t("tui.wizard.ram.host_total", gb=profile.ram.total_gb))
+        ram_gb = IntPrompt.ask(i18n.t("tui.wizard.ram.prompt"), default=profile.ram.suggested_vm_ram_gb)
 
         # 5. Tamanho do Disco
-        disk_size_gb = IntPrompt.ask("Tamanho do Disco Virtual (GB)", default=64)
+        disk_size_gb = IntPrompt.ask(i18n.t("tui.wizard.disk.prompt"), default=64)
 
         # 6. Seleção de Placa de Vídeo (somente se houver mais de 1 GPU no host)
         gpus = GPUChecker.list_gpus()
@@ -609,23 +749,23 @@ class VMTUI:
         selected_gpu_name = None
 
         if len(gpus) > 1:
-            console.print("\n[bold cyan]Placas de Vídeo Detectadas no Host:[/bold cyan]")
+            console.print(i18n.t("tui.gpu.detected"))
             default_choice = "1"
             for idx, g in enumerate(gpus, start=1):
                 if g.vendor_name == "AMD":
-                    tipo = "[bold green]Dedicada (Suporte Nativo Apple / Metal)[/bold green]"
+                    tipo = i18n.t("tui.gpu.type.dedicated_apple")
                 elif g.vendor_name == "NVIDIA":
-                    tipo = "[bold magenta]Dedicada (Reims vGPU / Vulkan)[/bold magenta]"
+                    tipo = i18n.t("tui.gpu.type.dedicated_reims")
                 else:
-                    tipo = "[bold cyan]Integrada (Reims vGPU / Vulkan)[/bold cyan]"
+                    tipo = i18n.t("tui.gpu.type.integrated")
 
                 if g.vendor_name in ["NVIDIA", "AMD"]:
                     default_choice = str(idx)
-                console.print(f"  [bold yellow]{idx}[/bold yellow] - {g.vendor_name} {g.device_name} ([dim]{g.pci_slot}[/dim]) [{tipo}]")
+                console.print(i18n.t("tui.gpu.row", idx=idx, vendor=g.vendor_name, device=g.device_name, slot=g.pci_slot, tipo=tipo))
 
             gpu_choices = [str(i) for i in range(1, len(gpus) + 1)]
             chosen_idx = Prompt.ask(
-                "Selecione a GPU para vinculação e aceleração da VM",
+                i18n.t("tui.gpu.select"),
                 choices=gpu_choices,
                 default=default_choice,
             )
@@ -637,7 +777,7 @@ class VMTUI:
             selected_gpu_name = f"{gpus[0].vendor_name} {gpus[0].device_name}"
 
         # 7. Auto-Start
-        auto_start = Confirm.ask("Definir esta VM para iniciar automaticamente no boot do host?", default=False)
+        auto_start = Confirm.ask(i18n.t("tui.wizard.autostart.confirm"), default=False)
 
         # 8. Geração automática de SMBIOS
         smbios = GenSMBIOS.generate(macos_version=macos_version)
@@ -646,7 +786,7 @@ class VMTUI:
         cached_img = MacOSDownloader.get_cached_image_path(macos_version)
         installer_path = str(cached_img) if cached_img else ""
         if not cached_img:
-            if Confirm.ask(f"\nDeseja baixar a imagem oficial de recuperação da Apple para {macos_version.capitalize()} agora?", default=True):
+            if Confirm.ask(i18n.t("tui.wizard.download.confirm", version=macos_version.capitalize()), default=True):
                 img_result = MacOSDownloader.prepare_installer(macos_version)
                 if img_result:
                     installer_path = str(img_result)
@@ -666,50 +806,50 @@ class VMTUI:
             created_at=datetime.datetime.now().isoformat(),
         )
 
-        console.print("\n[bold cyan]▶ Provisionando armazenamento e partição EFI OpenCore...[/bold cyan]")
+        console.print(i18n.t("tui.wizard.provisioning"))
         try:
             bundle = DiskProvisioner.provision(vm, installer_img=installer_path)
             vm.disk_path = str(bundle.hdd_path)
         except Exception as e:
-            console.print(f"[bold red]Aviso no provisionamento de disco:[/bold red] {e}")
+            console.print(i18n.t("tui.wizard.provision_error", error=e))
 
         self.store.add_vm(vm)
-        console.print(f"\n[bold green]✔ VM '{name}' criada e provisionada com sucesso![/bold green]\n")
+        console.print(i18n.t("tui.wizard.created", name=name))
 
-        if Confirm.ask("Deseja INICIAR a instalação do macOS nesta VM agora?", default=True):
+        if Confirm.ask(i18n.t("tui.wizard.start_install.confirm"), default=True):
             self._launch_vm(vm, is_installation=True)
         else:
-            Prompt.ask("Pressione Enter para voltar ao menu")
+            Prompt.ask(i18n.t("tui.prompt.enter_back_menu"))
 
     def _edit_vm_resources(self, vm: VMConfig) -> None:
-        console.print(f"\n[bold]Ajuste de Recursos para {vm.name}:[/bold]")
+        console.print(i18n.t("tui.resources.title", name=vm.name))
         vm.vcpus = IntPrompt.ask("vCPUs", default=vm.vcpus)
         vm.ram_gb = IntPrompt.ask("RAM (GB)", default=vm.ram_gb)
 
         gpus = GPUChecker.list_gpus()
         if len(gpus) > 1:
-            if Confirm.ask("Deseja alterar a placa de vídeo vinculada a esta VM?", default=False):
+            if Confirm.ask(i18n.t("tui.resources.change_gpu.confirm"), default=False):
                 self._choose_gpu_for_vm(vm, gpus)
 
         self.store.update_vm(vm)
-        console.print("[bold green]Recursos atualizados com sucesso![/bold green]")
-        Prompt.ask("Enter para continuar")
+        console.print(i18n.t("tui.resources.updated"))
+        Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
 
     def _choose_gpu_for_vm(self, vm: VMConfig, gpus: list) -> None:
-        console.print("\n[bold cyan]Placas de Vídeo Detectadas no Host:[/bold cyan]")
+        console.print(i18n.t("tui.gpu.detected"))
         for idx, g in enumerate(gpus, start=1):
             if g.vendor_name == "AMD":
-                tipo = "[bold green]Dedicada (Suporte Nativo Apple / Metal)[/bold green]"
+                tipo = i18n.t("tui.gpu.type.dedicated_apple")
             elif g.vendor_name == "NVIDIA":
-                tipo = "[bold magenta]Dedicada (Reims vGPU / Vulkan)[/bold magenta]"
+                tipo = i18n.t("tui.gpu.type.dedicated_reims")
             else:
-                tipo = "[bold cyan]Integrada (Reims vGPU / Vulkan)[/bold cyan]"
+                tipo = i18n.t("tui.gpu.type.integrated")
 
-            selected_mark = " ★ (Atual)" if vm.selected_gpu == g.pci_slot else ""
-            console.print(f"  [bold yellow]{idx}[/bold yellow] - {g.vendor_name} {g.device_name} ([dim]{g.pci_slot}[/dim]) [{tipo}]{selected_mark}")
+            selected_mark = i18n.t("tui.gpu.current_mark") if vm.selected_gpu == g.pci_slot else ""
+            console.print(i18n.t("tui.gpu.row_marked", idx=idx, vendor=g.vendor_name, device=g.device_name, slot=g.pci_slot, tipo=tipo, mark=selected_mark))
 
         gpu_choices = [str(i) for i in range(1, len(gpus) + 1)]
-        g_choice = Prompt.ask("Selecione a nova GPU para a VM", choices=gpu_choices, default="1")
+        g_choice = Prompt.ask(i18n.t("tui.gpu.select_new"), choices=gpu_choices, default="1")
         chosen_gpu = gpus[int(g_choice) - 1]
         vm.selected_gpu = chosen_gpu.pci_slot
         vm.selected_gpu_name = f"{chosen_gpu.vendor_name} {chosen_gpu.device_name}"
@@ -727,72 +867,72 @@ class VMTUI:
         profile = HardwareAdvisor.analyze()
         gpus = GPUChecker.list_gpus()
 
-        console.print("[bold cyan]── Diagnóstico de Processamento & Memória ──[/bold cyan]")
-        console.print(f"CPU: [bold white]{profile.cpu.model_name}[/bold white]")
-        console.print(f"Threads Totais: [bold green]{profile.cpu.total_threads}[/bold green] | Físicos: {profile.cpu.physical_cores}")
-        console.print(f"RAM Total: [bold green]{profile.ram.total_gb} GB[/bold green] | Disponível: {profile.ram.available_gb} GB")
-        console.print(f"Recomendação de Alocação Segura: [bold cyan]{profile.cpu.suggested_vcpus} vCPUs / {profile.ram.suggested_vm_ram_gb} GB RAM[/bold cyan]\n")
+        console.print(i18n.t("tui.diag.cpu.title"))
+        console.print(i18n.t("tui.diag.cpu.model", model=profile.cpu.model_name))
+        console.print(i18n.t("tui.diag.cpu.threads", total=profile.cpu.total_threads, physical=profile.cpu.physical_cores))
+        console.print(i18n.t("tui.diag.ram", total=profile.ram.total_gb, available=profile.ram.available_gb))
+        console.print(i18n.t("tui.diag.recommendation", vcpus=profile.cpu.suggested_vcpus, ram=profile.ram.suggested_vm_ram_gb))
 
-        console.print("[bold cyan]── Diagnóstico de GPUs & Aceleração ──[/bold cyan]")
+        console.print(i18n.t("tui.diag.gpu.title"))
         for gpu in gpus:
-            console.print(f"• [bold white]{gpu.vendor_name} {gpu.device_name}[/bold white] ({gpu.pci_slot})")
-            console.print(f"  Compatibilidade Reims vGPU: {'[bold green]SIM (Vulkan 1.2+)[/bold green]' if gpu.reims_vgpu_compatible else '[red]NÃO[/red]'}")
+            console.print(i18n.t("tui.diag.gpu.row", vendor=gpu.vendor_name, device=gpu.device_name, slot=gpu.pci_slot))
+            console.print(i18n.t("tui.diag.gpu.reims_compat", compat=i18n.t("tui.diag.gpu.reims_yes") if gpu.reims_vgpu_compatible else i18n.t("tui.diag.gpu.reims_no")))
             console.print(f"  IOMMU Group: {gpu.iommu_group or 'N/A'} | VFIO Stubbed: {gpu.is_vfio_stubbed}")
-            console.print(f"  Recomendação: [dim]{gpu.recommendation}[/dim]\n")
+            console.print(i18n.t("tui.diag.gpu.recommendation", recommendation=gpu.recommendation))
 
         if interactive and sys.stdin.isatty():
-            Prompt.ask("Pressione Enter para voltar")
+            Prompt.ask(i18n.t("tui.prompt.enter_back"))
 
     def _update_upstream(self) -> None:
         from core.updater import SystemUpdater
         SystemUpdater.run_full_update(force=False)
-        Prompt.ask("\nPressione Enter para continuar")
+        Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))
 
     def _menu_download_images(self) -> None:
         console.clear()
         console.print(render_banner())
-        console.print("[bold cyan]Central de Download de Imagens macOS (Apple Recovery)[/bold cyan]\n")
+        console.print(i18n.t("tui.download.title"))
 
         readiness = SystemReadinessChecker.check_all()
         if not readiness.has_internet:
-            console.print("[bold red]✖ Erro: Nenhuma conexão com a Internet detectada.[/bold red]")
-            console.print("[yellow]O download de instaladores oficiais da Apple requer conectividade ativa.[/yellow]\n")
+            console.print(i18n.t("tui.download.no_net_error"))
+            console.print(i18n.t("tui.download.net_required"))
             if shutil.which("nmtui"):
-                if Confirm.ask("Deseja abrir o utilitário de rede 'nmtui' para conectar agora?", default=True):
+                if Confirm.ask(i18n.t("tui.download.nmtui.confirm"), default=True):
                     subprocess.run(["nmtui"])
-            Prompt.ask("Pressione Enter para continuar")
+            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
             return
 
         versions = list(MACOS_PRODUCTS.keys())
         for idx, ver in enumerate(versions, start=1):
             info = MACOS_PRODUCTS[ver]
             cached = MacOSDownloader.get_cached_image_path(ver)
-            status_str = f"[bold green]✔ BAIXADO[/bold green] ({cached})" if cached else "[dim]Não baixado[/dim]"
-            console.print(f" [bold green]{idx}[/bold green] - {info['name']}: {status_str}")
+            status_str = i18n.t("tui.download.status_downloaded", cached=cached) if cached else i18n.t("tui.download.status_not_downloaded")
+            console.print(i18n.t("tui.download.row", idx=idx, name=info['name'], status=status_str))
 
-        console.print(" [bold yellow]0[/bold yellow] - Voltar ao Menu")
+        console.print(i18n.t("tui.download.back"))
 
-        choice = Prompt.ask("\nEscolha uma versão para baixar/reparar", choices=[str(i) for i in range(len(versions) + 1)], default="0")
+        choice = Prompt.ask(i18n.t("tui.download.prompt"), choices=[str(i) for i in range(len(versions) + 1)], default="0")
         if choice == "0":
             return
 
         chosen_ver = versions[int(choice) - 1]
-        console.print(f"\n[bold green]Iniciando processo para {MACOS_PRODUCTS[chosen_ver]['name']}...[/bold green]")
+        console.print(i18n.t("tui.download.starting", name=MACOS_PRODUCTS[chosen_ver]['name']))
         MacOSDownloader.prepare_installer(chosen_ver)
-        Prompt.ask("\nPressione Enter para continuar")
+        Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))
 
     def _launch_vm(self, vm: VMConfig, is_installation: bool = False) -> None:
         console.clear()
         console.print(render_banner())
 
         if not self.lock.acquire(vm.name):
-            console.print("[bold red]ERRO: Já existe outra máquina virtual em execução no momento![/bold red]")
-            console.print("[yellow]Apenas 1 VM pode ser executada por vez no vHackintosh.[/yellow]")
-            Prompt.ask("Enter para continuar")
+            console.print(i18n.t("tui.launch.other_vm_running"))
+            console.print(i18n.t("tui.launch.only_one_vm"))
+            Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
             return
 
         try:
-            console.print(f"[bold green]▶ Iniciando VM '{vm.name}' (macOS {vm.macos_version.capitalize()})...[/bold green]\n")
+            console.print(i18n.t("tui.launch.starting", name=vm.name, version=vm.macos_version.capitalize()))
 
             reims_dir = None
             for cand in ["/opt/reims-vgpu", "/home/felipeab10/reims-vgpu", os.path.expanduser("~/reims-vgpu")]:
@@ -810,29 +950,19 @@ class VMTUI:
             vulkan_ok, vulkan_msg = GPUChecker.check_vulkan_host_readiness()
             if not vulkan_ok:
                 console.print(Panel(
-                    f"[bold red]ERRO: Hardware Gráfico Incompatível com o Reims vGPU[/bold red]\n\n"
-                    f"[bold]Diagnóstico:[/bold] {vulkan_msg}\n\n"
-                    "O Reims vGPU é o motor gráfico obrigatório do vHackintosh e exige\n"
-                    "suporte direto à API Vulkan 1.2+ com pelo menos uma GPU física.\n\n"
-                    "[bold yellow]Possíveis causas:[/bold yellow]\n"
-                    "• Você está testando o appliance dentro de uma máquina virtual emulada\n"
-                    "  (ex: QEMU nested com -vga std) sem GPU PCI Passthrough.\n"
-                    "• A GPU física da máquina é antiga e não suporta Vulkan 1.2+.\n"
-                    "• Os drivers Vulkan do host não foram carregados corretamente.\n\n"
-                    "[dim]Para executar o macOS com aceleração, instale o vHackintosh diretamente\n"
-                    "no hardware físico (bare-metal) de um computador compatível.[/dim]",
+                    i18n.t("tui.launch.vulkan_blocked", diag=vulkan_msg),
                     border_style="red",
                 ))
                 if sys.stdin.isatty():
-                    Prompt.ask("Pressione Enter para retornar")
+                    Prompt.ask(i18n.t("tui.prompt.enter_return"))
                 return
 
             # Compila o reims-vgpu quando a árvore trouxer fontes e o binário
             # estiver ausente ou defasado. É aqui que um patch novo deixa de
             # ficar invisível para a VM.
             if reims_dir and not self._ensure_reims_built(reims_dir):
-                console.print("[bold red]Sem um binário do QEMU não é possível iniciar a VM.[/bold red]")
-                Prompt.ask("Pressione Enter para continuar")
+                console.print(i18n.t("tui.launch.no_qemu"))
+                Prompt.ask(i18n.t("tui.prompt.enter_continue"))
                 return
 
             # Se a VM possui disco e OpenCore próprios no diretório
@@ -860,10 +990,10 @@ class VMTUI:
             vm.last_booted_at = datetime.datetime.now().isoformat(timespec="seconds")
             self.store.update_vm(vm)
 
-            console.print(f"[cyan]Estado da instalação:[/cyan] {phase_label(policy.phase)}")
+            console.print(i18n.t("tui.launch.install_state", phase=phase_label(policy.phase)))
             console.print(f"[dim]{policy.reason}[/dim]")
             if policy.is_installing:
-                console.print("[dim]Reboots do instalador serão absorvidos pela VM. O computador físico não será reiniciado.[/dim]\n")
+                console.print(i18n.t("tui.launch.reboots_absorbed"))
 
             # Mídia de instalação só é anexada enquanto a instalação não terminou.
             installer_img = None
@@ -890,16 +1020,11 @@ class VMTUI:
             )
             if not use_reims_rail:
                 console.print(Panel(
-                    f"[bold red]A VM não foi iniciada: o reims-vgpu está indisponível[/bold red]\n\n"
-                    f"[bold]Motivo:[/bold] {rail_reason}\n\n"
-                    "O reims-vgpu é o único motor de vídeo do vHackintosh. Sem ele o "
-                    "convidado\nnão seria acelerado, e este projeto não aceita mais "
-                    "fundo de tela lento\ncomo saída silenciosa.\n\n"
-                    "[dim]Corrija o motivo acima e tente iniciar de novo.[/dim]",
+                    i18n.t("tui.launch.rail_unavailable", reason=rail_reason),
                     border_style="red",
                 ))
                 if sys.stdin.isatty():
-                    Prompt.ask("Pressione Enter para continuar")
+                    Prompt.ask(i18n.t("tui.prompt.enter_continue"))
                 return
             # --- Delegação ao reims-ctl (árvore nova do reims-vgpu) -----------
             # O appliance não monta argv de QEMU: grava o vm.toml no layout do
@@ -919,13 +1044,11 @@ class VMTUI:
             ctl_bin = reims_ctl.reims_ctl_bin()
             if not ctl_bin:
                 console.print(Panel(
-                    "[bold red]A VM não foi iniciada: reims-ctl não encontrado[/bold red]\n\n"
-                    "O reims-ctl é instalado junto da compilação do reims-vgpu "
-                    "(scripts/install-ctl.sh). Sem ele não há quem suba a VM.",
+                    i18n.t("tui.launch.ctl_missing"),
                     border_style="red",
                 ))
                 if sys.stdin.isatty():
-                    Prompt.ask("Pressione Enter para continuar")
+                    Prompt.ask(i18n.t("tui.prompt.enter_continue"))
                 return
             start_cmd = [ctl_bin, "start", vm.id]
 
@@ -937,7 +1060,7 @@ class VMTUI:
                 [ctl_bin, "start", vm.id], env_vars
             )
             if sem_sessao:
-                console.print(self._WAYSESSION_MISSING)
+                console.print(i18n.t("tui.launch.no_waysession"))
 
             # Um reboot do convidado encerra o QEMU (vm.toml:
             # extra_args = ["-action", "reboot=shutdown"]) e o laço de sessão
@@ -953,21 +1076,17 @@ class VMTUI:
 
             def _relaunch_notice(step: int) -> None:
                 if step < 0:
-                    console.print(
-                        "[yellow]Muitos reboots seguidos; parando de relançar "
-                        "a VM automaticamente.[/yellow]"
-                    )
+                    console.print(i18n.t("tui.launch.too_many_reboots"))
                 else:
-                    console.print(
-                        f"[cyan]Instalador reiniciou a VM — relançando "
-                        f"({step})…[/cyan]"
-                    )
+                    console.print(i18n.t("tui.launch.relaunching", step=step))
 
             # O vm.toml pede `-action reboot=shutdown`: um reboot do convidado
             # encerra o QEMU e o laço é quem o recoloca — sem ele a instalação
             # morreria no primeiro reboot do instalador.
             total_resets, last_reason = run_rail_session(
-                launch=lambda: reims_ctl.ReimsCtlSession(start_cmd, env=env_vars),
+                launch=lambda: reims_ctl.ReimsCtlSession(
+                    start_cmd, env=env_vars, on_ready=lambda: self._usb_auto_attach(vm)
+                ),
                 make_monitor=_new_rail_monitor,
                 is_installing=policy.is_installing,
                 on_relaunch=_relaunch_notice,
@@ -988,9 +1107,9 @@ class VMTUI:
             # Reavalia a fase após o encerramento e oferece concluir a instalação.
             self._post_vm_phase_update(vm, policy)
 
-            console.print("\n[bold yellow]VM finalizada.[/bold yellow]")
+            console.print(i18n.t("tui.launch.finished"))
             if sys.stdin.isatty():
-                Prompt.ask("Pressione Enter para retornar ao gerenciador")
+                Prompt.ask(i18n.t("tui.prompt.enter_return_manager"))
         finally:
             self.lock.release()
 
@@ -1007,12 +1126,9 @@ class VMTUI:
             self.store.update_vm(vm)
 
         if not policy.enable_host_power_sync:
-            console.print(
-                "\n[bold yellow]⏳ Instalação em andamento: o computador físico NÃO será "
-                "reiniciado/desligado.[/bold yellow]"
-            )
+            console.print(i18n.t("tui.power.install_in_progress"))
             if getattr(monitor, "reset_count", 0):
-                console.print(f"[dim]Reboots absorvidos pela VM nesta sessão: {monitor.reset_count}[/dim]")
+                console.print(i18n.t("tui.power.reboots_absorbed", count=monitor.reset_count))
             return
 
         from core.power import PowerSync
@@ -1032,35 +1148,31 @@ class VMTUI:
             return
 
         probe = InstallProbe.probe(vm.disk_path) if vm.disk_path else DiskProbe()
-        console.print(f"\n[cyan]Sonda do disco da VM:[/cyan] [dim]{summarize_probe(probe)}[/dim]")
+        console.print(i18n.t("tui.post.vm_disk_probe", probe=summarize_probe(probe)))
         vm.install_evidence = classify_evidence(probe).value
 
         if not probe.looks_like_complete_install:
             vm.install_phase = InstallPhase.INSTALLING.value
             self.store.update_vm(vm)
-            console.print("[yellow]A instalação ainda NÃO está concluída.[/yellow]")
-            console.print("[dim]Sincronização de energia do host permanece DESATIVADA (o PC não reinicia com a VM).[/dim]")
+            console.print(i18n.t("tui.post.not_complete"))
+            console.print(i18n.t("tui.post.sync_stays_off"))
             return
 
-        console.print("[bold green]✔ Foi detectado um sistema macOS instalado no disco desta VM.[/bold green]")
+        console.print(i18n.t("tui.post.detected_installed"))
         if not sys.stdin.isatty():
             vm.install_phase = InstallPhase.INSTALLING.value
             self.store.update_vm(vm)
             return
 
-        if Confirm.ask(
-            "Marcar a instalação como CONCLUÍDA e ativar a sincronização de energia do host "
-            "(reiniciar/desligar no macOS reinicia/desliga o computador)?",
-            default=True,
-        ):
+        if Confirm.ask(i18n.t("tui.post.confirm_complete"), default=True):
             vm.install_phase = InstallPhase.INSTALLED.value
             vm.install_reboots = int(getattr(vm, "install_reboots", 0))
             self.store.update_vm(vm)
-            console.print("[bold green]✔ Sincronização de energia do host ATIVADA para esta VM.[/bold green]")
+            console.print(i18n.t("tui.post.sync_enabled"))
         else:
             vm.install_phase = InstallPhase.INSTALLING.value
             self.store.update_vm(vm)
-            console.print("[yellow]Mantida em modo INSTALAÇÃO: o host não será reiniciado/desligado.[/yellow]")
+            console.print(i18n.t("tui.post.kept_installing"))
 
     def _apply_gpu_environment(self, vm: VMConfig, env_vars: dict) -> None:
         if not vm.selected_gpu_name and not vm.selected_gpu:
@@ -1109,10 +1221,6 @@ class VMTUI:
             / "appliance" / "archiso" / "airootfs" / "usr" / "local" / "bin"
             / "vhackintosh-waysession"
         ),
-    )
-    _WAYSESSION_MISSING = (
-        "[bold yellow]Aviso: vhackintosh-waysession não encontrado e não há "
-        "sessão gráfica ativa. A VM não conseguirá abrir a janela.[/bold yellow]"
     )
 
     @classmethod
@@ -1164,24 +1272,15 @@ class VMTUI:
 
         console.print()
         console.print(Panel(
-            f"[bold yellow]O reims-vgpu precisa ser compilado[/bold yellow]\n"
-            f"[dim]Motivo: {state.reason}[/dim]\n\n"
-            f"A primeira compilação leva cerca de 5 minutos e roda uma única vez.\n"
-            f"Depois disso ela só repete quando a fonte do repositório do reims-vgpu atualizar.",
+            i18n.t("tui.build.needs_build", reason=state.reason),
             border_style="yellow",
         ))
-        if not Confirm.ask("Compilar agora?", default=True):
+        if not Confirm.ask(i18n.t("tui.build.confirm_now"), default=True):
             if binary_present():
-                console.print(
-                    "[yellow]Compilação recusada — a VM usará o binário que já existe "
-                    "(pode estar desatualizado em relação ao fonte).[/yellow]\n"
-                )
+                console.print(i18n.t("tui.build.refused_existing"))
                 return True
-            console.print(
-                "[bold red]Compilação recusada e não há binário algum: a VM não pode "
-                "ser lançada.[/bold red]"
-            )
-            Prompt.ask("Pressione Enter para continuar")
+            console.print(i18n.t("tui.build.refused_no_binary"))
+            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
             return False
 
         from rich.progress import (
@@ -1197,12 +1296,12 @@ class VMTUI:
             TimeElapsedColumn(),
             console=console,
         ) as progress:
-            task = progress.add_task("Preparando...", total=100)
+            task = progress.add_task(i18n.t("tui.build.preparing"), total=100)
             current = {"name": ""}
 
             def on_start(name: str, _expected: float) -> None:
                 current["name"] = name
-                progress.update(task, description=f"Compilando {name}...")
+                progress.update(task, description=i18n.t("tui.build.compiling", name=name))
 
             def on_progress(pct: float) -> None:
                 progress.update(task, completed=pct)
@@ -1211,7 +1310,7 @@ class VMTUI:
                 if not ok:
                     progress.update(
                         task,
-                        description=f"[bold red]Falha ao compilar {name}[/bold red]",
+                        description=i18n.t("tui.build.failed_task", name=name),
                     )
 
             try:
@@ -1222,77 +1321,74 @@ class VMTUI:
                     progress=on_progress,
                 )
             except Exception as exc:  # noqa: BLE001 — a TUI não pode morrer aqui
-                progress.update(task, description=f"[bold red]Erro: {exc}[/bold red]")
+                progress.update(task, description=i18n.t("tui.build.error", error=exc))
 
             if result["ok"]:
-                progress.update(task, completed=100.0, description="[bold green]Concluído[/bold green]")
+                progress.update(task, completed=100.0, description=i18n.t("tui.build.done"))
 
         if not result["ok"]:
             from core.reims_build import tail_log
-            console.print("[bold red]A compilação do reims-vgpu falhou.[/bold red]")
+            console.print(i18n.t("tui.build.failed"))
             for log_name in ("build-qemu-reims.log", "build-rom.log"):
                 snippet = tail_log(log_name, lines=12)
                 if snippet:
-                    console.print(f"[dim]--- {log_name} ---[/dim]")
+                    console.print(i18n.t("tui.build.log_header", name=log_name))
                     console.print(snippet)
-            console.print("[dim]Logs completos em ~/.config/vhackintosh/logs/[/dim]")
-            Prompt.ask("Pressione Enter para continuar")
+            console.print(i18n.t("tui.build.logs_path"))
+            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
             # O configure do QEMU apaga o build/ antes de reconfigurar, então uma
             # falha pode ter levado o binário anterior junto. Se não sobrou
             # nenhum, não há o que lançar — e dizer o contrário seria mentira.
             if not binary_present():
-                console.print(
-                    "[bold red]O binário anterior também foi perdido na tentativa de "
-                    "build — a VM não pode ser lançada até a compilação funcionar.[/bold red]"
-                )
+                console.print(i18n.t("tui.build.previous_lost"))
                 return False
-            console.print("[yellow]Seguindo com o binário anterior.[/yellow]\n")
+            console.print(i18n.t("tui.build.using_previous"))
             return True
 
-        console.print("[bold green]reims-vgpu compilado com sucesso.[/bold green]\n")
+        console.print(i18n.t("tui.build.success"))
         return True
 
     def _menu_build_iso(self) -> None:
         console.clear()
         console.print(render_banner())
-        console.print("[bold cyan]Gerador de Imagem ISO Bootável (vHackintosh Appliance Live USB)[/bold cyan]\n")
-        console.print("O Appliance vHackintosh é um sistema operacional Linux dedicado e minimalista,")
-        console.print("projetado especificamente para rodar máquinas virtuais macOS com aceleração gráfica.\n")
-        console.print("[bold green]Recursos integrados na ISO:[/bold green]")
-        console.print("  • Kernel Linux com otimizações KVM para macOS (MSRs ignorados, nested virtualization)")
-        console.print("  • Pilha gráfica Vulkan + Wayland nativo (sway em modo kiosk, sem X11)")
-        console.print("  • Subsistema de áudio PipeWire de baixa latência (Intel ICH9 HDA)")
-        console.print("  • Auto-login no console com interface Kiosk do vHackintosh")
-        console.print("  • [bold magenta]AI Coding Harnesses CLI integrados:[/bold magenta]")
+        console.print(i18n.t("tui.iso.title"))
+        console.print(i18n.t("tui.iso.desc1"))
+        console.print(i18n.t("tui.iso.desc2"))
+        console.print(i18n.t("tui.iso.features"))
+        console.print(i18n.t("tui.iso.feature.kernel"))
+        console.print(i18n.t("tui.iso.feature.graphics"))
+        console.print(i18n.t("tui.iso.feature.audio"))
+        console.print(i18n.t("tui.iso.feature.autologin"))
+        console.print(i18n.t("tui.iso.feature.ai"))
         console.print("      - [cyan]claude[/cyan]   (@anthropic-ai/claude-code)")
         console.print("      - [cyan]codex[/cyan]    (@openai/codex)")
         console.print("      - [cyan]opencode[/cyan] (opencode-cli)")
-        console.print("  • Tema customizado do GRUB 2 com identidade visual Apple Silicon / Minimalist\n")
+        console.print(i18n.t("tui.iso.feature.grub"))
 
         builder_script = Path(__file__).resolve().parent.parent / "appliance" / "build-iso.sh"
         if not shutil.which("mkarchiso"):
-            console.print("[bold yellow]Aviso: 'mkarchiso' não está instalado neste computador host.[/bold yellow]")
-            console.print("Para instalar o Archiso no Arch / CachyOS, execute:")
+            console.print(i18n.t("tui.iso.mkarchiso_missing"))
+            console.print(i18n.t("tui.iso.mkarchiso_hint"))
             console.print("  [bold green]sudo pacman -S --needed archiso[/bold green]\n")
 
-        console.print(f"Script de compilação: [dim]{builder_script}[/dim]\n")
-        console.print(" [bold green]1[/bold green] - Instruções para compilar a ISO (com tag do GitHub ou binários locais)")
-        console.print(" [bold green]2[/bold green] - Instalar / Atualizar Harnesses CLI neste sistema host agora")
-        console.print(" [bold yellow]0[/bold yellow] - Voltar ao Menu Principal")
+        console.print(i18n.t("tui.iso.build_script", path=builder_script))
+        console.print(i18n.t("tui.iso.opt.instructions"))
+        console.print(i18n.t("tui.iso.opt.harnesses"))
+        console.print(i18n.t("tui.vm.actions.back"))
 
-        choice = Prompt.ask("\nEscolha uma opção", choices=["1", "2", "0"], default="0")
+        choice = Prompt.ask(i18n.t("tui.menu.prompt_choice"), choices=["1", "2", "0"], default="0")
         if choice == "1":
-            console.print("\n[bold cyan]Opções de Compilação da Imagem ISO:[/bold cyan]\n")
-            console.print("  [bold green]• Opção A (Recomendada): Usando Release Oficial do GitHub:[/bold green]")
-            console.print(f"    [bold yellow]sudo bash {builder_script} --tag v1.0.1[/bold yellow]")
-            console.print("    [dim]Baixa os binários pré-compilados do GitHub Releases sem precisar compilar nada.[/dim]\n")
-            console.print("  [bold green]• Opção B: Usando a versão 'latest' mais recente do GitHub:[/bold green]")
-            console.print(f"    [bold yellow]sudo bash {builder_script} --tag latest[/bold yellow]\n")
-            console.print("  [bold green]• Opção C: Usando Binários Locais do Computador:[/bold green]")
-            console.print(f"    [bold yellow]sudo bash {builder_script}[/bold yellow]\n")
-            Prompt.ask("Pressione Enter para continuar")
+            console.print(i18n.t("tui.iso.build_options"))
+            console.print(i18n.t("tui.iso.option.a"))
+            console.print(i18n.t("tui.iso.cmd.a", script=builder_script))
+            console.print(i18n.t("tui.iso.option.a_note"))
+            console.print(i18n.t("tui.iso.option.b"))
+            console.print(i18n.t("tui.iso.cmd.b", script=builder_script))
+            console.print(i18n.t("tui.iso.option.c"))
+            console.print(i18n.t("tui.iso.cmd.c", script=builder_script))
+            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
         elif choice == "2":
             setup_script = Path(__file__).resolve().parent.parent / "appliance" / "archiso" / "airootfs" / "usr" / "local" / "bin" / "setup-harness-tools.sh"
             if setup_script.exists():
                 subprocess.run(["bash", str(setup_script)])
-            Prompt.ask("\nPressione Enter para continuar")
+            Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))

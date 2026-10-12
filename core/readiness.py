@@ -71,6 +71,15 @@ class SystemReadinessChecker:
         disk_check = cls._check_disk_space()
         checks.append(disk_check)
 
+        # 6. Virtualização aninhada (nested) — não-crítica: sem ela o macOS
+        # convidado só perde a capacidade de rodar VMs dentro dele.
+        nested_check = cls._check_nested()
+        checks.append(nested_check)
+
+        # 7. Áudio do host — não-crítica: a VM funciona normalmente sem som.
+        audio_check = cls._check_audio()
+        checks.append(audio_check)
+
         can_run = kvm_check.passed and gpu_check.passed
         has_net = net_check.passed
 
@@ -152,6 +161,97 @@ class SystemReadinessChecker:
                 remediation="A execução de máquinas virtuais macOS requer um processador x86_64 com suporte a VT-x ou AMD-V.",
                 is_critical=True
             )
+
+    @classmethod
+    def _check_nested(cls) -> CheckResult:
+        """Virtualização aninhada (grupo 6/D6) — distingue de "sem KVM".
+
+        A checagem só LÊ o estado; quem aplica `nested=1` é a ISO
+        (modprobe.d/vhackintosh-nested.conf) — recarregar módulo KVM de dentro
+        da TUI do host do usuário teria efeito colateral inesperado.
+        """
+        from core.virt import nested_status
+
+        status = nested_status()
+        vendor = status.get("vendor") or "?"
+        if status["module_loaded"] and status["nested_enabled"]:
+            return CheckResult(
+                category="Virtualização",
+                name="Virtualização aninhada (nested)",
+                passed=True,
+                status_text="Habilitada",
+                details=(
+                    "KVM com nested=1: o convidado enxerga VT-x/AMD-V — "
+                    "Docker/UTM/xhyve rodam dentro do macOS."
+                ),
+                is_critical=False,
+            )
+
+        return CheckResult(
+            category="Virtualização",
+            name="Virtualização aninhada (nested)",
+            passed=False,
+            status_text="Indisponível",
+            details=(
+                f"O macOS convidado NÃO terá virtualização aninhada (kvm_{vendor}): "
+                f"{status['reason']}."
+            ),
+            remediation=(
+                "Ative 'Intel Virtualization (VT-x)'/'SVM Mode' na BIOS e recarregue "
+                "o módulo (a ISO do appliance já traz nested=1 em modprobe.d; numa "
+                "instalação existente: options kvm_intel/kvm_amd nested=1 + reboot)."
+            ),
+            is_critical=False,
+        )
+
+    @classmethod
+    def _check_audio(cls) -> CheckResult:
+        """Áudio do host (grupo 5/D5) — causa provável do som mudo do convidado:
+        o PipeWire/PulseAudio da sessão do appliance não estar em execução."""
+        import glob
+        import subprocess
+
+        runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        sockets = [
+            os.path.join(runtime, "pipewire-0"),
+            os.path.join(runtime, "pulse", "native"),
+        ]
+        socket_ok = any(os.path.exists(s) for s in sockets)
+        proc_ok = False
+        try:
+            proc_ok = subprocess.run(
+                ["pgrep", "-x", "-u", str(os.getuid()), "pipewire"],
+                capture_output=True, timeout=3,
+            ).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+        if socket_ok or proc_ok:
+            return CheckResult(
+                category="Áudio",
+                name="Serviço de áudio do host",
+                passed=True,
+                status_text="PipeWire/PulseAudio ativo",
+                details="O som do convidado sai pelos alto-falantes do host.",
+                is_critical=False,
+            )
+
+        return CheckResult(
+            category="Áudio",
+            name="Serviço de áudio do host",
+            passed=False,
+            status_text="Sem serviço de áudio",
+            details=(
+                "PipeWire/PulseAudio não está em execução: a VM funciona "
+                "normalmente, mas o convidado fica sem som."
+            ),
+            remediation=(
+                "Instale e rode pipewire + pipewire-pulse + wireplumber (na sessão "
+                "do appliance o profile.d já os sobe; fora dela: systemctl --user "
+                "enable --now pipewire pipewire-pulse wireplumber)."
+            ),
+            is_critical=False,
+        )
 
     @classmethod
     def _check_internet(cls) -> CheckResult:
