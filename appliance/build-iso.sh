@@ -47,9 +47,13 @@ while [[ $# -gt 0 ]]; do
             echo "Uso: sudo $0 [opções]"
             echo ""
             echo "Opções:"
-            echo "  -t, --tag <TAG>       Tag da release do GitHub (ex: v1.0.0 ou latest)"
-            echo "                        Baixa os binários pré-compilados diretamente do GitHub Releases"
-            echo "  -v, --version <VER>   Versão da ISO gerada (ex: 1.0.0)"
+            echo "  -v, --version <VER>   Versão da ISO (ex: 1.1.0) — vira o profiledef.sh"
+            echo "                        e o nome vhackintosh-os-<VER>-x86_64.iso. É o modo"
+            echo "                        certo de rotular uma ISO nova."
+            echo "  -t, --tag <TAG>       Tag da release do GitHub (ex: v1.0.0 ou latest):"
+            echo "                        BAIXA os binários pré-compilados do reims-vgpu do"
+            echo "                        GitHub Releases (não empacota a fonte local) e,"
+            echo "                        se -v não for dado, rotula a ISO com a tag."
             echo "  -s, --source <DIR>    Diretório local do reims-vgpu (padrão: /home/felipeab10/reims-vgpu)"
             echo "  -h, --help            Exibe esta mensagem de ajuda"
             exit 0
@@ -84,13 +88,20 @@ if ! command -v mkarchiso &>/dev/null; then
     exit 1
 fi
 
-# Ajusta a versão da ISO no profiledef.sh se fornecida
+# A versão da ISO vem de um único lugar: -v, senão da tag -t, senão do que já
+# está no profiledef.sh. Ela vale para o NOME do arquivo (mkarchiso monta
+# <iso_name>-<iso_version>-<arch>.iso), para o metadata interno da imagem e
+# fica gravada no próprio profiledef.sh — que é o "script" que a detém.
 if [ -n "${CUSTOM_VERSION}" ]; then
-    sed -i "s/^iso_version=\".*\"/iso_version=\"${CUSTOM_VERSION}\"/" "${ARCHISO_PROFILE}/profiledef.sh"
+    ISO_VERSION="${CUSTOM_VERSION}"
 elif [ -n "${RELEASE_TAG}" ] && [ "${RELEASE_TAG}" != "latest" ]; then
-    CLEAN_VER="${RELEASE_TAG#v}"
-    sed -i "s/^iso_version=\".*\"/iso_version=\"${CLEAN_VER}\"/" "${ARCHISO_PROFILE}/profiledef.sh"
+    ISO_VERSION="${RELEASE_TAG#v}"
+else
+    ISO_VERSION="$(sed -n 's/^iso_version="\(.*\)"/\1/p' "${ARCHISO_PROFILE}/profiledef.sh")"
 fi
+sed -i "s/^iso_version=\".*\"/iso_version=\"${ISO_VERSION}\"/" "${ARCHISO_PROFILE}/profiledef.sh"
+echo -e "${BLUE}▶ Versão da ISO: ${ISO_VERSION} → vhackintosh-os-${ISO_VERSION}-x86_64.iso${NC}"
+echo -e "${BLUE}  (grava iso_version=\"${ISO_VERSION}\" em ${ARCHISO_PROFILE}/profiledef.sh)${NC}"
 
 # 3. Preparação dos diretórios de saída e airootfs
 echo -e "${BLUE}▶ Limpando e preparando estrutura da Appliance...${NC}"
