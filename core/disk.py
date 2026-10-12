@@ -38,6 +38,16 @@ DEFAULT_OVMF_VARS_TEMPLATES = [
     Path(os.path.expanduser("~/.config/vhackintosh/templates/OVMF_VARS.fd")),
 ]
 
+# O par do OVMF_VARS de 540672 bytes: um build 4M (o template do repo, ou o do
+# sistema como fallback). O reims-ctl exige firmware_code/firmware_vars no
+# diretório da VM — ver core/reims_ctl.py.
+DEFAULT_OVMF_CODE_TEMPLATES = [
+    Path("/opt/vhackintosh/templates/OVMF_CODE.fd"),
+    Path(__file__).resolve().parent.parent / "templates" / "OVMF_CODE_4M.fd",
+    Path(os.path.expanduser("~/.config/vhackintosh/templates/OVMF_CODE.fd")),
+    Path("/usr/share/edk2/x64/OVMF_CODE.4m.fd"),
+]
+
 
 @dataclass
 class VMDiskBundle:
@@ -56,6 +66,25 @@ class DiskProvisioner:
             if candidate.exists() and candidate.stat().st_size > 1024 * 1024:
                 return candidate
         return None
+
+    @classmethod
+    def ensure_ovmf_code(cls, dest_dir: Path) -> bool:
+        """Garante o `OVMF_CODE.fd` (par 4M do OVMF_VARS) no diretório da VM.
+
+        Idempotente: já existindo, não faz nada. Devolve False só quando não há
+        template algum para copiar.
+        """
+        dest = Path(dest_dir) / "OVMF_CODE.fd"
+        if dest.exists():
+            return True
+        for cand in DEFAULT_OVMF_CODE_TEMPLATES:
+            if cand.exists():
+                try:
+                    shutil.copyfile(cand, dest)
+                    return True
+                except OSError:
+                    continue
+        return False
 
     @classmethod
     def provision(cls, vm: VMConfig, installer_img: Optional[str | Path] = None) -> VMDiskBundle:
@@ -101,6 +130,9 @@ class DiskProvisioner:
                     if v_cand.exists():
                         shutil.copyfile(v_cand, ovmf_vars_path)
                         break
+            # E o código do OVMF ao lado (par do VARS; o reims-ctl pede os dois
+            # no diretório da VM — ver core/reims_ctl.py).
+            cls.ensure_ovmf_code(vm_dir)
 
             # 4. Injeção opcional dos seriais GenSMBIOS no config.plist do OpenCore
             try:

@@ -25,8 +25,8 @@ from core.reims_build import (
     evaluate as evaluate_reims_build,
     build as build_reims_vgpu,
     ensure_executable_bits,
-    QEMU_BIN_REL as REIMS_QEMU_BIN_REL,
 )
+from core import reims_ctl
 from core.hardware import HardwareAdvisor
 from core.gpu import GPUChecker
 from core.readiness import SystemReadinessChecker
@@ -52,7 +52,7 @@ from ui.banner import render_banner
 console = Console()
 
 
-def decide_rail(
+def decide_reimsctl(
     reims_dir: Optional[str],
     macos_version: str,
     custom_dir: Optional[Path],
@@ -60,39 +60,34 @@ def decide_rail(
     create_rail_dir: bool = True,
 ) -> tuple[bool, str]:
     """
-    Decide se a VM pode subir pelo rail do reims-vgpu (o único motor), ou se a
-    recusa de iniciar a VM — não há mais um motor de reserva para onde cair.
+    Decide se a VM pode subir pelo reims-ctl (o único motor), ou a recusa de
+    iniciar a VM — não há mais um motor de reserva para onde cair.
 
-    Devolve `(usar_rail, motivo)` — o `motivo` existe porque um "não" silencioso
-    é indistinguível de um defeito, e esta decisão já custou o salvamento de
-    aceleração do appliance uma vez: a ISO não leva `vm/disks/`, e a ausência da
-    quebra do rail passava sem ninguém perceber.
+    Devolve `(pode_subir, motivo)` — o `motivo` existe porque um "não"
+    silencioso é indistinguível de um defeito, e esta decisão já custou o
+    salvamento de aceleração do appliance uma vez: a ausência de algo
+    essencial passava sem ninguém perceber.
 
     Três condições, cada uma legítima:
-      1. `reims_dir` com um `vm/boot-x86.sh` executável — sem ele não há harness;
-      2. `vm/disks/rails/<macos_version>` no disco — o `boot-x86.sh` recusa um
-         rail desconhecido de propósito (um nome errado criaria um rail novo e o
-         boot viraria outra linha de guest), então quem pede é o dono da árvore;
-      3. o layout que o `--persistent` valida (macos.qcow2 + OpenCore.qcow2 +
-         OVMF_VARS.fd, vindos de `custom_dir`) — fora isso o `boot-x86.sh` aborta,
-         só que bem mais tarde.
+      1. o `reims-ctl` instalado (install-ctl.sh) — sem ele não há quem suba
+         a VM nem registre o QMP;
+      2. o QEMU do reims-vgpu compilado (`qemu/current`) — sem o motor
+         acelerado o convidado não sobe (o appliance não tem motor de reserva);
+      3. o layout da VM (macos.qcow2 + OpenCore.qcow2 + OVMF_VARS.fd, vindos
+         de `custom_dir`) mais o OVMF_CODE.fd, que é copiado do template aqui.
 
-    `create_rail_dir=False` torna a função pura para quem só quer saber a
-    decisão (ex.: testes), suprimindo a única escrita em disco.
+    `create_rail_dir` permanece só para compatibilidade de assinatura (o
+    antigo rail criava um diretório; agora nada é escrito aqui).
     """
+    del create_rail_dir  # nenhum efeito colateral nesta decisão
     if not reims_dir:
         return False, "sem diretório do reims-vgpu"
-    if not os.path.exists(os.path.join(reims_dir, "vm", "boot-x86.sh")):
-        return False, f"sem vm/boot-x86.sh em {reims_dir}"
+    if not reims_ctl.reims_ctl_bin():
+        return False, "reims-ctl não instalado (compile o reims-vgpu: scripts/install-ctl.sh)"
+    from core.reims_build import qemu_binary
 
-    rail_dir = Path(reims_dir) / "vm" / "disks" / "rails" / macos_version
-    if create_rail_dir:
-        try:
-            rail_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            return False, f"não foi possível criar {rail_dir}: {exc}"
-    if not rail_dir.exists():
-        return False, f"rail {macos_version} inexistente em {rail_dir}"
+    if not qemu_binary().exists():
+        return False, f"QEMU do reims-vgpu não compilado (esperado em {qemu_binary()})"
 
     if not (
         custom_dir
@@ -102,7 +97,14 @@ def decide_rail(
     ):
         return False, f"layout persistente incompleto em {custom_dir}"
 
-    return True, f"rail {macos_version}"
+    # O reims-ctl exige o código do OVMF ao lado das variáveis, no diretório da
+    # VM. VMs provisionadas antes desta integração só têm o par de variáveis;
+    # completamos do template (idempotente).
+    if not (custom_dir / "OVMF_CODE.fd").exists():
+        if not DiskProvisioner.ensure_ovmf_code(custom_dir):
+            return False, f"OVMF_CODE.fd ausente e sem template para copiar (em {custom_dir})"
+
+    return True, f"reims-ctl ({macos_version})"
 
 
 def run_rail_session(
@@ -117,7 +119,7 @@ def run_rail_session(
     """
     Roda o rail do reims-vgpu, relançando a VM a cada reboot do convidado.
 
-    O QEMU roda com `-action reboot=shutdown` (QEMU_REBOOT_ACTION=exit), então um
+    O QEMU roda com `-action reboot=shutdown` (extra_args do vm.toml), então um
     reboot do macOS **encerra** o QEMU em vez de reiniciá-lo. Isso é deliberado —
     o DeviceReset congelaria o host — mas sem relançar aqui a instalação morreria
     no primeiro reboot do instalador. Este é o "reiniciar" que falta.
@@ -844,7 +846,7 @@ class VMTUI:
             # Fase do ciclo de vida da instalação do macOS.
             # Esta decisão governa TRÊS comportamentos críticos:
             #   1. acoplamento da mídia de instalação (BaseSystem.img);
-            #   2. como um reboot do convidado é tratado (QEMU_REBOOT_ACTION=exit);
+            #   2. como um reboot do convidado é tratado (extra_args do vm.toml);
             #   3. a Sincronização de Energia do Host (reboot/poweroff do PC).
             # Enquanto a instalação não estiver concluída, o host NUNCA é
             # reiniciado — reboots intermediários da Apple ficam contidos no QEMU.
@@ -883,7 +885,7 @@ class VMTUI:
             #
             # Logo, `use_reims_rail=False` não significa "degrada para outro
             # motor", significa recusa de iniciar: imprime-se o motivo e para tudo.
-            use_reims_rail, rail_reason = decide_rail(
+            use_reims_rail, rail_reason = decide_reimsctl(
                 reims_dir, vm.macos_version, custom_dir
             )
             if not use_reims_rail:
@@ -899,94 +901,55 @@ class VMTUI:
                 if sys.stdin.isatty():
                     Prompt.ask("Pressione Enter para continuar")
                 return
-            boot_script = os.path.join(reims_dir, "vm", "boot-x86.sh")
-
+            # --- Delegação ao reims-ctl (árvore nova do reims-vgpu) -----------
+            # O appliance não monta argv de QEMU: grava o vm.toml no layout do
+            # reims-ctl (cpus/RAM sugeridos pelo host, Haswell-noTSX fixo,
+            # installer da fase atual), registra a VM e delega o start. O QMP
+            # nasce em <vmdir>/qmp.sock — socket fixo que o monitor observa,
+            # mesmo contrato do antigo rail, sem argv de QEMU pra manter aqui.
             env_vars = os.environ.copy()
-            # Sem X11: a sessão gráfica do appliance é Wayland (sway kiosk) e a
-            # janela do reims-vgpu (winit) fala Wayland nativo. Não exportamos
-            # mais FORCE_X11 — o backend de janelamento passa a ser decidido pelo
-            # próprio winit a partir da sessão em que a VM é iniciada.
-            env_vars["REIMS_VGPU_FULLSCREEN"] = "1"
-            env_vars["REIMS_VGPU_BACKEND"] = "vulkan"
-            env_vars["REIMS_VGPU_WINDOW"] = "1"
-            env_vars["REIMS_VGPU_GUEST_IMPORT"] = "off"
-            env_vars["REIMS_VGPU_ACQUIRE_TIMEOUT_MS"] = "100"
-            env_vars["CPUS"] = str(vm.vcpus)
-            env_vars["RAM"] = f"{vm.ram_gb}G"
-            env_vars["AUDIO_DEVICE"] = vm.audio_device or "ich9-intel-hda"
-            # O harness rail traduz esta variável em `-action reboot=shutdown`.
-            #
-            # NUNCA usamos "reset". A opção `reset` do boot-x86.sh não emite flag
-            # alguma, então o QEMU fica com o próprio default — e o default é
-            # `RebootAction reboot_action = REBOOT_ACTION_RESET`
-            # (vendor/qemu/system/runstate-action.c). Esse caminho faz um
-            # DeviceReset em todos os dispositivos, que no reims-vgpu passa por
-            # `reims_vgpu_pci_reset` → `engine::reset_guest_state()` →
-            # `queue_wait_idle()`, e este último roda no main loop do QEMU com o
-            # BQL preso: um `vkQueueWaitIdle` que não retorna congela o host
-            # inteiro (o compositor desenha pela mesma GPU). O timeout de 10 s que
-            # existe hoje limita o estrago, mas deixa o motor degradado.
-            #
-            # Com "exit" o QEMU encerra e nós relançamos a VM (ver o laço abaixo),
-            # de modo que o reboot da instalação nunca chega a um DeviceReset — o
-            # processo novo tem um motor Vulkan limpo.
-            env_vars["QEMU_REBOOT_ACTION"] = "exit"
-
-            # Aplica diretivas de aceleração gráfica para a GPU vinculada
             self._apply_gpu_environment(vm, env_vars)
 
-            if installer_img:
-                env_vars["INSTALL_MEDIA"] = installer_img
+            installer_path = (
+                installer_img if (installer_img and policy.attach_installer) else None
+            )
+            reims_ctl.write_vm_toml(vm, installer=installer_path)
+            reims_ctl.ensure_registered(vm)
 
-            # A janela que apresenta o frame é a do reims-vgpu (REIMS_VGPU_WINDOW
-            # =1, acima). O QEMU não pode abrir outra por cima: com a variável
-            # ausente o boot-x86.sh já resolve para `none`, e fixá-la aqui
-            # torna isso independente de qualquer REIMS_VGPU_DISPLAY herdada
-            # do shell de quem chamou.
-            env_vars["REIMS_VGPU_DISPLAY"] = "none"
+            ctl_bin = reims_ctl.reims_ctl_bin()
+            if not ctl_bin:
+                console.print(Panel(
+                    "[bold red]A VM não foi iniciada: reims-ctl não encontrado[/bold red]\n\n"
+                    "O reims-ctl é instalado junto da compilação do reims-vgpu "
+                    "(scripts/install-ctl.sh). Sem ele não há quem suba a VM.",
+                    border_style="red",
+                ))
+                if sys.stdin.isatty():
+                    Prompt.ask("Pressione Enter para continuar")
+                return
+            start_cmd = [ctl_bin, "start", vm.id]
 
-            if custom_dir:
-                env_vars["PERSISTENT_DIR"] = str(custom_dir)
-                env_vars["DISK_MASTER"] = str(vm.disk_path)
-                env_vars["OPENCORE_MASTER"] = str(custom_dir / "OpenCore.qcow2")
+            # A janela do reims-vgpu (winit) fala Wayland direto: sem conexão de
+            # display ela não abre. No appliance a TUI está num TTY, então o
+            # start é envolvido numa sessão kiosk — quando já existe sessão
+            # (ex.: compositor do host), não mexemos em nada.
+            start_cmd, sem_sessao = reims_ctl.session_argv(
+                [ctl_bin, "start", vm.id], env_vars
+            )
+            if sem_sessao:
+                console.print(self._WAYSESSION_MISSING)
 
-            # Fixa o RUN_DIR do rail para sabermos exatamente onde o socket QMP
-            # é publicado (`$RUN_DIR/qmp.path`), permitindo monitorar os eventos
-            # de energia do guest também pelo caminho rail.
-            rail_run_dir = os.path.join(reims_dir, "vm", "disks", "run")
-            env_vars["RUN_DIR"] = rail_run_dir
-
-            rail_cmd = [
-                "bash", boot_script,
-                "--rail", vm.macos_version,
-                "--persistent",
-                "--device", "reims-vgpu-pci",
-            ]
-
-            # A janela do reims-vgpu é winit falando Wayland direto: sem uma
-            # conexão de display ela sobe e não há nada consumindo — o próprio
-            # boot-x86.sh avisa disso e trata qualquer número de presente como
-            # inválido. No appliance a TUI está num TTY, então é preciso envolver
-            # o rail numa sessão kiosk. Quando já existe sessão (ex.: rodando a
-            # partir do compositor do host), não mexemos em nada.
-            if not (env_vars.get("DISPLAY") or env_vars.get("WAYLAND_DISPLAY")):
-                waysession_bin = self._find_waysession()
-                if waysession_bin:
-                    rail_cmd = [waysession_bin] + rail_cmd
-                else:
-                    console.print(self._WAYSESSION_MISSING)
-
+            # Um reboot do convidado encerra o QEMU (vm.toml:
+            # extra_args = ["-action", "reboot=shutdown"]) e o laço de sessão
+            # relança — a alternativa é o DeviceReset no lugar, que congela o
+            # host no vkQueueWaitIdle com o BQL preso (a troca já era assim no
+            # antigo rail via QEMU_REBOOT_ACTION=exit).
             from core.power import QMPPowerMonitor
             from types import SimpleNamespace
 
-            rail_sock = os.path.join(rail_run_dir, "qmp.sock")
-            rail_sock_pathfile = os.path.join(rail_run_dir, "qmp.path")
-
             def _new_rail_monitor():
                 # Um por boot — ver o docstring de `run_rail_session`.
-                return QMPPowerMonitor(
-                    sock_path=rail_sock, path_file=rail_sock_pathfile
-                )
+                return QMPPowerMonitor(sock_path=str(reims_ctl.qmp_socket(vm)))
 
             def _relaunch_notice(step: int) -> None:
                 if step < 0:
@@ -1000,11 +963,11 @@ class VMTUI:
                         f"({step})…[/cyan]"
                     )
 
-            # QEMU_REBOOT_ACTION=exit (definido acima) faz um reboot do
-            # convidado encerrar o QEMU. O laço é quem o recoloca: sem ele a
-            # instalação morreria no primeiro reboot do instalador.
+            # O vm.toml pede `-action reboot=shutdown`: um reboot do convidado
+            # encerra o QEMU e o laço é quem o recoloca — sem ele a instalação
+            # morreria no primeiro reboot do instalador.
             total_resets, last_reason = run_rail_session(
-                launch=lambda: subprocess.Popen(rail_cmd, env=env_vars),
+                launch=lambda: reims_ctl.ReimsCtlSession(start_cmd, env=env_vars),
                 make_monitor=_new_rail_monitor,
                 is_installing=policy.is_installing,
                 on_relaunch=_relaunch_notice,
@@ -1177,7 +1140,9 @@ class VMTUI:
             return False
 
         def binary_present() -> bool:
-            return (state.reims_dir / REIMS_QEMU_BIN_REL).exists()
+            # `evaluate` já resolve o binário em uso: o instalado pelo
+            # install-ctl.sh (qemu/current) ou, na árvore antiga, o in-tree.
+            return bool(state.binary_path and state.binary_path.exists())
 
         # Os bits de execução são restaurados aqui, e não só dentro de `build()`:
         # o `vm/boot-x86.sh` exige `[ -x ]` em

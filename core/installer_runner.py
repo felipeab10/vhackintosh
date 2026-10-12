@@ -7,7 +7,6 @@ de boot do instalador oficial do macOS com opções comparativas A/B de áudio e
 from __future__ import annotations
 import os
 import sys
-import subprocess
 from pathlib import Path
 from rich.console import Console
 from rich.prompt import Prompt, Confirm, IntPrompt
@@ -115,12 +114,13 @@ class ABInstallerTest:
 
         bundle = DiskProvisioner.provision(vm, installer_img=installer_img)
 
-        # 6. Execução do Boot
-        reims_dir = Path("/home/felipeab10/reims-vgpu")
-        boot_script = reims_dir / "vm" / "boot-x86.sh"
+        # 6. Execução do Boot — delegada ao reims-ctl (árvore nova do
+        # reims-vgpu): o appliance grava o vm.toml e registra a VM, o QEMU é
+        # do upstream.
+        from core import reims_ctl
 
-        if not boot_script.exists():
-            console.print(f"[red]Erro: Script {boot_script} não encontrado.[/red]")
+        if not reims_ctl.reims_ctl_bin():
+            console.print("[red]Erro: reims-ctl não encontrado (compile o reims-vgpu: scripts/install-ctl.sh).[/red]")
             Prompt.ask("Enter para sair")
             return
 
@@ -137,29 +137,23 @@ class ABInstallerTest:
             console.print(f"  • Instalador: [bold cyan]{installer_img}[/bold cyan]\n")
 
             env = os.environ.copy()
-            # Sem X11: a sessão gráfica é Wayland (sway kiosk) e a janela do
-            # reims-vgpu (winit) fala Wayland nativo.
-            env["REIMS_VGPU_FULLSCREEN"] = fullscreen
-            env["REIMS_VGPU_BACKEND"] = "vulkan"
-            env["REIMS_VGPU_WINDOW"] = "1"
-            env["REIMS_VGPU_GUEST_IMPORT"] = "off"
-            env["REIMS_VGPU_ACQUIRE_TIMEOUT_MS"] = "100"
-            env["CPUS"] = str(vm.vcpus)
-            env["RAM"] = f"{vm.ram_gb}G"
-            env["AUDIO_DEVICE"] = audio_device
-            env["INSTALL_MEDIA"] = str(installer_img)
-            env["PERSISTENT_DIR"] = str(bundle.vm_dir)
-            env["DISK_MASTER"] = str(bundle.hdd_path)
-            env["OPENCORE_MASTER"] = str(bundle.opencore_path)
-            env["QEMU_REBOOT_ACTION"] = "reset"
+            # O vm.toml carrega tudo o que o antigo bloco de env fazia: cpus/
+            # RAM (do próprio VMConfig), áudio ligado, e o instalador da fase
+            # (imagem absoluta, entrai em [q35].installer). O reboot do
+            # instalador encerra o QEMU (extra_args -action reboot=shutdown).
+            reims_ctl.write_vm_toml(
+                vm, installer=str(installer_img), borderless=(fullscreen == "1")
+            )
+            reims_ctl.ensure_registered(vm)
 
-            cmd = [
-                "bash", str(boot_script),
-                "--rail", macos_version,
-                "--persistent",
-                "--device", "reims-vgpu-pci",
-            ]
-            subprocess.run(cmd, env=env)
+            ctl = reims_ctl.reims_ctl_bin()
+            cmd, sem_sessao = reims_ctl.session_argv([ctl, "start", vm.id], env)
+            if sem_sessao:
+                console.print(
+                    "[yellow]Aviso: nenhuma sessão gráfica ativa e vhackintosh-waysession "
+                    "não encontrado — a janela da VM não vai abrir.[/yellow]"
+                )
+            reims_ctl.ReimsCtlSession(cmd, env=env).wait()
             console.print("\n[bold yellow]Sessão de instalação finalizada.[/bold yellow]")
 
             # Registra automaticamente a VM recém-instalada no vHackintosh

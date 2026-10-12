@@ -201,6 +201,13 @@ elif [ -d "${REIMS_SRC}" ]; then
             "${REIMS_SRC}/crates/" "${REIMS_DEST}/crates/"
     fi
 
+    # Firmware da árvore nova (sources da ROM UEFI que o cargo xtask dist
+    # compila — sem isto o install-ctl.sh falha no passo da ROM).
+    if [ -d "${REIMS_SRC}/firmware" ]; then
+        rsync -a --exclude='out' --exclude='target' \
+            "${REIMS_SRC}/firmware/" "${REIMS_DEST}/firmware/"
+    fi
+
     # Fonte do QEMU (submódulo). Sem o `.git` do submódulo — o
     # `scripts/qemu-version.sh` testa `[ -e .git ]` e degrada sozinho quando ele
     # não existe, o que já foi verificado num build completo.
@@ -216,6 +223,9 @@ elif [ -d "${REIMS_SRC}" ]; then
     if [ ! -d "${REIMS_SRC}/vendor/cargo" ]; then
         echo -e "${BLUE}▶ Gerando dependências Rust vendorizadas (cargo vendor)...${NC}"
         if command -v cargo >/dev/null 2>&1; then
+            # O stdout do `cargo vendor` É o config de source-replacement
+            # correto (com a URL e a rev desta árvore); guardamos para a etapa
+            # de config.toml abaixo.
             ( cd "${REIMS_SRC}" && cargo vendor --versioned-dirs vendor/cargo ) \
                 > /tmp/vendored-config-$$.toml 2>/dev/null || \
                 echo -e "${YELLOW}Aviso: 'cargo vendor' falhou — o build no appliance exigirá internet.${NC}"
@@ -228,18 +238,22 @@ elif [ -d "${REIMS_SRC}" ]; then
         rsync -a "${REIMS_SRC}/vendor/cargo/" "${REIMS_DEST}/vendor/cargo/"
     fi
     mkdir -p "${REIMS_DEST}/.cargo"
-    cat > "${REIMS_DEST}/.cargo/config.toml" <<'CARGOCFG'
-[source.crates-io]
-replace-with = "vendored-sources"
-
-[source."git+https://github.com/steelbrain/metal2vulkan.git?rev=9e0e99a41dc3cb8bb7e288b531f1698a79fd4b1c"]
-git = "https://github.com/steelbrain/metal2vulkan.git"
-rev = "9e0e99a41dc3cb8bb7e288b531f1698a79fd4b1c"
-replace-with = "vendored-sources"
-
-[source.vendored-sources]
-directory = "vendor/cargo"
-CARGOCFG
+    # O config de source-replacement sai da própria execução do `cargo vendor`
+    # acima: ele nomeia a URL e a rev que o Cargo.toml desta árvore pede. Um
+    # template fixo à mão já ficou errado quando o upstream mudou o pin do
+    # metal2vulkan (rev 9e0e99a4 → 13b279df) e o build offline quebraria.
+    # Sem vendor algum, o build no appliance vai precisar de internet — e é o
+    # que o aviso diz, em vez de um config que mente.
+    VENDOR_CFG="/tmp/vendored-config-$$.toml"
+    if [ -f "${VENDOR_CFG}" ] && grep -q 'replace-with = "vendored-sources"' "${VENDOR_CFG}"; then
+        cp "${VENDOR_CFG}" "${REIMS_DEST}/.cargo/config.toml"
+    elif [ -f "${REIMS_SRC}/.cargo/config.toml" ] && \
+         grep -q 'vendored-sources' "${REIMS_SRC}/.cargo/config.toml"; then
+        cp -a "${REIMS_SRC}/.cargo/config.toml" "${REIMS_DEST}/.cargo/config.toml"
+    else
+        echo -e "${YELLOW}Aviso: sem config do cargo vendor — o build no appliance exigirá internet.${NC}"
+    fi
+    rm -f "${VENDOR_CFG}" 2>/dev/null || true
 elif [ -d "/opt/reims-vgpu" ]; then
     echo -e "${BLUE}▶ Copiando binários de /opt/reims-vgpu...${NC}"
     cp -a /opt/reims-vgpu/* "${REIMS_DEST}/"

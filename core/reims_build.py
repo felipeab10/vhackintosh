@@ -42,6 +42,23 @@ BUILD_STAMP_NAME = ".vhackintosh-build-stamp"
 QEMU_BIN_REL = Path("vendor/qemu/build/qemu-system-x86_64")
 STATICLIB_REL = Path("target/release/libreims_vgpu.a")
 
+# A árvore nova do fork (libreims_vgpu + reims-ctl) compila num passo só, pelo
+# `scripts/install-ctl.sh`: biblioteca (cargo xtask dist, ROM incluída), QEMU
+# sobre ela em ~/.cache/reims-ctl, e o reims-ctl instalado em ~/.cargo/bin. O
+# QEMU fica em `$XDG_DATA_HOME/reims-ctl/qemu/<build>` com o symlink `current`.
+INSTALL_CTL_REL = Path("scripts/install-ctl.sh")
+QEMU_BUILD_LEGACY_REL = Path("scripts/qemu-build/qemu-build.sh")
+
+
+def qemu_data_dir() -> Path:
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return Path(base) / "reims-ctl"
+
+
+def qemu_binary() -> Path:
+    """O QEMU que o install-ctl.sh instala (symlink `current`)."""
+    return qemu_data_dir() / "qemu" / "current" / "bin" / "qemu-system-x86_64"
+
 
 def find_reims_dir(explicit: Optional[str | Path] = None) -> Optional[Path]:
     """Devolve a árvore do reims-vgpu que tenha o script de build."""
@@ -54,7 +71,7 @@ def find_reims_dir(explicit: Optional[str | Path] = None) -> Optional[Path]:
     candidates.extend(Path(p).expanduser() for p in REIMS_SEARCH_PATHS)
 
     for cand in candidates:
-        if (cand / "scripts" / "qemu-build" / "qemu-build.sh").exists():
+        if (cand / INSTALL_CTL_REL).is_file() or (cand / QEMU_BUILD_LEGACY_REL).is_file():
             return cand
     return None
 
@@ -172,7 +189,9 @@ def ensure_executable_bits(reims_dir: Path, log: Optional[Callable[[str], None]]
 # ---------------------------------------------------------------------------
 
 # Árvores cujo conteúdo entra no hash. O binário compilado depende de todas.
-_STAMP_ROOTS = ("crates", "vendor/qemu")
+# `firmware/` (a ROM da árvore nova) e `scripts/` (o próprio install-ctl.sh)
+# também mudam o que sai do build.
+_STAMP_ROOTS = ("crates", "vendor/qemu", "firmware", "scripts")
 _STAMP_FILES = ("Cargo.toml", "Cargo.lock")
 # Derivações que não afetam o binário (e que, por conteúdo, seriam enormes).
 _STAMP_SKIP_DIRS = {
@@ -278,7 +297,10 @@ def evaluate(
     if directory is None:
         return BuildState(None, reason="reims-vgpu não encontrado", needs_build=False)
 
-    binary = directory / QEMU_BIN_REL
+    # O binário em uso é o instalado pelo install-ctl.sh (árvore nova); a árvore
+    # antiga mantém o build in-tree em vendor/qemu/build como fallback.
+    installed = qemu_binary()
+    binary = installed if installed.exists() else directory / QEMU_BIN_REL
     if not has_sources(directory):
         # Árvore só com binário (ISO de release): não há o que compilar.
         return BuildState(
@@ -294,6 +316,7 @@ def evaluate(
             directory,
             reason="binário do QEMU ainda não foi compilado",
             needs_build=True,
+            binary_path=binary,
             sources_present=True,
         )
 
@@ -346,7 +369,15 @@ def build(
     ``on_start(nome, segundos_estimados)`` é chamado antes de cada etapa para a
     TUI montar a barra; ``progress(0..100)`` recebe o avanço estimado.
     """
-    script = reims_dir / "scripts" / "qemu-build" / "qemu-build.sh"
+    # A árvore nova compila tudo pelo install-ctl.sh (biblioteca + ROM + QEMU +
+    # reims-ctl, prefixo FHS em ~/.local/share); a antiga usa o qemu-build.sh.
+    new_tree = (reims_dir / INSTALL_CTL_REL).is_file()
+    if new_tree:
+        script = reims_dir / INSTALL_CTL_REL
+        cmd = ["bash", str(script), "--yes"]
+    else:
+        script = reims_dir / QEMU_BUILD_LEGACY_REL
+        cmd = ["bash", str(script), "--target", "x86_64", "--backend", "vulkan"]
     if not script.exists():
         raise BuildError(f"script de build ausente: {script}")
 
@@ -355,13 +386,16 @@ def build(
     # etapa. Restauramos antes de qualquer coisa.
     ensure_executable_bits(reims_dir, log=lambda msg: print(f"  {msg}"))
 
-    # E o `build/` que a ISO envia (só com o binário) precisa do marker do
-    # próprio QEMU, senão o configure aborta. Ver `prepare_build_dir`.
-    prepare_build_dir(reims_dir, log=lambda msg: print(f"  {msg}"))
+    # Só a árvore antiga builda in-tree: o build/ que a ISO envia (só com o
+    # binário) precisa do marker do próprio QEMU, senão o configure aborta.
+    # Ver `prepare_build_dir`.
+    if not new_tree:
+        prepare_build_dir(reims_dir, log=lambda msg: print(f"  {msg}"))
 
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1. ROM UEFI GOP, quando houver script próprio.
+    # 1. ROM UEFI GOP, quando houver script próprio (só a árvore antiga; a nova
+    # compila a ReimsVgpu.rom dentro do próprio xtask dist).
     rom = reims_dir / "crates" / "reims-vgpu-efi" / "build.sh"
     if rom.exists():
         ok = _run_stage(
@@ -378,18 +412,25 @@ def build(
         if not ok:
             return False
 
-    # 2. QEMU + staticlib do reims-vgpu.
+    # 2. Biblioteca + QEMU (+ reims-ctl na árvore nova).
     ok = _run_stage(
         name="reims-vgpu & QEMU (Vulkan)",
-        cmd=["bash", str(script), "--target", "x86_64", "--backend", "vulkan"],
+        cmd=cmd,
         cwd=reims_dir,
         log_name="build-qemu-reims.log",
-        expected=300.0,
+        expected=900.0,
         on_start=on_start,
         progress=progress,
     )
     if on_done:
         on_done("reims-vgpu & QEMU (Vulkan)", ok)
+
+    if ok and new_tree and not qemu_binary().exists():
+        # O install-ctl.sh saiu 0 mas o prefixo não recebeu o QEMU: tratar como
+        # falha para o estado "binário presente" nunca mentir.
+        print("  install-ctl.sh concluiu mas o QEMU instalado não foi encontrado "
+              f"em {qemu_binary()}")
+        ok = False
 
     if ok:
         # Só grava o stamp com o build comprovadamente de pé.
