@@ -22,21 +22,20 @@ from core.smbios import GenSMBIOS
 console = Console()
 
 VM_STORAGE_BASE = CONFIG_DIR / "vms"
+# O template canônico vem de templates/ neste repositório (versionado): o
+# OpenCore.qcow2 + OVMF_VARS.fd que bootaram o macOS Tahoe 26.6.2 com desktop
+# completo no reims-vgpu (ver templates/README.md). A ISO o instala em
+# /opt/vhackintosh/templates; ~/.config é o override do usuário.
 DEFAULT_OPENCORE_TEMPLATES = [
     Path("/opt/vhackintosh/templates/OpenCore.qcow2"),
     Path(__file__).resolve().parent.parent / "templates" / "OpenCore.qcow2",
     Path(os.path.expanduser("~/.config/vhackintosh/templates/OpenCore.qcow2")),
-    Path("/opt/reims-vgpu/templates/OpenCore.qcow2"),
-    Path("/home/felipeab10/reims-vgpu/.local/installer/osx-kvm-tools/OpenCore/OpenCore.qcow2"),
-    Path("/home/felipeab10/reims-vgpu/vm/disks/rails/sequoia/persistent/OpenCore.qcow2"),
-    Path("/home/felipeab10/reims-vgpu/vm/disks/rails/tahoe/persistent/OpenCore.qcow2"),
 ]
 
 DEFAULT_OVMF_VARS_TEMPLATES = [
     Path("/opt/vhackintosh/templates/OVMF_VARS.fd"),
     Path(__file__).resolve().parent.parent / "templates" / "OVMF_VARS.fd",
-    Path("/home/felipeab10/reims-vgpu/.local/installer/osx-kvm-tools/OVMF_VARS-1920x1080.fd"),
-    Path("/home/felipeab10/reims-vgpu/vm/disks/rails/sequoia/persistent/OVMF_VARS.fd"),
+    Path(os.path.expanduser("~/.config/vhackintosh/templates/OVMF_VARS.fd")),
 ]
 
 
