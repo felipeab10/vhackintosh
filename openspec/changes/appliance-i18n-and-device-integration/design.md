@@ -116,5 +116,30 @@ que torna a decisão A/B indiferente aos requisitos deste change.
 
 - Identidade do waysession do appliance (sway/cage/…) — não bloqueia: D4 é
   independente de compositor.
-- Root cause exato do bug 2 — respondido pela primeira task de diagnóstico antes
-  da correção (não altera spec nem quebra de fase).
+- Root cause exato do bug 2 — **respondido** (ver Resolution Notes).
+
+## Resolution Notes (aplicação)
+
+**D2 / bug dos controles de Reboot-Shutdown — root cause e correção.**
+Diagnóstico por invariância do launch, possível depois que a decisão A/B foi
+resolvida (delegar ao `reims-ctl`, commit `2e6170f`): no fluxo antigo, o argv e
+o ambiente do boot **dependiam da fase escolhida** — `INSTALL_MEDIA`,
+`PERSISTENT_DIR`, `DISK_MASTER`/`OPENCORE_MASTER` e o modo do rail mudavam
+entre "instalando" e "instalado", e o rail remapeava os discos (o OpenCore
+indexa o disco por caminho; com o mapa mudando, o picker perdia o disco em
+ambas as opções do prompt). No fluxo novo a correção é por construção: o
+`vm.toml` é gerado a partir dos mesmos campos para as duas escolhas — disco em
+`sata.3` fixo, instalador (quando a fase pede) em `sata.4` com `snapshot=on` —
+e a escolha afeta **apenas** o mapeamento de energia
+(`_apply_host_power_policy`: contador de reboots + `PowerSync`), exatamente o
+que o spec exige. Invariante coberto pelo teste: gerar o `vm.toml` com a fase
+`installing` e com `installed` produz os mesmos discos/portas.
+
+**D5 / áudio — alinhamento confirmado no upstream.** O reims-ctl já defaulta
+`-audiodev pipewire` no Linux e apresenta `usb-audio` no xHCI (o macOS 26 não
+tem mais Intel HDA) — o backend fala PipeWire direto com o pipeline do host.
+A causa provável do som mudo (task 5.1) era o PipeWire da sessão live não subir
+sem systemd --user; corrigido no profile.d da sessão (fallback manual) e
+coberto pela nova checagem de áudio do readiness. Troca de model do convidado
+(5.3) tornou-se desnecessária: `usb-audio` é a escolha do upstream com
+evidência (Tahoe sem HDA).
