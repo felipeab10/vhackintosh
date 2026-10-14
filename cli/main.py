@@ -34,6 +34,23 @@ def main():
         elif cmd == "update":
             tui._update_upstream()
             return
+        elif cmd in ["check", "check-hardware", "preflight"]:
+            quiet = "-q" in sys.argv or "--quiet" in sys.argv
+            from core.readiness import SystemReadinessChecker
+            report = SystemReadinessChecker.check_all()
+            if not report.can_run_vms:
+                if not quiet:
+                    print("ERRO: Hardware incompatível com o vHackintosh OS!")
+                    for c in report.checks:
+                        if not c.passed and c.is_critical:
+                            print(f" • {c.name}: {c.details}")
+                            if c.remediation:
+                                print(f"   Solução: {c.remediation}")
+                sys.exit(1)
+            else:
+                if not quiet:
+                    print("OK: Hardware compatível com vHackintosh OS (KVM e Reims vGPU prontos).")
+                sys.exit(0)
         elif cmd in ["test-install", "test"]:
             from core.installer_runner import ABInstallerTest
             ABInstallerTest.run_interactive()

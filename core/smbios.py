@@ -1,197 +1,191 @@
-"""
-vHackintosh — GenSMBIOS Generator & OpenCore Injector
-Gera seriais válidos da Apple e injeta automaticamente no config.plist do OpenCore.
-"""
-
+"""macserial-backed, per-VM OpenCore identity generation and validation."""
 from __future__ import annotations
+
+import re
+import secrets
+import shutil
+import subprocess
 import uuid
-import random
-import string
-import plistlib
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
+
 from core.config import SMBIOSConfig
+
+MACSERIAL_CANDIDATES = (
+    Path("/opt/vhackintosh/resources/macserial/macserial"),
+    Path("/opt/vhackintosh/bin/macserial"),
+    Path(__file__).resolve().parent.parent / "resources/macserial/macserial",
+    Path(__file__).resolve().parent.parent / "bin" / "macserial",
+)
+
+
+class SMBIOSError(RuntimeError):
+    """Identity could not be safely generated or applied."""
 
 
 class GenSMBIOS:
-    """Gerador nativo de seriais da Apple compatível com OpenCore."""
+    RECOMMENDED_MODELS = {"tahoe": "iMac20,1", "sequoia": "iMac20,1", "ventura": "iMac20,1"}
 
-    # Tabela de modelos ideais por versão do macOS suportada
-    RECOMMENDED_MODELS = {
-        "tahoe": "MacPro7,1",
-        "sequoia": "MacPro7,1",
-        "ventura": "MacPro7,1",
-    }
-
-    # Prefixos de fábrica comuns (3 caracteres)
-    FACTORY_CODES = ["C02", "F5K", "C07", "D25", "G08", "C17"]
-
-    # Caracteres de ano/semana Apple
-    YEAR_CHARS = "CDFGHJKLMNPQRSTVWXYZ"
-    WEEK_CHARS = "123456789CDFGHJKLMNPQRSTVWXYZ"
-
-    # Códigos de modelo de 4 caracteres para final do serial
-    MODEL_CODES = {
-        "MacPro7,1": "P7QM",
-        "iMacPro1,1": "HX87",
-        "MacBookPro16,1": "MD6N",
-        "Macmini8,1": "JYVY",
-    }
+    @classmethod
+    def _macserial(cls) -> Path:
+        for candidate in MACSERIAL_CANDIDATES:
+            if candidate.is_file():
+                if not candidate.stat().st_mode & 0o111:
+                    raise SMBIOSError(f"macserial is not executable: {candidate}")
+                return candidate
+        found = shutil.which("macserial")
+        if found:
+            return Path(found)
+        raise SMBIOSError("macserial is unavailable; install the pinned OpenCorePkg tool")
 
     @classmethod
     def generate(cls, macos_version: str = "sequoia", model_override: Optional[str] = None) -> SMBIOSConfig:
-        model = model_override or cls.RECOMMENDED_MODELS.get(macos_version.lower(), "MacPro7,1")
-        serial = cls._generate_serial(model)
-        board_serial = cls._generate_mlb(serial)
-        smuuid = str(uuid.uuid4()).upper()
-        rom = cls._generate_rom()
+        model = model_override or cls.RECOMMENDED_MODELS.get(macos_version.lower(), "iMac20,1")
+        tool = cls._macserial()
+        try:
+            result = subprocess.run(
+                [str(tool), "-m", model, "-g", "-n", "1"],
+                capture_output=True, text=True, check=True, timeout=20,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SMBIOSError("macserial failed to generate an identity") from exc
+        records = []
+        for line in result.stdout.splitlines():
+            fields = [field.strip() for field in line.split("|")]
+            if len(fields) >= 2:
+                records.append(fields)
+        if len(records) != 1:
+            raise SMBIOSError(f"macserial did not return exactly one valid record for {model}")
+        record = records[0]
+        serial, mlb = record[0], record[1]
+        if len(serial) < 10 or not re.fullmatch(r"[A-Z0-9]+", serial):
+            raise SMBIOSError("macserial returned an invalid serial")
+        if not re.fullmatch(r"[A-Z0-9]{17}", mlb):
+            raise SMBIOSError("macserial returned an invalid MLB")
+        # OpenCorePkg macserial generates serial+MLB; OpenCore requires a UUID
+        # and ROM too. Generate those independently for this VM. Keep all fields
+        # unique against identities already present in the store, retrying only
+        # collisions before returning a candidate to the caller.
+        from core.config import CONFIG_DIR, VMManagerStore
+        # Avoid constructing a default store when running tests or embedded
+        # callers that have not created the user config directory yet.
+        existing = [vm.smbios for vm in VMManagerStore().list_vms()] if CONFIG_DIR.exists() else []
+        for _ in range(8):
+            identity = SMBIOSConfig(
+                model=model,
+                serial_number=serial,
+                board_serial=mlb,
+                smuuid=str(uuid.uuid4()).upper(),
+                rom="02" + secrets.token_hex(5).upper(),
+            )
+            cls.validate(identity)
+            if not any(cls._identities_conflict(identity, other) for other in existing):
+                return identity
+            result = subprocess.run(
+                [str(tool), "-m", model, "-g", "-n", "1"],
+                capture_output=True, text=True, check=True, timeout=20,
+            )
+            records = [line.split("|") for line in result.stdout.splitlines() if "|" in line]
+            if len(records) != 1 or len(records[0]) < 2:
+                raise SMBIOSError("macserial did not return exactly one valid record")
+            serial, mlb = (field.strip() for field in records[0][:2])
+            if not re.fullmatch(r"[A-Z0-9]{10,}", serial) or not re.fullmatch(r"[A-Z0-9]{17}", mlb):
+                raise SMBIOSError("macserial returned a malformed identity")
+        raise SMBIOSError("macserial repeatedly generated an identity already used by another VM")
 
-        return SMBIOSConfig(
-            model=model,
-            serial_number=serial,
-            board_serial=board_serial,
-            smuuid=smuuid,
-            rom=rom,
-        )
+    @staticmethod
+    def _identities_conflict(left: SMBIOSConfig, right: SMBIOSConfig) -> bool:
+        return any((
+            left.serial_number and left.serial_number == right.serial_number,
+            left.board_serial and left.board_serial == right.board_serial,
+            left.smuuid and left.smuuid.lower() == right.smuuid.lower(),
+            left.rom and left.rom.lower() == right.rom.lower(),
+        ))
 
     @classmethod
-    def _generate_serial(cls, model: str) -> str:
-        factory = random.choice(cls.FACTORY_CODES)
-        year_week = random.choice(cls.YEAR_CHARS) + random.choice(cls.WEEK_CHARS)
-        base_serial = factory + year_week
-        random_part = "".join(random.choices(string.ascii_uppercase + string.digits, k=3))
-        model_code = cls.MODEL_CODES.get(model, "P7QM")
-        return f"{base_serial}{random_part}{model_code}"
+    def validate(cls, smbios: SMBIOSConfig) -> None:
+        if not smbios.model or not re.fullmatch(r"[A-Za-z0-9]+(?:,[0-9]+)?", smbios.model):
+            raise SMBIOSError("SMBIOS model is missing or malformed")
+        if not re.fullmatch(r"[A-Z0-9]{10,}", smbios.serial_number):
+            raise SMBIOSError("SMBIOS serial is missing or malformed")
+        if not re.fullmatch(r"[A-Z0-9]{17}", smbios.board_serial):
+            raise SMBIOSError("SMBIOS MLB is missing or malformed")
+        try:
+            uuid.UUID(smbios.smuuid)
+        except (ValueError, AttributeError) as exc:
+            raise SMBIOSError("SMBIOS UUID is missing or malformed") from exc
+        if not re.fullmatch(r"[0-9A-Fa-f]{12}", smbios.rom):
+            raise SMBIOSError("SMBIOS ROM is missing or malformed")
 
     @classmethod
-    def _generate_mlb(cls, serial: str) -> str:
-        # MLB (Board Serial) tem 17 caracteres
-        # Primeiros 3: fábrica, seguidos de código de placa (ex: 902, 001) + serial parcial
-        factory = serial[:3] if len(serial) >= 3 else "C02"
-        mid = f"{random.randint(10, 99)}0{random.randint(100, 999)}"
-        suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-        mlb = f"{factory}{mid}{suffix}"[:17]
-        return mlb
-
-    @classmethod
-    def _generate_rom(cls) -> str:
-        # MAC Address em hex (12 dígitos)
-        mac_bytes = [random.randint(0x00, 0xFF) for _ in range(6)]
-        # Define bit unicast localmente administrado
-        mac_bytes[0] = (mac_bytes[0] & 0xFE) | 0x02
-        return "".join(f"{b:02X}" for b in mac_bytes)
-
-    @classmethod
-    def inject_into_config_plist(
-        cls,
-        config_plist_path: str | Path,
-        smbios: SMBIOSConfig,
-        show_picker: bool = False,
-    ) -> bool:
-        """Injeta a estrutura SMBIOS gerada diretamente no config.plist do OpenCore."""
+    def inject_into_config_plist(cls, config_plist_path: str | Path, smbios: SMBIOSConfig, show_picker: bool = False) -> bool:
+        import plistlib
+        cls.validate(smbios)
         path = Path(config_plist_path)
         if not path.exists():
-            return False
-
+            raise SMBIOSError("OpenCore config.plist was not found")
+        with path.open("rb") as fh:
+            data = plistlib.load(fh)
+        if not isinstance(data, dict) or not isinstance(data.get("PlatformInfo"), dict):
+            raise SMBIOSError("OpenCore plist has no PlatformInfo dictionary")
+        platform = data["PlatformInfo"]
+        platform["Automatic"] = True
+        platform["UpdateDataHub"] = True
+        platform["UpdateNVRAM"] = True
+        platform["UpdateSMBIOS"] = True
+        platform["UpdateSMBIOSMode"] = "Create"
+        if not isinstance(platform.get("Generic"), dict):
+            raise SMBIOSError("OpenCore PlatformInfo.Generic is not a dictionary")
+        generic = platform["Generic"]
+        generic.update({
+            "SystemProductName": smbios.model,
+            "SystemSerialNumber": smbios.serial_number,
+            "MLB": smbios.board_serial,
+            "SystemUUID": smbios.smuuid,
+            "ROM": bytes.fromhex(smbios.rom),
+        })
+        for section in ("DataHub", "PlatformNVRAM", "SMBIOS"):
+            values = platform.setdefault(section, {})
+            for key in ("SystemSerialNumber", "SystemUUID", "MLB", "ROM", "BoardSerialNumber"):
+                values.pop(key, None)
+        tmp = path.with_name(path.name + ".tmp")
         try:
-            with open(path, "rb") as f:
-                plist_data = plistlib.load(f)
-
-            if "PlatformInfo" not in plist_data:
-                plist_data["PlatformInfo"] = {}
-
-            plist_data["PlatformInfo"]["Automatic"] = True
-            plist_data["PlatformInfo"]["UpdateDataHub"] = True
-            plist_data["PlatformInfo"]["UpdateNVRAM"] = True
-            plist_data["PlatformInfo"]["UpdateSMBIOS"] = True
-            plist_data["PlatformInfo"]["UpdateSMBIOSMode"] = "Create"
-
-            if "Generic" not in plist_data["PlatformInfo"]:
-                plist_data["PlatformInfo"]["Generic"] = {}
-
-            generic = plist_data["PlatformInfo"]["Generic"]
-            generic["SystemProductName"] = smbios.model
-            generic["SystemSerialNumber"] = smbios.serial_number
-            generic["MLB"] = smbios.board_serial
-            generic["SystemUUID"] = smbios.smuuid
-            generic["ROM"] = bytes.fromhex(smbios.rom) if smbios.rom else bytes([0] * 6)
-            generic["AdviseFeatures"] = True
-            generic["MaxBIOSVersion"] = False
-            generic["ProcessorType"] = 0
-            generic["SpoofVendor"] = True
-
-            # Injeta boot-args. A flag "-v" (verbose) é mantida INTENCIONALMENTE
-            # para diagnóstico de kernel panic durante a instalação do macOS.
-            # Ver docs/soul.md §2.15 — remover apenas quando a instalação estiver
-            # estável e o boot gráfico limpo da Apple for priorizado.
-            if "NVRAM" not in plist_data:
-                plist_data["NVRAM"] = {}
-            if "Add" not in plist_data["NVRAM"]:
-                plist_data["NVRAM"]["Add"] = {}
-            apple_uuid = "7C436110-AB2A-4BBB-A880-FE41995C9F82"
-            if apple_uuid not in plist_data["NVRAM"]["Add"]:
-                plist_data["NVRAM"]["Add"][apple_uuid] = {}
-
-            plist_data["NVRAM"]["Add"][apple_uuid]["boot-args"] = (
-                "-v -lilubetaall ipc_control_port_options=0 debug=0x10A keepsyms=1 msgbuf=1048576"
-            )
-
-            # Habilita reinicialização limpa via registrador de reset ACPI FADT
-            if "ACPI" not in plist_data:
-                plist_data["ACPI"] = {}
-            if "Quirks" not in plist_data["ACPI"]:
-                plist_data["ACPI"]["Quirks"] = {}
-            plist_data["ACPI"]["Quirks"]["FadtEnableReset"] = True
-
-            # Exibe partições auxiliares (como macOS Base System / Recovery)
-            if "Misc" not in plist_data:
-                plist_data["Misc"] = {}
-            if "Security" not in plist_data["Misc"]:
-                plist_data["Misc"]["Security"] = {}
-            plist_data["Misc"]["Security"]["ScanPolicy"] = 0
-            plist_data["Misc"]["Security"]["AllowSetDefault"] = True
-
-            if "Boot" not in plist_data["Misc"]:
-                plist_data["Misc"]["Boot"] = {}
-            plist_data["Misc"]["Boot"]["ShowPicker"] = show_picker
-            plist_data["Misc"]["Boot"]["PollAppleHotKeys"] = True
-            plist_data["Misc"]["Boot"]["HideAuxiliary"] = not show_picker
-            plist_data["Misc"]["Boot"]["Timeout"] = 5 if show_picker else 0
-            plist_data["Misc"]["Boot"]["TakeoffDelay"] = 0
-
-            # Previne kernel panic em AppleIntelMCEReporter (típico de MacPro7,1 em VM / KVM)
-            if "Kernel" not in plist_data:
-                plist_data["Kernel"] = {}
-
-            # 1. Habilita MCEReporterDisabler.kext se existir na lista
-            for kext in plist_data["Kernel"].get("Add", []):
-                if "MCE" in kext.get("BundlePath", ""):
-                    kext["BundlePath"] = "MCEReporterDisabler.kext"
-                    kext["Enabled"] = True
-                    kext["MinKernel"] = ""
-
-            # 2. Bloqueia AppleIntelMCEReporter nativo
-            if "Block" not in plist_data["Kernel"]:
-                plist_data["Kernel"]["Block"] = []
-
-            has_mce_block = any(
-                b.get("Identifier") == "com.apple.driver.AppleIntelMCEReporter"
-                for b in plist_data["Kernel"]["Block"]
-            )
-            if not has_mce_block:
-                plist_data["Kernel"]["Block"].append({
-                    "Arch": "x86_64",
-                    "Comment": "Disable AppleIntelMCEReporter to prevent panic on MacPro7,1 / VMs",
-                    "Enabled": True,
-                    "Identifier": "com.apple.driver.AppleIntelMCEReporter",
-                    "MaxKernel": "",
-                    "MinKernel": "19.0.0",
-                    "Strategy": "Disable",
-                })
-
-            with open(path, "wb") as f:
-                plistlib.dump(plist_data, f)
-
-            return True
+            with tmp.open("wb") as fh:
+                plistlib.dump(data, fh, sort_keys=False)
+            with tmp.open("rb") as fh:
+                check = plistlib.load(fh)["PlatformInfo"]["Generic"]
+            if check.get("SystemSerialNumber") != smbios.serial_number or check.get("MLB") != smbios.board_serial:
+                raise SMBIOSError("OpenCore identity post-write validation failed")
+            tmp.replace(path)
         except Exception:
-            return False
+            tmp.unlink(missing_ok=True)
+            raise
+        return True
+
+    @classmethod
+    def inspect_vm(cls, vm, opencore_path: str | Path) -> dict:
+        """Read-only local consistency check; never returns full identity values."""
+        import plistlib
+        path = Path(opencore_path)
+        if not path.exists():
+            return {"ok": False, "reason": "OpenCore EFI image missing"}
+        # qcow2 is copied/extracted by the disk provisioner helper in normal use;
+        # callers without guestfish receive an explicit unavailable result.
+        if not shutil.which("guestfish"):
+            return {"ok": False, "reason": "guestfish unavailable; EFI could not be inspected"}
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            plist_path = Path(td) / "config.plist"
+            result = subprocess.run(["guestfish", "--ro", "-a", str(path), "-m", "/dev/sda1", "download", "/EFI/OC/config.plist", str(plist_path)], capture_output=True)
+            if result.returncode:
+                return {"ok": False, "reason": "OpenCore config could not be read"}
+            config = plistlib.loads(plist_path.read_bytes())
+        generic = config.get("PlatformInfo", {}).get("Generic", {})
+        matches = all((
+            generic.get("SystemProductName") == vm.smbios.model,
+            generic.get("SystemSerialNumber") == vm.smbios.serial_number,
+            generic.get("MLB") == vm.smbios.board_serial,
+            generic.get("SystemUUID") == vm.smbios.smuuid,
+            generic.get("ROM") == bytes.fromhex(vm.smbios.rom),
+        ))
+        return {"ok": matches, "reason": "local SMBIOS fields match" if matches else "identity fields missing or differ; Apple activation remains unverified"}

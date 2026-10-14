@@ -85,6 +85,16 @@ if [ "$(tty)" = "/dev/tty1" ]; then
     if command -v systemctl >/dev/null 2>&1; then
         systemctl --user start pipewire pipewire-pulse wireplumber 2>/dev/null || true
     fi
+    # Fallback caso systemd --user não esteja ativo (ex: live root no archiso)
+    if command -v pipewire >/dev/null 2>&1 && ! pgrep -x pipewire >/dev/null 2>&1; then
+        pipewire >/dev/null 2>&1 &
+        if command -v pipewire-pulse >/dev/null 2>&1; then
+            pipewire-pulse >/dev/null 2>&1 &
+        fi
+        if command -v wireplumber >/dev/null 2>&1; then
+            wireplumber >/dev/null 2>&1 &
+        fi
+    fi
 
     clear
 
@@ -141,9 +151,16 @@ if [ "$(tty)" = "/dev/tty1" ]; then
 
             # Status de Internet em tempo real
             if vhack_has_internet; then
-                echo -e "  \033[1;32m● Status de Conexão: CONECTADO À INTERNET\033[0m\n"
+                echo -e "  \033[1;32m● Conexão: CONECTADO À INTERNET\033[0m"
             else
-                echo -e "  \033[1;33m● Status de Conexão: SEM INTERNET (conecte via opção [3] abaixo)\033[0m\n"
+                echo -e "  \033[1;33m● Conexão: SEM INTERNET (conecte via opção [3] abaixo)\033[0m"
+            fi
+
+            # Status de Compatibilidade de Hardware (KVM e Reims vGPU)
+            if command -v vhackintosh >/dev/null 2>&1 && vhackintosh check -q 2>/dev/null; then
+                echo -e "  \033[1;32m● Hardware: COMPATÍVEL (KVM e Reims vGPU prontos)\033[0m\n"
+            else
+                echo -e "  \033[1;31m● Hardware: INCOMPATÍVEL (KVM na BIOS ou GPU sem Vulkan 1.2+)\033[0m\n"
             fi
 
             echo -e "Escolha o modo de operação:\n"

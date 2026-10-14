@@ -1,0 +1,7 @@
+# vHackintosh — acesso da sessão aos dispositivos USB (grupo 3/D3)
+#
+# O QEMU da VM usa o device `usb-host` (libusb) via hotplug QMP: o processo do
+# appliance precisa de leitura/escrita em /dev/bus/usb/* para passar um HD
+# externo, pen drive, câmera etc. para o convidado. O appliance é um quiosque:
+# permissão ampla e TAG uaccess para o usuário da sessão (logind).
+SUBSYSTEM=="usb", MODE="0666", TAG+="uaccess"

@@ -5,7 +5,7 @@ iso_name="vhackintosh-os"
 iso_label="VHACK_$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y%m)"
 iso_publisher="vHackintosh Project <https://github.com/felipeab10/vhackintosh>"
 iso_application="vHackintosh Appliance - Dedicated Linux for macOS VMs"
-iso_version="1.0.0"
+iso_version="1.1.0"
 install_dir="arch"
 buildmodes=('iso')
 bootmodes=('uefi.grub')
@@ -25,4 +25,20 @@ file_permissions=(
   ["/usr/local/bin/vhackintosh-waysession"]="0:0:755"
   ["/etc/vhackintosh/sway.conf"]="0:0:644"
   ["/opt/vhackintosh/bin/vhackintosh"]="0:0:755"
+  # O mkarchiso copia o airootfs com `cp -af --no-preserve=ownership,mode` e só
+  # reaplica os modos listados aqui — e esta lista **não aceita glob**. Sem as
+  # duas linhas abaixo, todo /opt/reims-vgpu chega na ISO como 0644, e o
+  # `./configure` do QEMU (invocado pelo qemu-build.sh) morre com
+  # "Permission denied". Uma barra final faz o mkarchiso aplicar `chmod -R`.
+  # Efeito colateral aceito: arquivos de dados dessas árvores também ficam 755,
+  # o que é inofensivo. O `core/reims_build.py` restaura os bits exatos em
+  # tempo de execução, então ISOs já gravadas também funcionam.
+  ["/opt/reims-vgpu/vendor/qemu/"]="0:0:755"
+  ["/opt/reims-vgpu/scripts/"]="0:0:755"
+  # `crates/` e `vm/` faltavam. O `vm/boot-x86.sh` executa diretamente
+  # `crates/reims-vgpu-efi/scripts/.../reims-vgpu-efi-rom.sh` (com `[ -x ]`
+  # antes, em require_shader_toolchain: "EFI ROM builder not executable") — e na
+  # ISO anterior ele chegou 0644.
+  ["/opt/reims-vgpu/crates/"]="0:0:755"
+  ["/opt/reims-vgpu/vm/"]="0:0:755"
 )

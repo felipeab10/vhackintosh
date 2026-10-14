@@ -5,11 +5,12 @@ e analisa grupos IOMMU para suporte a VFIO Passthrough.
 """
 
 from __future__ import annotations
+import ctypes
 import os
 import re
 import subprocess
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 @dataclass
@@ -64,15 +65,23 @@ class GPUChecker:
             vendor_name = "AMD"
         elif vendor_id == "8086":
             vendor_name = "Intel"
+        elif vendor_id == "1234":
+            vendor_name = "QEMU Standard VGA"
+        elif vendor_id == "1b36":
+            vendor_name = "Red Hat QEMU"
+        elif vendor_id == "15ad":
+            vendor_name = "VMware SVGA"
+        elif vendor_id == "80ee":
+            vendor_name = "VirtualBox Graphics"
 
         iommu_group = cls._get_iommu_group(pci_slot)
         is_vfio = cls._check_vfio_driver(pci_slot)
 
         # Compatibilidade com Reims vGPU (Vulkan):
         # NVIDIA GTX 900+, RTX series, AMD GCN 4+, Intel Gen9+ possuem suporte Vulkan 1.2+
-        reims_compatible = True
+        reims_compatible = False
         passthrough_compatible = False
-        recommendation = ""
+        recommendation = "Incompatível com Reims vGPU (controlador gráfico sem suporte Vulkan 1.2+)"
 
         if vendor_name == "NVIDIA":
             reims_compatible = True
@@ -87,6 +96,10 @@ class GPUChecker:
             reims_compatible = True
             passthrough_compatible = False
             recommendation = "Reims vGPU (iGPU Vulkan)"
+        elif vendor_id in ("1234", "1b36", "15ad", "80ee"):
+            reims_compatible = False
+            passthrough_compatible = False
+            recommendation = "Controlador gráfico emulado/virtual — sem suporte a aceleração Vulkan de hardware"
 
         return GPUDevice(
             pci_slot=pci_slot,
@@ -118,3 +131,84 @@ class GPUChecker:
             target = os.readlink(driver_path)
             return os.path.basename(target) == "vfio-pci"
         return False
+
+    @classmethod
+    def check_vulkan_host_readiness(cls) -> Tuple[bool, str]:
+        """
+        Verifica antecipadamente se o host possui suporte funcional à API Vulkan 1.2+
+        e pelo menos uma GPU física capaz de atender ao Reims vGPU.
+        
+        Isso impede desperdiçar minutos compilando código quando o sistema estiver
+        emulando vídeo básico (ex.: em testes aninhados no QEMU sem passthrough).
+        """
+        # 1. Carrega dinamicamente a biblioteca do loader Vulkan
+        lib = None
+        for name in ["libvulkan.so.1", "libvulkan.so"]:
+            try:
+                lib = ctypes.CDLL(name)
+                break
+            except Exception:
+                pass
+
+        if not lib:
+            return False, "Driver/Loader Vulkan ausente (libvulkan.so.1 não encontrada no host)."
+
+        class VkApplicationInfo(ctypes.Structure):
+            _fields_ = [
+                ("sType", ctypes.c_int),
+                ("pNext", ctypes.c_void_p),
+                ("pApplicationName", ctypes.c_char_p),
+                ("applicationVersion", ctypes.c_uint32),
+                ("pEngineName", ctypes.c_char_p),
+                ("engineVersion", ctypes.c_uint32),
+                ("apiVersion", ctypes.c_uint32),
+            ]
+
+        class VkInstanceCreateInfo(ctypes.Structure):
+            _fields_ = [
+                ("sType", ctypes.c_int),
+                ("pNext", ctypes.c_void_p),
+                ("flags", ctypes.c_uint32),
+                ("pApplicationInfo", ctypes.POINTER(VkApplicationInfo)),
+                ("enabledLayerCount", ctypes.c_uint32),
+                ("ppEnabledLayerNames", ctypes.POINTER(ctypes.c_char_p)),
+                ("enabledExtensionCount", ctypes.c_uint32),
+                ("ppEnabledExtensionNames", ctypes.POINTER(ctypes.c_char_p)),
+            ]
+
+        # VK_STRUCTURE_TYPE_APPLICATION_INFO = 1, VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 10
+        # Solicita API Vulkan 1.2 mínimo: (1 << 22) | (2 << 12)
+        app_info = VkApplicationInfo(
+            sType=1,
+            pNext=None,
+            pApplicationName=b"vhackintosh-preflight",
+            applicationVersion=1,
+            pEngineName=b"reims-preflight",
+            engineVersion=1,
+            apiVersion=(1 << 22) | (2 << 12),
+        )
+        inst_info = VkInstanceCreateInfo(
+            sType=10,
+            pNext=None,
+            flags=0,
+            pApplicationInfo=ctypes.pointer(app_info),
+            enabledLayerCount=0,
+            ppEnabledLayerNames=None,
+            enabledExtensionCount=0,
+            ppEnabledExtensionNames=None,
+        )
+
+        instance = ctypes.c_void_p()
+        res = lib.vkCreateInstance(ctypes.byref(inst_info), None, ctypes.byref(instance))
+        if res != 0:
+            return False, f"Falha ao inicializar o subsistema Vulkan no host (vkCreateInstance: código {res})."
+
+        try:
+            gpu_count = ctypes.c_uint32(0)
+            lib.vkEnumeratePhysicalDevices(instance, ctypes.byref(gpu_count), None)
+            if gpu_count.value == 0:
+                return False, "Nenhuma GPU física com suporte a Vulkan foi encontrada no host."
+            return True, f"{gpu_count.value} GPU(s) física(s) compatível(is) com Vulkan detectada(s)."
+        finally:
+            lib.vkDestroyInstance(instance, None)
+

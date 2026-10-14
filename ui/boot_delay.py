@@ -16,6 +16,8 @@ from rich.panel import Panel
 from rich.align import Align
 from rich.text import Text
 
+from core import i18n
+
 console = Console()
 
 
@@ -47,15 +49,15 @@ class BootInterceptor:
                     remaining = max(0, seconds - int(elapsed))
 
                     msg = Text()
-                    msg.append("⚡ Inicialização Automática vHackintosh\n\n", style="bold yellow")
-                    msg.append(f"Iniciando ", style="white")
+                    msg.append(i18n.t("boot.auto_start"), style="bold yellow")
+                    msg.append(i18n.t("boot.starting"), style="white")
                     msg.append(f"[{vm_name}]", style="bold green")
-                    msg.append(f" em ", style="white")
+                    msg.append(i18n.t("boot.in"), style="white")
                     msg.append(f"{remaining}s", style="bold cyan")
                     msg.append("...\n\n", style="white")
-                    msg.append("Pressione ", style="dim")
-                    msg.append("[ BARRA DE ESPAÇO ]", style="bold black on white")
-                    msg.append(" para abrir o Gerenciador de VMs", style="dim")
+                    msg.append(i18n.t("boot.press"), style="dim")
+                    msg.append(i18n.t("boot.space_bar"), style="bold black on white")
+                    msg.append(i18n.t("boot.open_vm_manager"), style="dim")
 
                     panel = Panel(
                         Align.center(msg),

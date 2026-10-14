@@ -26,6 +26,53 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+# ------------------------------------------------------------------------------
+# Pré-validação de Compatibilidade de Hardware:
+# Impede a destruição/formatação de discos caso o computador não atenda aos
+# requisitos obrigatórios do vHackintosh OS (KVM na BIOS e Reims vGPU / Vulkan 1.2+).
+# ------------------------------------------------------------------------------
+echo -e "${CYAN}▶ Validando requisitos de hardware para virtualização do macOS...${NC}"
+FORCE_INSTALL=0
+for arg in "$@"; do
+    if [ "$arg" = "--force" ]; then
+        FORCE_INSTALL=1
+    fi
+done
+
+CHECK_OK=1
+if command -v vhackintosh >/dev/null 2>&1; then
+    if ! vhackintosh check; then
+        CHECK_OK=0
+    fi
+elif [ -f "/opt/vhackintosh/bin/vhackintosh" ]; then
+    if ! /opt/vhackintosh/bin/vhackintosh check; then
+        CHECK_OK=0
+    fi
+fi
+
+if [ "$CHECK_OK" -ne 1 ]; then
+    echo -e "\n${RED}======================================================================${NC}"
+    echo -e "${BOLD}${RED}  INSTALAÇÃO BLOQUEADA: HARDWARE INCOMPATÍVEL COM vHACKINTOSH OS     ${NC}"
+    echo -e "${RED}======================================================================${NC}\n"
+    echo -e "${YELLOW}Este computador não atende aos requisitos mínimos para executar máquinas"
+    echo -e "virtuais macOS com aceleração gráfica pelo Reims vGPU.${NC}\n"
+    echo -e "Instalar o vHackintosh OS em disco apagaria os dados do SSD sem que"
+    echo -e "fosse possível executar o macOS após a instalação.\n"
+    echo -e "${BOLD}Requisitos obrigatórios:${NC}"
+    echo -e "  • Processador com VT-x (Intel) ou AMD-V (AMD) ativado na BIOS (/dev/kvm)"
+    echo -e "  • GPU física com Vulkan 1.2+ (Intel Gen9+, NVIDIA GTX 900+ ou AMD GCN 4+)"
+    echo -e "  • Instalação em computador físico real (não suportado em VM sem GPU Passthrough)\n"
+    if [ "$FORCE_INSTALL" -eq 1 ]; then
+        echo -e "${YELLOW}Aviso: flag --force detectada. Prosseguindo por insistência do usuário...${NC}\n"
+    else
+        echo -e "${CYAN}A instalação foi cancelada para proteger seus discos e dados.${NC}"
+        echo -e "Pressione Enter para retornar ao menu..."
+        read -r
+        exit 1
+    fi
+fi
+echo -e "${GREEN}✔ Hardware compatível! Prosseguindo com o instalador de disco...${NC}\n"
+
 trap 'echo -e "\n${RED}Erro na execução (linha $LINENO). Verifique as mensagens acima.${NC}\nPressione Enter para voltar..."; read -r' ERR
 
 # Detecta dispositivo de boot da ISO para proteger o instalador USB

@@ -51,7 +51,7 @@ class SystemReadinessChecker:
         kvm_check = cls._check_virtualization()
         checks.append(kvm_check)
         if not kvm_check.passed and kvm_check.is_critical:
-            critical_errors.append(kvm_check.status_text)
+            critical_errors.append(f"{kvm_check.name}: {kvm_check.details}")
 
         # 2. Checagem de Conectividade com a Internet
         net_check = cls._check_internet()
@@ -60,6 +60,8 @@ class SystemReadinessChecker:
         # 3. Checagem de Gráficos e Vulkan (reims-vgpu)
         gpu_check = cls._check_gpu_vulkan()
         checks.append(gpu_check)
+        if not gpu_check.passed and gpu_check.is_critical:
+            critical_errors.append(f"{gpu_check.name}: {gpu_check.details}")
 
         # 4. Checagem de Memória RAM
         ram_check = cls._check_ram()
@@ -69,7 +71,16 @@ class SystemReadinessChecker:
         disk_check = cls._check_disk_space()
         checks.append(disk_check)
 
-        can_run = kvm_check.passed
+        # 6. Virtualização aninhada (nested) — não-crítica: sem ela o macOS
+        # convidado só perde a capacidade de rodar VMs dentro dele.
+        nested_check = cls._check_nested()
+        checks.append(nested_check)
+
+        # 7. Áudio do host — não-crítica: a VM funciona normalmente sem som.
+        audio_check = cls._check_audio()
+        checks.append(audio_check)
+
+        can_run = kvm_check.passed and gpu_check.passed
         has_net = net_check.passed
 
         return ReadinessReport(
@@ -152,6 +163,97 @@ class SystemReadinessChecker:
             )
 
     @classmethod
+    def _check_nested(cls) -> CheckResult:
+        """Virtualização aninhada (grupo 6/D6) — distingue de "sem KVM".
+
+        A checagem só LÊ o estado; quem aplica `nested=1` é a ISO
+        (modprobe.d/vhackintosh-nested.conf) — recarregar módulo KVM de dentro
+        da TUI do host do usuário teria efeito colateral inesperado.
+        """
+        from core.virt import nested_status
+
+        status = nested_status()
+        vendor = status.get("vendor") or "?"
+        if status["module_loaded"] and status["nested_enabled"]:
+            return CheckResult(
+                category="Virtualização",
+                name="Virtualização aninhada (nested)",
+                passed=True,
+                status_text="Habilitada",
+                details=(
+                    "KVM com nested=1: o convidado enxerga VT-x/AMD-V — "
+                    "Docker/UTM/xhyve rodam dentro do macOS."
+                ),
+                is_critical=False,
+            )
+
+        return CheckResult(
+            category="Virtualização",
+            name="Virtualização aninhada (nested)",
+            passed=False,
+            status_text="Indisponível",
+            details=(
+                f"O macOS convidado NÃO terá virtualização aninhada (kvm_{vendor}): "
+                f"{status['reason']}."
+            ),
+            remediation=(
+                "Ative 'Intel Virtualization (VT-x)'/'SVM Mode' na BIOS e recarregue "
+                "o módulo (a ISO do appliance já traz nested=1 em modprobe.d; numa "
+                "instalação existente: options kvm_intel/kvm_amd nested=1 + reboot)."
+            ),
+            is_critical=False,
+        )
+
+    @classmethod
+    def _check_audio(cls) -> CheckResult:
+        """Áudio do host (grupo 5/D5) — causa provável do som mudo do convidado:
+        o PipeWire/PulseAudio da sessão do appliance não estar em execução."""
+        import glob
+        import subprocess
+
+        runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        sockets = [
+            os.path.join(runtime, "pipewire-0"),
+            os.path.join(runtime, "pulse", "native"),
+        ]
+        socket_ok = any(os.path.exists(s) for s in sockets)
+        proc_ok = False
+        try:
+            proc_ok = subprocess.run(
+                ["pgrep", "-x", "-u", str(os.getuid()), "pipewire"],
+                capture_output=True, timeout=3,
+            ).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+        if socket_ok or proc_ok:
+            return CheckResult(
+                category="Áudio",
+                name="Serviço de áudio do host",
+                passed=True,
+                status_text="PipeWire/PulseAudio ativo",
+                details="O som do convidado sai pelos alto-falantes do host.",
+                is_critical=False,
+            )
+
+        return CheckResult(
+            category="Áudio",
+            name="Serviço de áudio do host",
+            passed=False,
+            status_text="Sem serviço de áudio",
+            details=(
+                "PipeWire/PulseAudio não está em execução: a VM funciona "
+                "normalmente, mas o convidado fica sem som."
+            ),
+            remediation=(
+                "Instale e rode pipewire + pipewire-pulse + wireplumber (na sessão "
+                "do appliance o profile.d já os sobe; fora dela: systemctl --user "
+                "enable --now pipewire pipewire-pulse wireplumber)."
+            ),
+            is_critical=False,
+        )
+
+    @classmethod
     def _check_internet(cls) -> CheckResult:
         """Testa conectividade com DNS público e servidores da Apple."""
         connected = False
@@ -195,41 +297,29 @@ class SystemReadinessChecker:
     @classmethod
     def _check_gpu_vulkan(cls) -> CheckResult:
         """Verifica a presença de nós DRM e drivers Vulkan para o reims-vgpu."""
-        has_render_node = os.path.exists("/dev/dri/renderD128")
-        
-        has_icd = False
-        icd_dir = Path("/usr/share/vulkan/icd.d")
-        if icd_dir.exists() and any(icd_dir.glob("*.json")):
-            has_icd = True
+        from core.gpu import GPUChecker
+        vulkan_ok, vulkan_msg = GPUChecker.check_vulkan_host_readiness()
 
-        if has_render_node and has_icd:
+        if vulkan_ok:
             return CheckResult(
                 category="Gráficos",
-                name="Aceleração Vulkan / DRM",
+                name="Aceleração Vulkan 1.2+ (Reims vGPU)",
                 passed=True,
                 status_text="Suportado & Pronto",
-                details="Nó DRM (/dev/dri/renderD128) e manifestos Vulkan detectados para o reims-vgpu.",
-                is_critical=False
-            )
-        elif has_render_node:
-            return CheckResult(
-                category="Gráficos",
-                name="Aceleração Gráfica",
-                passed=True,
-                status_text="Básico (Render Node Ativo)",
-                details="Dispositivo gráfico renderD128 detectado.",
-                is_critical=False
+                details=f"{vulkan_msg} Reims vGPU totalmente funcional.",
+                is_critical=True
             )
         else:
             return CheckResult(
                 category="Gráficos",
-                name="Aceleração Gráfica",
+                name="Aceleração Vulkan 1.2+ (Reims vGPU)",
                 passed=False,
-                status_text="Atenção",
-                details="Nó /dev/dri/renderD128 não encontrado. Pode degradar o desempenho de renderização.",
-                remediation="Certifique-se de que os drivers de GPU (Mesa / Vulkan) estão carregados.",
-                is_critical=False
+                status_text="INCOMPATÍVEL",
+                details=f"{vulkan_msg} O Reims vGPU requer GPU física com Vulkan 1.2+.",
+                remediation="Instale em bare-metal com GPU física (Intel Gen9+, NVIDIA GTX 900+ ou AMD GCN 4+) ou configure GPU Passthrough se estiver em ambiente virtualizado.",
+                is_critical=True
             )
+
 
     @classmethod
     def _check_ram(cls) -> CheckResult:

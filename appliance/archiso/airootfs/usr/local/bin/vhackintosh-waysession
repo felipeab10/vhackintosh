@@ -73,6 +73,59 @@ chmod 755 "$APP_SH"
 # erro fatal, enquanto uma env var desconhecida e simplesmente ignorada.
 export SWAY_UNSUPPORTED_GPU=true
 
+# Identifica a topologia DRM de GPUs e monitores conectados.
+# Em notebooks híbridos (ex: Intel Iris Xe + NVIDIA dGPU), priorizamos a GPU que
+# controla a tela interna (eDP-*) como dispositivo primário do wlroots, adicionando
+# as demais placas na sequência (primary:secondary) para permitir multi-monitor.
+primary_card_node=""
+secondary_card_nodes=""
+
+# 1. Busca primeiro se há conector interno (eDP) conectado
+for connector_status_path in /sys/class/drm/card*-eDP-*/status; do
+    if [ -f "$connector_status_path" ] && grep -qx "connected" "$connector_status_path" 2>/dev/null; then
+        card_node_name="$(basename "$connector_status_path" | cut -d- -f1)"
+        if [ -c "/dev/dri/$card_node_name" ]; then
+            primary_card_node="/dev/dri/$card_node_name"
+            break
+        fi
+    fi
+done
+
+# 2. Se não achou eDP, pega qualquer conector com status "connected"
+if [ -z "$primary_card_node" ]; then
+    for connector_status_path in /sys/class/drm/card*-*/status; do
+        if [ -f "$connector_status_path" ] && grep -qx "connected" "$connector_status_path" 2>/dev/null; then
+            card_node_name="$(basename "$connector_status_path" | cut -d- -f1)"
+            if [ -c "/dev/dri/$card_node_name" ]; then
+                primary_card_node="/dev/dri/$card_node_name"
+                break
+            fi
+        fi
+    done
+fi
+
+# 3. Mapeia placas adicionais para a cadeia multi-GPU (cardA:cardB)
+for card_dev in /dev/dri/card[0-9]*; do
+    if [ -c "$card_dev" ] && [ "$card_dev" != "$primary_card_node" ]; then
+        if [ -z "$secondary_card_nodes" ]; then
+            secondary_card_nodes="$card_dev"
+        else
+            secondary_card_nodes="${secondary_card_nodes}:${card_dev}"
+        fi
+    fi
+done
+
+if [ -n "$primary_card_node" ]; then
+    if [ -n "$secondary_card_nodes" ]; then
+        export WLR_DRM_DEVICES="${primary_card_node}:${secondary_card_nodes}"
+    else
+        export WLR_DRM_DEVICES="$primary_card_node"
+    fi
+fi
+
+# Força o renderizador gles2 estável do wlroots para evitar fallback falho para Vulkan no DRM
+export WLR_RENDERER="${WLR_RENDERER:-gles2}"
+
 # Sem isto o wlroots ABORTA quando nao encontra GPU com renderizacao acelerada
 # (ex.: virtio-gpu em VM de teste), com a mensagem "Software rendering detected,
 # please use the WLR_RENDERER_ALLOW_SOFTWARE environment variable to proceed".

@@ -60,8 +60,11 @@ libinput
 ttf-dejavu
 mesa
 vulkan-icd-loader
-vulkan-radeon
 vulkan-intel
+intel-media-driver
+vulkan-radeon
+nvidia-open
+nvidia-utils
 vulkan-mesa-layers
 libdrm
 
@@ -86,6 +89,11 @@ htop
 fastfetch
 neovim
 nano
+# Dispositivos do host para a VM (grupo 3): lsusb (usbutils) e libusb p/ o
+# usb-host do QEMU; brilho de tela nas hotkeys XF86 (grupo 4).
+usbutils
+libusb
+brightnessctl
 
 # Runtime Python para vHackintosh TUI/Engine
 python
@@ -94,6 +102,41 @@ python-rich
 python-textual
 python-psutil
 python-setuptools
+# Listener evdev das teclas XF86 (brilho/volume) — grupo 4/D4.
+python-evdev
+
+# Toolchain de build do reims-vgpu (Vulkan) — a ISO leva as FONTES do fork e o
+# appliance compila na máquina do usuário, uma vez, com stamp de conteúdo. Isso
+# evita o caso do binário defasado em uso sem ninguém notar. Custo medido de um
+# build frio completo (98 crates Rust + 1950 objetos C do QEMU): ~4,5 min, com
+# Rust e C compilando em paralelo.
+#
+# O `rust` do Arch já traz `cargo`. O QEMU não baixa meson/ninja: ele usa os do
+# sistema (verificado no configure). As crates NÃO são baixadas, e sim lidas de
+# `vendor/cargo` (deps vendorizadas, `cargo vendor --versioned-dirs`), então o
+# build funciona offline — o appliance pode não ter internet no primeiro boot.
+rust
+meson
+ninja
+glib2
+pixman
+zlib
+pkgconf
+clang
+gcc
+make
+
+# LLVM tools (`llvm-dis`) — exigido em RUNTIME, não só no build.
+# O metal2vulkan executa `llvm-dis` para desmontar o AIR da Apple a cada shader
+# ainda não cacheado, e o `vm/boot-x86.sh:require_shader_toolchain` aborta o
+# boot se ele não estiver no PATH ("llvm-dis not found in PATH"). O `clang` traz
+# o `llvm-libs` (a libLLVM.so já estava na ISO), mas NÃO traz os binários do
+# pacote `llvm` — sem esta linha o rail morre antes de abrir a janela.
+# Custo: 28 MiB de download / 138 MiB instalados.
+llvm
+# `spirv-val`(daqui) também é exigido pelo require_shader_toolchain. Já era
+# trazido de forma implícita; declarado agora para não depender de sorte.
+spirv-tools
 
 # Runtimes e CLI Tools para Harnesses de IA (Claude Code, OpenCode, Codex)
 nodejs
