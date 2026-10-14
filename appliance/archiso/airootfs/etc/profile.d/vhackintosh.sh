@@ -85,6 +85,16 @@ if [ "$(tty)" = "/dev/tty1" ]; then
     if command -v systemctl >/dev/null 2>&1; then
         systemctl --user start pipewire pipewire-pulse wireplumber 2>/dev/null || true
     fi
+    # Fallback caso systemd --user não esteja ativo (ex: live root no archiso)
+    if command -v pipewire >/dev/null 2>&1 && ! pgrep -x pipewire >/dev/null 2>&1; then
+        pipewire >/dev/null 2>&1 &
+        if command -v pipewire-pulse >/dev/null 2>&1; then
+            pipewire-pulse >/dev/null 2>&1 &
+        fi
+        if command -v wireplumber >/dev/null 2>&1; then
+            wireplumber >/dev/null 2>&1 &
+        fi
+    fi
 
     clear
 

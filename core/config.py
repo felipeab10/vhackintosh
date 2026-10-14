@@ -4,10 +4,12 @@ Gerencia o catálogo de VMs cadastradas, persistência JSON e locks de execuçã
 """
 
 from __future__ import annotations
+
 import os
 import json
 import fcntl
 import logging
+import tempfile
 import dataclasses
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
@@ -23,7 +25,7 @@ LOGS_DIR = CONFIG_DIR / "logs"
 
 @dataclass
 class SMBIOSConfig:
-    model: str = "MacPro7,1"
+    model: str = "iMac20,1"
     serial_number: str = ""
     board_serial: str = ""  # MLB
     smuuid: str = ""
@@ -77,7 +79,11 @@ class VMConfig:
         # sumiria do gerenciador. Os campos novos já têm default, então a
         # ausência deles também é segura.
         smbios_data = data.pop("smbios", {})
-        smbios = SMBIOSConfig(**smbios_data) if isinstance(smbios_data, dict) else SMBIOSConfig()
+        smbios_fields = {field.name for field in dataclasses.fields(SMBIOSConfig)}
+        if isinstance(smbios_data, dict):
+            smbios = SMBIOSConfig(**{key: value for key, value in smbios_data.items() if key in smbios_fields})
+        else:
+            smbios = SMBIOSConfig()
         conhecidos = {f.name for f in dataclasses.fields(cls)}
         extras = {k: v for k, v in data.items() if k not in conhecidos}
         if extras:
@@ -94,6 +100,10 @@ class VMManagerStore:
 
     def __init__(self):
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            CONFIG_DIR.chmod(0o700)
+        except OSError:
+            pass
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         self._vms: Dict[str, VMConfig] = {}
         self.load()
@@ -119,8 +129,22 @@ class VMManagerStore:
             "version": "1.0",
             "vms": {vm_id: vm.to_dict() for vm_id, vm in self._vms.items()},
         }
-        with open(VMS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        fd, temp_name = tempfile.mkstemp(prefix=".vms.", dir=CONFIG_DIR)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_name, VMS_FILE)
+            os.chmod(VMS_FILE, 0o600)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            Path(temp_name).unlink(missing_ok=True)
+            raise
 
     def list_vms(self) -> List[VMConfig]:
         return list(self._vms.values())
@@ -135,16 +159,43 @@ class VMManagerStore:
         return None
 
     def add_vm(self, vm: VMConfig) -> None:
+        existing = self._vms.get(vm.id)
+        if existing and self._has_identity_conflict(existing.smbios, vm.smbios):
+            raise ValueError("Refusing to overwrite VM with a different SMBIOS identity")
+        self._assert_unique_identity(vm)
         if vm.auto_start:
             self._clear_auto_start()
         self._vms[vm.id] = vm
         self.save()
 
     def update_vm(self, vm: VMConfig) -> None:
+        existing = self._vms.get(vm.id)
+        if existing and self._has_identity_conflict(existing.smbios, vm.smbios):
+            vm_dir = Path(existing.disk_path).parent if existing.disk_path else Path(os.path.expanduser(f"~/.config/vhackintosh/vms/{vm.id}"))
+            if not (vm_dir / "smbios-backup-before-regeneration" / "OpenCore.qcow2").is_file():
+                raise ValueError("SMBIOS change for an existing VM requires a verified OpenCore backup")
+        self._assert_unique_identity(vm)
         if vm.auto_start:
             self._clear_auto_start(exclude_id=vm.id)
         self._vms[vm.id] = vm
         self.save()
+
+    @staticmethod
+    def _has_identity_conflict(left: SMBIOSConfig, right: SMBIOSConfig) -> bool:
+        return any(
+            a and b and a.lower() == b.lower()
+            for a, b in (
+                (left.serial_number, right.serial_number),
+                (left.board_serial, right.board_serial),
+                (left.smuuid, right.smuuid),
+                (left.rom, right.rom),
+            )
+        )
+
+    def _assert_unique_identity(self, vm: VMConfig) -> None:
+        for other_id, other in self._vms.items():
+            if other_id != vm.id and self._has_identity_conflict(vm.smbios, other.smbios):
+                raise ValueError("SMBIOS identity conflicts with another VM")
 
     def delete_vm(self, vm_id: str, delete_disk: bool = False) -> bool:
         if vm_id in self._vms:

@@ -51,8 +51,21 @@ QEMU_BUILD_LEGACY_REL = Path("scripts/qemu-build/qemu-build.sh")
 
 
 def qemu_data_dir() -> Path:
-    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    if os.geteuid() == 0:
+        base = "/root/.local/share"
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     return Path(base) / "reims-ctl"
+
+
+def appliance_build_environment() -> dict[str, str]:
+    """Keep root-triggered appliance builds in the runtime root user's paths."""
+    env = os.environ.copy()
+    if os.geteuid() == 0:
+        env["HOME"] = "/root"
+        env["CARGO_HOME"] = str(Path(env["HOME"]) / ".cargo")
+        env["XDG_DATA_HOME"] = str(Path(env["HOME"]) / ".local" / "share")
+    return env
 
 
 def qemu_binary() -> Path:
@@ -452,7 +465,7 @@ def _run_stage(
         on_start(name, expected)
     log_file = LOGS_DIR / log_name
 
-    env = os.environ.copy()
+    env = appliance_build_environment()
     # Build offline quando as deps estão vendorizadas ao lado do fonte.
     vendor = cwd / "vendor" / "cargo"
     if (cwd / ".cargo" / "config.toml").exists() or vendor.is_dir():

@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm, IntPrompt
 
-from core.config import VMConfig, SMBIOSConfig, ExclusiveVMLock
+from core.config import VMConfig, SMBIOSConfig, ExclusiveVMLock, VMManagerStore
 from core.smbios import GenSMBIOS
 from core.disk import DiskProvisioner
 from core.downloader import MacOSDownloader, MACOS_PRODUCTS
@@ -93,7 +93,7 @@ class ABInstallerTest:
         audio_device = "ich9-intel-hda"
 
         # 5. Provisionamento da VM de teste (limpeza automática)
-        test_vm_id = f"test-ab-{macos_version}"
+        test_vm_id = f"test-ab-{macos_version}-{os.getpid()}"
         test_vm_dir = Path(os.path.expanduser("~/.config/vhackintosh/vms")) / test_vm_id
         if test_vm_dir.exists():
             import shutil
@@ -103,7 +103,12 @@ class ABInstallerTest:
                 console.print(i18n.t("installer.warn.clean_old_dir", error=e))
 
         console.print(i18n.t("installer.provision", size=disk_size_gb, vm_id=test_vm_id))
-        smbios = GenSMBIOS.generate(macos_version)
+        try:
+            smbios = GenSMBIOS.generate(macos_version)
+        except Exception as e:
+            console.print(f"[bold red]Não foi possível gerar SMBIOS com macserial: {e}[/bold red]")
+            Prompt.ask(i18n.t("installer.prompt.exit"))
+            return
         vm = VMConfig(
             id=test_vm_id,
             name=i18n.t("installer.vm.name", version=macos_version.capitalize()),

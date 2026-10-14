@@ -14,4 +14,7 @@ venv/
 *.img
 /test-artifacts/
 appliance/out/
+appliance/out-*/
 appliance/archiso/airootfs/opt/
+.playwright-mcp/
+*.zip

@@ -169,11 +169,15 @@
 				<key>Enabled</key>
 				<false/>
 				<key>OemTableId</key>
-				<data>Q3B1UG0AAAA=</data>
+				<data>
+				Q3B1UG0AAAA=
+				</data>
 				<key>TableLength</key>
 				<integer>0</integer>
 				<key>TableSignature</key>
-				<data>U1NEVA==</data>
+				<data>
+				U1NEVA==
+				</data>
 			</dict>
 			<dict>
 				<key>All</key>
@@ -183,11 +187,15 @@
 				<key>Enabled</key>
 				<false/>
 				<key>OemTableId</key>
-				<data>Q3B1MElzdAA=</data>
+				<data>
+				Q3B1MElzdAA=
+				</data>
 				<key>TableLength</key>
 				<integer>0</integer>
 				<key>TableSignature</key>
-				<data>U1NEVA==</data>
+				<data>
+				U1NEVA==
+				</data>
 			</dict>
 		</array>
 		<key>Patch</key>
@@ -204,23 +212,31 @@
 				<key>Enabled</key>
 				<false/>
 				<key>Find</key>
-				<data>ESIzRA==</data>
+				<data>
+				ESIzRA==
+				</data>
 				<key>Limit</key>
 				<integer>0</integer>
 				<key>Mask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>OemTableId</key>
-				<data></data>
+				<data>
+				</data>
 				<key>Replace</key>
-				<data>RDMiEQ==</data>
+				<data>
+				RDMiEQ==
+				</data>
 				<key>ReplaceMask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>Skip</key>
 				<integer>0</integer>
 				<key>TableLength</key>
 				<integer>0</integer>
 				<key>TableSignature</key>
-				<data></data>
+				<data>
+				</data>
 			</dict>
 			<dict>
 				<key>Base</key>
@@ -234,23 +250,31 @@
 				<key>Enabled</key>
 				<false/>
 				<key>Find</key>
-				<data>X0NSUw==</data>
+				<data>
+				X0NSUw==
+				</data>
 				<key>Limit</key>
 				<integer>0</integer>
 				<key>Mask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>OemTableId</key>
-				<data></data>
+				<data>
+				</data>
 				<key>Replace</key>
-				<data>WENSUw==</data>
+				<data>
+				WENSUw==
+				</data>
 				<key>ReplaceMask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>Skip</key>
 				<integer>0</integer>
 				<key>TableLength</key>
 				<integer>0</integer>
 				<key>TableSignature</key>
-				<data></data>
+				<data>
+				</data>
 			</dict>
 		</array>
 		<key>Quirks</key>
@@ -332,7 +356,9 @@
 				<key>compatible</key>
 				<string>pci8086,2916</string>
 				<key>device-id</key>
-				<data>FikA</data>
+				<data>
+				FikA
+				</data>
 				<key>name</key>
 				<string>pci8086,2916</string>
 			</dict>
@@ -346,19 +372,19 @@
 		<array>
 			<dict>
 				<key>Arch</key>
-				<string>Any</string>
+				<string>x86_64</string>
 				<key>BundlePath</key>
 				<string>Lilu.kext</string>
 				<key>Comment</key>
-				<string>V1.7.0 | Patch engine</string>
+				<string>Lilu for ReimsVgpu macOS 26</string>
 				<key>Enabled</key>
 				<true/>
 				<key>ExecutablePath</key>
 				<string>Contents/MacOS/Lilu</string>
 				<key>MaxKernel</key>
-				<string></string>
+				<string>25.99.99</string>
 				<key>MinKernel</key>
-				<string>8.0.0</string>
+				<string>25.0.0</string>
 				<key>PlistPath</key>
 				<string>Contents/Info.plist</string>
 			</dict>
@@ -722,6 +748,24 @@
 				<key>PlistPath</key>
 				<string>Contents/Info.plist</string>
 			</dict>
+			<dict>
+				<key>Arch</key>
+				<string>x86_64</string>
+				<key>BundlePath</key>
+				<string>ReimsVgpu.kext</string>
+				<key>Comment</key>
+				<string>reims-vgpu's GPU features on macOS 26</string>
+				<key>Enabled</key>
+				<true/>
+				<key>ExecutablePath</key>
+				<string>Contents/MacOS/ReimsVgpu</string>
+				<key>MaxKernel</key>
+				<string>25.99.99</string>
+				<key>MinKernel</key>
+				<string>25.0.0</string>
+				<key>PlistPath</key>
+				<string>Contents/Info.plist</string>
+			</dict>
 		</array>
 		<key>Block</key>
 		<array>
@@ -745,9 +789,13 @@
 		<key>Emulate</key>
 		<dict>
 			<key>Cpuid1Data</key>
-			<data>VAYFAAAAAAAAAAAAAAAAAA==</data>
+			<data>
+			VAYFAAAAAAAAAAAAAAAAAA==
+			</data>
 			<key>Cpuid1Mask</key>
-			<data>////AAAAAAAAAAAAAAAAAA==</data>
+			<data>
+			////AAAAAAAAAAAAAAAAAA==
+			</data>
 			<key>DummyPowerManagement</key>
 			<true/>
 			<key>MaxKernel</key>
@@ -792,21 +840,28 @@
 				<key>Enabled</key>
 				<true/>
 				<key>Find</key>
-				<data>MduAPQAAAAAGdQA=</data>
+				<data>
+				MduAPQAAAAAGdQA=
+				</data>
 				<key>Identifier</key>
 				<string>kernel</string>
 				<key>Limit</key>
 				<integer>0</integer>
 				<key>Mask</key>
-				<data>/////wAAAP///wA=</data>
+				<data>
+				/////wAAAP///wA=
+				</data>
 				<key>MaxKernel</key>
 				<string>20.3.99</string>
 				<key>MinKernel</key>
 				<string>17.0.0</string>
 				<key>Replace</key>
-				<data>u7xP6njpXQAAAJA=</data>
+				<data>
+				u7xP6njpXQAAAJA=
+				</data>
 				<key>ReplaceMask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>Skip</key>
 				<integer>0</integer>
 			</dict>
@@ -822,21 +877,28 @@
 				<key>Enabled</key>
 				<true/>
 				<key>Find</key>
-				<data>MdKzAYA9AAAAAAZ1</data>
+				<data>
+				MdKzAYA9AAAAAAZ1
+				</data>
 				<key>Identifier</key>
 				<string>kernel</string>
 				<key>Limit</key>
 				<integer>0</integer>
 				<key>Mask</key>
-				<data>////////AAAAAP//</data>
+				<data>
+				////////AAAAAP//
+				</data>
 				<key>MaxKernel</key>
 				<string>22.99.99</string>
 				<key>MinKernel</key>
 				<string>20.4.0</string>
 				<key>Replace</key>
-				<data>urxP6nizAJCQkJDr</data>
+				<data>
+				urxP6nizAJCQkJDr
+				</data>
 				<key>ReplaceMask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>Skip</key>
 				<integer>0</integer>
 			</dict>
@@ -852,21 +914,27 @@
 				<key>Enabled</key>
 				<true/>
 				<key>Find</key>
-				<data>AHQjSIs=</data>
+				<data>
+				AHQjSIs=
+				</data>
 				<key>Identifier</key>
 				<string>kernel</string>
 				<key>Limit</key>
 				<integer>800</integer>
 				<key>Mask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>MaxKernel</key>
 				<string>21.1.0</string>
 				<key>MinKernel</key>
 				<string>20.4.0</string>
 				<key>Replace</key>
-				<data>AOsjSIs=</data>
+				<data>
+				AOsjSIs=
+				</data>
 				<key>ReplaceMask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>Skip</key>
 				<integer>0</integer>
 			</dict>
@@ -882,21 +950,27 @@
 				<key>Enabled</key>
 				<true/>
 				<key>Find</key>
-				<data>ukgBAAAx9g==</data>
+				<data>
+				ukgBAAAx9g==
+				</data>
 				<key>Identifier</key>
 				<string>kernel</string>
 				<key>Limit</key>
 				<integer>256</integer>
 				<key>Mask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>MaxKernel</key>
 				<string>21.1.0</string>
 				<key>MinKernel</key>
 				<string>20.4.0</string>
 				<key>Replace</key>
-				<data>ukgBAADrBQ==</data>
+				<data>
+				ukgBAADrBQ==
+				</data>
 				<key>ReplaceMask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>Skip</key>
 				<integer>0</integer>
 			</dict>
@@ -912,21 +986,26 @@
 				<key>Enabled</key>
 				<true/>
 				<key>Find</key>
-				<data></data>
+				<data>
+				</data>
 				<key>Identifier</key>
 				<string>com.apple.filesystems.apfs</string>
 				<key>Limit</key>
 				<integer>0</integer>
 				<key>Mask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>MaxKernel</key>
 				<string>22.99.99</string>
 				<key>MinKernel</key>
 				<string>22.1.0</string>
 				<key>Replace</key>
-				<data>uAEAAADD</data>
+				<data>
+				uAEAAADD
+				</data>
 				<key>ReplaceMask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>Skip</key>
 				<integer>0</integer>
 			</dict>
@@ -942,21 +1021,27 @@
 				<key>Enabled</key>
 				<true/>
 				<key>Find</key>
-				<data>aGliZXJuYXRlaGlkcmVhZHkAaGliZXJuYXRlY291bnQA</data>
+				<data>
+				aGliZXJuYXRlaGlkcmVhZHkAaGliZXJuYXRlY291bnQA
+				</data>
 				<key>Identifier</key>
 				<string>kernel</string>
 				<key>Limit</key>
 				<integer>0</integer>
 				<key>Mask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>MaxKernel</key>
 				<string></string>
 				<key>MinKernel</key>
 				<string></string>
 				<key>Replace</key>
-				<data>aGliZXJuYXRlaGlkcmVhZHkAaHZfdm1tX3ByZXNlbnQA</data>
+				<data>
+				aGliZXJuYXRlaGlkcmVhZHkAaHZfdm1tX3ByZXNlbnQA
+				</data>
 				<key>ReplaceMask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>Skip</key>
 				<integer>0</integer>
 			</dict>
@@ -972,21 +1057,27 @@
 				<key>Enabled</key>
 				<true/>
 				<key>Find</key>
-				<data>Ym9vdCBzZXNzaW9uIFVVSUQAaHZfdm1tX3ByZXNlbnQA</data>
+				<data>
+				Ym9vdCBzZXNzaW9uIFVVSUQAaHZfdm1tX3ByZXNlbnQA
+				</data>
 				<key>Identifier</key>
 				<string>kernel</string>
 				<key>Limit</key>
 				<integer>0</integer>
 				<key>Mask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>MaxKernel</key>
 				<string></string>
 				<key>MinKernel</key>
 				<string></string>
 				<key>Replace</key>
-				<data>Ym9vdCBzZXNzaW9uIFVVSUQAaGliZXJuYXRlY291bnQA</data>
+				<data>
+				Ym9vdCBzZXNzaW9uIFVVSUQAaGliZXJuYXRlY291bnQA
+				</data>
 				<key>ReplaceMask</key>
-				<data></data>
+				<data>
+				</data>
 				<key>Skip</key>
 				<integer>0</integer>
 			</dict>
@@ -1129,9 +1220,11 @@
 			<key>HaltLevel</key>
 			<integer>2147483648</integer>
 			<key>PasswordHash</key>
-			<data></data>
+			<data>
+			</data>
 			<key>PasswordSalt</key>
-			<data></data>
+			<data>
+			</data>
 			<key>ScanPolicy</key>
 			<integer>0</integer>
 			<key>SecureBootModel</key>
@@ -1156,7 +1249,9 @@
 				<key>LineControl</key>
 				<integer>7</integer>
 				<key>PciDeviceInfo</key>
-				<data>/w==</data>
+				<data>
+				/w==
+				</data>
 				<key>RegisterAccessWidth</key>
 				<integer>8</integer>
 				<key>RegisterBase</key>
@@ -1250,12 +1345,15 @@
 			<key>4D1EDE05-38C7-4A6A-9CC6-4BCCA8B38C14</key>
 			<dict>
 				<key>DefaultBackgroundColor</key>
-				<data>AAAAAA==</data>
+				<data>
+				AAAAAA==
+				</data>
 			</dict>
 			<key>4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102</key>
 			<dict>
 				<key>rtc-blacklist</key>
-				<data></data>
+				<data>
+				</data>
 			</dict>
 			<key>7C436110-AB2A-4BBB-A880-FE41995C9F82</key>
 			<dict>
@@ -1270,13 +1368,19 @@
 				<key>ForceDisplayRotationInEFI</key>
 				<integer>0</integer>
 				<key>SystemAudioVolume</key>
-				<data>Rg==</data>
+				<data>
+				Rg==
+				</data>
 				<key>boot-args</key>
 				<string>keepsyms=1 tlbto_us=0 vti=9</string>
 				<key>csr-active-config</key>
-				<data>ZwAAAA==</data>
+				<data>
+				ZwAAAA==
+				</data>
 				<key>prev-lang:kbd</key>
-				<data>ZW4tVVM6MA==</data>
+				<data>
+				ZW4tVVM6MA==
+				</data>
 				<key>run-efi-updater</key>
 				<string>No</string>
 			</dict>
@@ -1343,7 +1447,9 @@
 			<key>BoardProduct</key>
 			<string>Mac-CFF7D910A743CAAF</string>
 			<key>BoardRevision</key>
-			<data>Aw==</data>
+			<data>
+			Aw==
+			</data>
 			<key>DevicePathsSupported</key>
 			<integer>0</integer>
 			<key>FSBFrequency</key>
@@ -1353,19 +1459,23 @@
 			<key>PlatformName</key>
 			<string></string>
 			<key>SmcBranch</key>
-			<data></data>
+			<data>
+			</data>
 			<key>SmcPlatform</key>
-			<data>ajE4NQAAAAA=</data>
+			<data>
+			ajE4NQAAAAA=
+			</data>
 			<key>SmcRevision</key>
-			<data></data>
+			<data>
+			</data>
 			<key>StartupPowerEvents</key>
 			<integer>0</integer>
 			<key>SystemProductName</key>
 			<string>iMac20,1</string>
 			<key>SystemSerialNumber</key>
-			<string>C02DVVZNPN5T</string>
+			<string></string>
 			<key>SystemUUID</key>
-			<string>CE36C47B-ABD6-4D35-85DB-37ABE424CB5D</string>
+			<string>00000000-0000-0000-0000-000000000000</string>
 		</dict>
 		<key>Generic</key>
 		<dict>
@@ -1374,11 +1484,13 @@
 			<key>MaxBIOSVersion</key>
 			<false/>
 			<key>MLB</key>
-			<string>C02051310QXPHC11F</string>
+			<string></string>
 			<key>ProcessorType</key>
 			<integer>0</integer>
 			<key>ROM</key>
-			<data>rEoeDqwn</data>
+			<data>
+			AAAAAAAA
+			</data>
 			<key>SpoofVendor</key>
 			<true/>
 			<key>SystemMemoryStatus</key>
@@ -1386,26 +1498,32 @@
 			<key>SystemProductName</key>
 			<string>iMac20,1</string>
 			<key>SystemSerialNumber</key>
-			<string>C02DVVZNPN5T</string>
+			<string></string>
 			<key>SystemUUID</key>
-			<string>CE36C47B-ABD6-4D35-85DB-37ABE424CB5D</string>
+			<string>00000000-0000-0000-0000-000000000000</string>
 		</dict>
 		<key>PlatformNVRAM</key>
 		<dict>
 			<key>BID</key>
 			<string>Mac-CFF7D910A743CAAF</string>
 			<key>FirmwareFeatures</key>
-			<data>ZvCz/wgAAAA=</data>
+			<data>
+			ZvCz/wgAAAA=
+			</data>
 			<key>FirmwareFeaturesMask</key>
-			<data>/////wgAAAA=</data>
+			<data>
+			/////wgAAAA=
+			</data>
 			<key>MLB</key>
-			<string>C02051310QXPHC11F</string>
+			<string></string>
 			<key>ROM</key>
-			<data>rEoeDqwn</data>
+			<data>
+			AAAAAAAA
+			</data>
 			<key>SystemSerialNumber</key>
-			<string>C02DVVZNPN5T</string>
+			<string></string>
 			<key>SystemUUID</key>
-			<string>CE36C47B-ABD6-4D35-85DB-37ABE424CB5D</string>
+			<string>00000000-0000-0000-0000-000000000000</string>
 		</dict>
 		<key>SMBIOS</key>
 		<dict>
@@ -1424,7 +1542,7 @@
 			<key>BoardProduct</key>
 			<string>Mac-CFF7D910A743CAAF</string>
 			<key>BoardSerialNumber</key>
-			<string>C02051310QXPHC11F</string>
+			<string></string>
 			<key>BoardType</key>
 			<integer>10</integer>
 			<key>BoardVersion</key>
@@ -1434,21 +1552,26 @@
 			<key>ChassisManufacturer</key>
 			<string></string>
 			<key>ChassisSerialNumber</key>
-			<string>C02DVVZNPN5T</string>
+			<string></string>
 			<key>ChassisType</key>
 			<integer>13</integer>
 			<key>ChassisVersion</key>
 			<string>Mac-CFF7D910A743CAAF</string>
 			<key>FirmwareFeatures</key>
-			<data>ZvCz/wgAAAA=</data>
+			<data>
+			ZvCz/wgAAAA=
+			</data>
 			<key>FirmwareFeaturesMask</key>
-			<data>/////wgAAAA=</data>
+			<data>
+			/////wgAAAA=
+			</data>
 			<key>PlatformFeature</key>
 			<integer>32</integer>
 			<key>ProcessorType</key>
 			<integer>0</integer>
 			<key>SmcVersion</key>
-			<data></data>
+			<data>
+			</data>
 			<key>SystemFamily</key>
 			<string>iMac</string>
 			<key>SystemManufacturer</key>
@@ -1458,9 +1581,9 @@
 			<key>SystemSKUNumber</key>
 			<string>System SKU#</string>
 			<key>SystemSerialNumber</key>
-			<string>C02DVVZNPN5T</string>
+			<string></string>
 			<key>SystemUUID</key>
-			<string>CE36C47B-ABD6-4D35-85DB-37ABE424CB5D</string>
+			<string>00000000-0000-0000-0000-000000000000</string>
 			<key>SystemVersion</key>
 			<string>1.0</string>
 		</dict>

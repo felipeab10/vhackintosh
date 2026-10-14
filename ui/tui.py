@@ -242,9 +242,10 @@ class VMTUI:
             console.print(i18n.t("tui.menu.download_images"))
             console.print(i18n.t("tui.menu.ab_test"))
             console.print(i18n.t("tui.menu.build_iso"))
+            console.print(i18n.t("tui.menu.smbios_diagnostics"))
             console.print(i18n.t("tui.menu.exit"))
 
-            choices = ["1", "2", "3", "4", "5", "6", "7", "0"]
+            choices = ["1", "2", "3", "4", "5", "6", "7", "9", "0"]
             if installer_available:
                 choices.extend(["I", "i", "8"])
 
@@ -273,6 +274,8 @@ class VMTUI:
                 self._view_hardware_diagnostics()
             elif choice == "4":
                 self._update_upstream()
+            elif choice == "9":
+                self._view_smbios_diagnostics(vms)
             elif choice == "5":
                 self._menu_download_images()
             elif choice == "6":
@@ -595,9 +598,10 @@ class VMTUI:
 
             details_text.append("── OpenCore SMBIOS ──\n", style="dim cyan")
             details_text.append(i18n.t("tui.vm.details.smbios_model", value=vm.smbios.model), style="dim")
-            details_text.append(i18n.t("tui.vm.details.smbios_serial", value=vm.smbios.serial_number), style="dim")
-            details_text.append(i18n.t("tui.vm.details.smbios_mlb", value=vm.smbios.board_serial), style="dim")
-            details_text.append(i18n.t("tui.vm.details.smbios_smuuid", value=vm.smbios.smuuid), style="dim")
+            # Hardware-like identity values are intentionally redacted in the UI/logs.
+            details_text.append(i18n.t("tui.vm.details.smbios_serial", value="[redigido]"), style="dim")
+            details_text.append(i18n.t("tui.vm.details.smbios_mlb", value="[redigido]"), style="dim")
+            details_text.append(i18n.t("tui.vm.details.smbios_smuuid", value="[redigido]"), style="dim")
 
             panel = Panel(details_text, title=i18n.t("tui.vm.details.title", name=vm.name), border_style="green")
             console.print(panel)
@@ -666,10 +670,37 @@ class VMTUI:
             elif action == "4":
                 self._edit_vm_resources(vm)
             elif action == "5":
-                new_smbios = GenSMBIOS.generate(vm.macos_version)
-                vm.smbios = new_smbios
-                self.store.update_vm(vm)
-                console.print(i18n.t("tui.smbios.generated"))
+                existing_vm_dir = Path(vm.disk_path).parent if vm.disk_path else Path(os.path.expanduser(f"~/.config/vhackintosh/vms/{vm.id}"))
+                if not Confirm.ask(i18n.t("smbios.regenerate.confirm"), default=False):
+                    console.print(i18n.t("smbios.regenerate.cancelled"))
+                    Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
+                    continue
+                backup_dir = existing_vm_dir / "smbios-backup-before-regeneration"
+                try:
+                    backup_dir.mkdir(mode=0o700, exist_ok=False)
+                    existing_file = existing_vm_dir / "OpenCore.qcow2"
+                    if not existing_file.is_file():
+                        backup_dir.rmdir()
+                        raise RuntimeError("EFI da VM não encontrada; identidade não foi alterada")
+                    shutil.copy2(existing_file, backup_dir / "OpenCore.qcow2")
+                    new_smbios = GenSMBIOS.generate(vm.macos_version)
+                    existing_efi = existing_vm_dir / "OpenCore.qcow2"
+                    if existing_efi.is_file():
+                        old_identity = vm.smbios
+                        try:
+                            vm.smbios = new_smbios
+                            DiskProvisioner.inject_opencore_config(existing_efi, vm)
+                            self.store.update_vm(vm)
+                        except Exception:
+                            vm.smbios = old_identity
+                            shutil.copy2(backup_dir / "OpenCore.qcow2", existing_efi)
+                            raise
+                    else:
+                        raise RuntimeError("EFI da VM não encontrada; identidade não foi alterada")
+                    console.print(i18n.t("smbios.regenerate.backup", path=backup_dir))
+                    console.print(i18n.t("tui.smbios.generated"))
+                except Exception as exc:
+                    console.print(i18n.t("smbios.regenerate.failed", error=exc))
                 Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
             elif has_multiple_gpus and action == "6":
                 self._choose_gpu_for_vm(vm, gpus)
@@ -854,6 +885,23 @@ class VMTUI:
         vm.selected_gpu = chosen_gpu.pci_slot
         vm.selected_gpu_name = f"{chosen_gpu.vendor_name} {chosen_gpu.device_name}"
 
+    def _view_smbios_diagnostics(self, vms: list) -> None:
+        from core.smbios import GenSMBIOS
+        console.print(i18n.t("smbios.diag.menu"))
+        if not vms:
+            console.print(i18n.t("smbios.diag.unavailable", reason="nenhuma VM cadastrada"))
+        for vm in vms:
+            vm_dir = Path(vm.disk_path).parent if vm.disk_path else Path.home() / ".config/vhackintosh/vms" / vm.id
+            result = GenSMBIOS.inspect_vm(vm, vm_dir / "OpenCore.qcow2")
+            if result["ok"]:
+                console.print(f"[green]{vm.name}: {i18n.t('smbios.diag.match')}[/green]")
+            elif result.get("reason") == "identity fields missing or differ; Apple activation remains unverified":
+                console.print(f"[yellow]{vm.name}: {i18n.t('smbios.diag.mismatch')} {result['reason']}[/yellow]")
+            else:
+                console.print(f"[yellow]{vm.name}: {i18n.t('smbios.diag.unavailable', reason=result['reason'])}[/yellow]")
+        console.print(i18n.t("smbios.diag.icloud"))
+        Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
+
     def _view_hardware_diagnostics(self, interactive: bool = True) -> None:
         if interactive and sys.stdin.isatty():
             console.clear()
@@ -884,6 +932,12 @@ class VMTUI:
             Prompt.ask(i18n.t("tui.prompt.enter_back"))
 
     def _update_upstream(self) -> None:
+        console.clear()
+        console.print(render_banner())
+        console.print(Panel(
+            i18n.t("tui.update.title"),
+            border_style="cyan",
+        ))
         from core.updater import SystemUpdater
         SystemUpdater.run_full_update(force=False)
         Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))

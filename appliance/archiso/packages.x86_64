@@ -60,8 +60,11 @@ libinput
 ttf-dejavu
 mesa
 vulkan-icd-loader
-vulkan-radeon
 vulkan-intel
+intel-media-driver
+vulkan-radeon
+nvidia-open
+nvidia-utils
 vulkan-mesa-layers
 libdrm
 
@@ -86,6 +89,11 @@ htop
 fastfetch
 neovim
 nano
+# Dispositivos do host para a VM (grupo 3): lsusb (usbutils) e libusb p/ o
+# usb-host do QEMU; brilho de tela nas hotkeys XF86 (grupo 4).
+usbutils
+libusb
+brightnessctl
 
 # Runtime Python para vHackintosh TUI/Engine
 python
@@ -94,6 +102,8 @@ python-rich
 python-textual
 python-psutil
 python-setuptools
+# Listener evdev das teclas XF86 (brilho/volume) — grupo 4/D4.
+python-evdev
 
 # Toolchain de build do reims-vgpu (Vulkan) — a ISO leva as FONTES do fork e o
 # appliance compila na máquina do usuário, uma vez, com stamp de conteúdo. Isso

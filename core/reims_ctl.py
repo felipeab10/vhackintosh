@@ -48,12 +48,12 @@ VM_STORAGE_BASE = CONFIG_DIR / "vms"
 
 
 def reims_ctl_bin() -> Optional[str]:
-    """O executável do reims-ctl: PATH, depois o ~/.cargo/bin do install-ctl."""
+    """Resolve o binário do runtime ou a instalação padrão do appliance."""
     found = __import__("shutil").which("reims-ctl")
     if found:
         return found
-    cargo_bin = Path(os.path.expanduser("~/.cargo/bin/reims-ctl"))
-    return str(cargo_bin) if cargo_bin.is_file() else None
+    candidates = [Path(os.path.expanduser("~/.cargo/bin/reims-ctl")), Path("/root/.cargo/bin/reims-ctl")]
+    return next((str(path) for path in candidates if path.is_file()), None)
 
 
 # A janela do reims-vgpu (winit) fala Wayland direto: sem conexão de display ela
