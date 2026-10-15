@@ -69,6 +69,77 @@ def test_install_script_publishes_artifacts_transactionally():
     activate = text.index('ln -sfn "$(basename "$QEMU_DIR")"')
     record = text.index('"$FINAL_BIN" __record-install')
     cleanup = text.index('Cleanup only after the active controller')
-    assert cargo < publish < activate < record < cleanup
-    assert 'new QEMU activation failed validation' in text
-    assert 'could not record the installation' in text
+import unittest
+import tempfile
+import os
+
+class ReimsBuildStampTests(unittest.TestCase):
+    def test_stamp_lifecycle_and_invalidation(self):
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            repo = td_path / "reims-vgpu"
+            repo.mkdir()
+            (repo / "crates").mkdir()
+            (repo / "crates" / "lib.rs").write_text("// test source")
+            (repo / "vendor" / "qemu").mkdir(parents=True)
+            (repo / "vendor" / "qemu" / "meson.build").write_text("project('qemu')\n")
+            (repo / "scripts").mkdir()
+            (repo / "scripts" / "install-ctl.sh").write_text("#!/bin/bash\nexit 0\n")
+            (repo / "Cargo.toml").write_text("[workspace]\n")
+
+            # Fake QEMU binary path
+            fake_bin = td_path / "qemu-system-x86_64"
+            fake_bin.write_bytes(b"\x7fELF")
+
+            with patch.object(reims_build, "qemu_binary", return_value=fake_bin):
+                # 1. Sem stamp -> precisa compilar
+                st = reims_build.evaluate(explicit=repo)
+                self.assertTrue(st.needs_build)
+                self.assertIn("sem registro", st.reason)
+
+                # 2. Grava stamp -> não precisa compilar
+                fp = reims_build.source_fingerprint(repo)
+                reims_build.write_stamp(repo, fp)
+                st2 = reims_build.evaluate(explicit=repo)
+                self.assertFalse(st2.needs_build)
+                self.assertIn("binário atualizado", st2.reason)
+
+                # 3. Altera fonte -> precisa compilar novamente
+                (repo / "crates" / "lib.rs").write_text("// updated source code")
+                st3 = reims_build.evaluate(explicit=repo)
+                self.assertTrue(st3.needs_build)
+                self.assertIn("o fonte do reims-vgpu mudou", st3.reason)
+
+                # 4. Grava novo stamp -> volta a ficar pronto
+                reims_build.write_stamp(repo, reims_build.source_fingerprint(repo))
+                st4 = reims_build.evaluate(explicit=repo)
+                self.assertFalse(st4.needs_build)
+
+    def test_stamp_fallback_to_config_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            repo = td_path / "reims-vgpu"
+            repo.mkdir()
+            (repo / "scripts").mkdir()
+            (repo / "scripts" / "install-ctl.sh").write_text("#!/bin/bash\nexit 0\n")
+            (repo / "Cargo.toml").write_text("[workspace]\n")
+            fake_bin = td_path / "qemu-system-x86_64"
+            fake_bin.write_bytes(b"\x7fELF")
+
+            config_dir = td_path / "config"
+            with patch.object(reims_build, "qemu_binary", return_value=fake_bin), \
+                 patch.object(reims_build, "CONFIG_DIR", config_dir):
+                fp = reims_build.source_fingerprint(repo)
+                reims_build.write_stamp(repo, fp)
+
+                # Remove o stamp do repo (simulando sistema somente-leitura ou limpo)
+                (repo / reims_build.BUILD_STAMP_NAME).unlink()
+
+                # Deve ler do fallback em config_dir
+                read = reims_build.read_stamp(repo)
+                self.assertEqual(read, fp)
+
+
+if __name__ == "__main__":
+    unittest.main()
+

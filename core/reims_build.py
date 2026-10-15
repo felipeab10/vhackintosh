@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
-from core.config import LOGS_DIR
+from core.config import LOGS_DIR, CONFIG_DIR
 
 # ---------------------------------------------------------------------------
 # Localização do fonte
@@ -257,14 +257,29 @@ def source_fingerprint(reims_dir: Path) -> str:
 
 def read_stamp(reims_dir: Path) -> Optional[str]:
     try:
-        return (reims_dir / BUILD_STAMP_NAME).read_text(encoding="utf-8").strip()
+        p = reims_dir / BUILD_STAMP_NAME
+        if p.is_file():
+            return p.read_text(encoding="utf-8").strip()
     except OSError:
-        return None
+        pass
+    try:
+        fallback = CONFIG_DIR / "stamps" / f"{reims_dir.name}{BUILD_STAMP_NAME}"
+        if fallback.is_file():
+            return fallback.read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    return None
 
 
 def write_stamp(reims_dir: Path, fingerprint: str) -> None:
     try:
         (reims_dir / BUILD_STAMP_NAME).write_text(fingerprint + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    try:
+        stamps_dir = CONFIG_DIR / "stamps"
+        stamps_dir.mkdir(parents=True, exist_ok=True)
+        (stamps_dir / f"{reims_dir.name}{BUILD_STAMP_NAME}").write_text(fingerprint + "\n", encoding="utf-8")
     except OSError:
         pass
 
