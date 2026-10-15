@@ -45,7 +45,7 @@ for arg in "$@"; do
 done
 
 if [ -z "${ISO_FILE}" ]; then
-    ISO_FILE="$(ls -t "${OUTPUT_DIR}"/*.iso 2>/dev/null | head -n 1 || true)"
+    ISO_FILE="$(ls -t "${OUTPUT_DIR}"/*.iso "${SCRIPT_DIR}"/out-*/*.iso 2>/dev/null | head -n 1 || true)"
 fi
 
 if [ -z "${ISO_FILE}" ] || [ ! -f "${ISO_FILE}" ]; then

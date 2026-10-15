@@ -18,6 +18,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from core.config import VMConfig, CONFIG_DIR
 from core.smbios import GenSMBIOS
+from core import reims_util
 
 console = Console()
 
@@ -114,19 +115,15 @@ class DiskProvisioner:
                     pass
             progress.update(task1, description=f"[bold green]✔ Disco de {vm.disk_size_gb} GB criado (macos.qcow2)[/bold green]")
 
-            # 2. Cópia e customização do OpenCore.qcow2
+            # 2. Cópia e customização ou geração nativa do OpenCore.qcow2
             task2 = progress.add_task("Provisionando bootloader OpenCore EFI...", total=None)
-            template_oc = cls.get_template_opencore_path()
-            if not template_oc:
-                raise FileNotFoundError("Imagem base OpenCore.qcow2 não encontrada no sistema.")
-
-            # Existing VMs retain their identity; only initialize a new EFI.
             new_opencore = not opencore_path.exists()
+
+            # Existing VMs retain their identity; new VMs always get a fresh SMBIOS.
             if new_opencore:
-                if not all((vm.smbios.serial_number, vm.smbios.board_serial, vm.smbios.smuuid, vm.smbios.rom)):
+                if not vm.smbios or not all((vm.smbios.serial_number, vm.smbios.board_serial, vm.smbios.smuuid, vm.smbios.rom)):
                     vm.smbios = GenSMBIOS.generate(vm.macos_version)
                 GenSMBIOS.validate(vm.smbios)
-                shutil.copyfile(template_oc, opencore_path)
 
             # 3. Provisionamento de OVMF_VARS.fd se não existir
             if not ovmf_vars_path.exists():
@@ -138,17 +135,35 @@ class DiskProvisioner:
             # no diretório da VM — ver core/reims_ctl.py).
             cls.ensure_ovmf_code(vm_dir)
 
-            # 4. A nova EFI só fica pronta após injeção obrigatória e verificada.
+            # 4. Geração do OpenCore (reims-util preferencial, fallback para template + guestfish)
             if new_opencore:
-                if not shutil.which("guestfish"):
-                    opencore_path.unlink(missing_ok=True)
-                    raise RuntimeError("guestfish is required to provision an OpenCore EFI safely")
-                try:
-                    progress.update(task2, description="Aplicando identidade SMBIOS à EFI...")
-                    cls._inject_smbios_to_opencore_qcow2(opencore_path, vm)
-                except Exception:
-                    opencore_path.unlink(missing_ok=True)
-                    raise
+                reims_util_ready = reims_util.is_available()
+                generated = False
+                if reims_util_ready:
+                    progress.update(task2, description="Gerando bootloader OpenCore EFI via reims-util...")
+                    try:
+                        generated = reims_util.generate_opencore(
+                            opencore_path,
+                            vm.smbios,
+                            no_ovmf=True,
+                        )
+                    except Exception:
+                        generated = False
+
+                if not generated:
+                    template_oc = cls.get_template_opencore_path()
+                    if not template_oc:
+                        raise FileNotFoundError("Imagem base OpenCore.qcow2 não encontrada e reims-util indisponível.")
+                    if not shutil.which("guestfish"):
+                        opencore_path.unlink(missing_ok=True)
+                        raise RuntimeError("guestfish ou reims-util é necessário para provisionar o OpenCore EFI com segurança")
+                    shutil.copyfile(template_oc, opencore_path)
+                    try:
+                        progress.update(task2, description="Aplicando identidade SMBIOS à EFI via guestfish...")
+                        cls._inject_smbios_to_opencore_qcow2(opencore_path, vm)
+                    except Exception:
+                        opencore_path.unlink(missing_ok=True)
+                        raise
             progress.update(task2, description="[bold green]✔ OpenCore EFI pronto para boot![/bold green]")
 
         # 5. Link/cópia do instalador se fornecido
@@ -202,10 +217,25 @@ class DiskProvisioner:
         fd, staged_name = tempfile.mkstemp(prefix=f".{original_image.name}.", suffix=".staged", dir=original_image.parent)
         os.close(fd)
         staged_image = Path(staged_name)
-        shutil.copy2(original_image, staged_image)
         backup_name = None
         try:
-            cls._inject_opencore_config_in_place(staged_image, vm, show_picker)
+            native_generated = False
+            if reims_util.is_available():
+                native_generated = reims_util.generate_opencore(
+                    staged_image,
+                    vm.smbios,
+                    no_ovmf=True,
+                    timeout=5 if show_picker else None,
+                )
+
+            if not native_generated:
+                if not original_image.exists():
+                    raise FileNotFoundError(f"OpenCore image not found: {original_image}")
+                if not shutil.which("guestfish"):
+                    raise RuntimeError("guestfish ou reims-util é necessário para atualizar o OpenCore EFI")
+                shutil.copy2(original_image, staged_image)
+                cls._inject_opencore_config_in_place(staged_image, vm, show_picker)
+
             backup_fd, backup_name = tempfile.mkstemp(prefix=f".{original_image.name}.", suffix=".backup", dir=original_image.parent)
             os.close(backup_fd)
             shutil.copy2(original_image, backup_name)

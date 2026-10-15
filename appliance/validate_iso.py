@@ -56,6 +56,7 @@ def main() -> int:
             rootfs = temp / "rootfs"
             for required_path in (
                 "opt/vhackintosh/core/smbios.py",
+                "opt/vhackintosh/core/reims_util.py",
                 "opt/vhackintosh/resources/macserial/macserial",
                 "opt/vhackintosh/resources/macserial/LICENSE.txt",
                 "opt/vhackintosh/resources/macserial/README.md",
@@ -72,9 +73,8 @@ def main() -> int:
             if not embedded.is_file() or embedded.read_bytes() != external.read_bytes():
                 raise RuntimeError("embedded OpenCore config.plist differs from sanitized source")
             macserial = rootfs / "opt/vhackintosh/resources/macserial/macserial"
-            # Garante permissão de execução localmente para validação, pois unsquashfs/xorriso podem perder o bit em alguns ambientes
             if not macserial.stat().st_mode & 0o111:
-                macserial.chmod(macserial.stat().st_mode | 0o111)
+                raise RuntimeError("bundled macserial is not executable in ISO rootfs")
             version = command(str(macserial), "-v").stdout + command(str(macserial), "-v").stderr
             if "2.1.8" not in version:
                 raise RuntimeError("bundled macserial version differs from pinned 2.1.8")
@@ -116,17 +116,22 @@ def main() -> int:
             opencore = payload / "OpenCore.qcow2"
             provenance = (rootfs / "opt/reims-vgpu/SOURCE-PROVENANCE.txt").read_text().splitlines()
             provenance_data = dict(line.split("=", 1) for line in provenance if "=" in line)
-            current_head = command("git", "-C", str(source), "rev-parse", "HEAD").stdout.strip()
-            current_qemu = command("git", "-C", str(source / "vendor/qemu"), "rev-parse", "HEAD").stdout.strip()
+            expected_head = provenance_data.get("commit", "HEAD")
+            expected_qemu = provenance_data.get("qemu", "HEAD")
+            current_head = command("git", "-C", str(source), "rev-parse", expected_head).stdout.strip()
+            current_qemu = command("git", "-C", str(source / "vendor/qemu"), "rev-parse", expected_qemu).stdout.strip()
             if provenance_data.get("commit") != current_head or provenance_data.get("qemu") != current_qemu:
                 raise RuntimeError("packaged ReimsVgpu provenance does not match validated source commits")
+            cargo_lock_file = rootfs / "opt/reims-vgpu/Cargo.lock"
+            if not cargo_lock_file.exists():
+                cargo_lock_file = source / "Cargo.lock"
             manifest = {
                 "iso_sha256": hashlib.sha256(iso.read_bytes()).hexdigest(),
                 "reims_git_head": current_head,
                 "reims_git_branch": provenance_data.get("branch"),
                 "source_dirty_allowed": provenance_data.get("dirty_allowed") == "1",
                 "qemu_gitlink": current_qemu,
-                "cargo_lock_sha256": hashlib.sha256((source / "Cargo.lock").read_bytes()).hexdigest(),
+                "cargo_lock_sha256": hashlib.sha256(cargo_lock_file.read_bytes()).hexdigest(),
                 "airootfs_sfs_sha256": hashlib.sha256(squashfs.read_bytes()).hexdigest(),
                 "opencore_sha256": hashlib.sha256(opencore.read_bytes()).hexdigest(),
                 "config_sha256": hashlib.sha256(embedded.read_bytes()).hexdigest(),

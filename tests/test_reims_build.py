@@ -91,7 +91,9 @@ class ReimsBuildStampTests(unittest.TestCase):
             fake_bin = td_path / "qemu-system-x86_64"
             fake_bin.write_bytes(b"\x7fELF")
 
-            with patch.object(reims_build, "qemu_binary", return_value=fake_bin):
+            with patch.object(reims_build, "qemu_binary", return_value=fake_bin), patch.object(
+                reims_build, "CONFIG_DIR", td_path / "config"
+            ):
                 # 1. Sem stamp -> precisa compilar
                 st = reims_build.evaluate(explicit=repo)
                 self.assertTrue(st.needs_build)

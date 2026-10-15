@@ -14,7 +14,7 @@ BUILD_ID="${BUILD_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 BUILD_WORK="${BUILD_WORK:-/var/tmp/vhackintosh-archiso-${BUILD_ID}}"
 PROFILE_WORK="${PROFILE_WORK:-/var/tmp/vhackintosh-profile-${BUILD_ID}}"
 ARCHISO_PROFILE="${PROFILE_WORK}"
-OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/out-${BUILD_ID}}"
+OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/out}"
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -87,6 +87,9 @@ if [ -e "${PROFILE_WORK}" ] || [ -L "${PROFILE_WORK}" ]; then
     echo -e "${RED}Erro: PROFILE_WORK já existe; escolha um caminho novo: ${PROFILE_WORK}${NC}"
     exit 1
 fi
+if [ -d "${OUTPUT_DIR}" ] && [ -z "$(ls -A "${OUTPUT_DIR}" 2>/dev/null)" ]; then
+    rmdir "${OUTPUT_DIR}" 2>/dev/null || true
+fi
 if [ -e "${OUTPUT_DIR}" ] || [ -L "${OUTPUT_DIR}" ]; then
     echo -e "${RED}Erro: OUTPUT_DIR já existe; escolha um caminho novo: ${OUTPUT_DIR}${NC}"
     exit 1
@@ -140,6 +143,20 @@ install -m 0755 "${PROJECT_ROOT}/resources/macserial/macserial" "${ARCHISO_PROFI
 install -m 0644 "${PROJECT_ROOT}/resources/macserial/LICENSE.txt" "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/resources/macserial/LICENSE.txt"
 install -m 0644 "${PROJECT_ROOT}/resources/macserial/README.md" "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/resources/macserial/README.md"
 
+# Empacotamento do binário reims-util se presente no ambiente do host de build.
+REIMS_UTIL_HOST_BIN=""
+if [ -f "${HOME}/.cargo/bin/reims-util" ]; then
+    REIMS_UTIL_HOST_BIN="${HOME}/.cargo/bin/reims-util"
+elif command -v reims-util >/dev/null 2>&1; then
+    REIMS_UTIL_HOST_BIN="$(command -v reims-util)"
+fi
+
+if [ -n "${REIMS_UTIL_HOST_BIN}" ]; then
+    echo -e "${BLUE}▶ Empacotando utilitário nativo reims-util (${REIMS_UTIL_HOST_BIN})...${NC}"
+    mkdir -p "${ARCHISO_PROFILE}/airootfs/usr/local/bin"
+    install -m 0755 "${REIMS_UTIL_HOST_BIN}" "${ARCHISO_PROFILE}/airootfs/usr/local/bin/reims-util"
+fi
+
 # 5. Empacotamento exclusivo das fontes do reims-vgpu. Não transportar
 # binários de um host de build: o QEMU, a ROM e o reims-ctl são compilados no
 # próprio Linux appliance na primeira atualização.
@@ -153,52 +170,43 @@ if [ ! -d "${REIMS_SRC}" ] || [ ! -f "${REIMS_SRC}/Cargo.toml" ] || \
     exit 1
 fi
 
+REIMS_REF="${REIMS_REF:-master}"
+
 if [ -d "${REIMS_SRC}" ]; then
-    if [ -e "${REIMS_SRC}/.git" ] && [ -n "$(git -C "${REIMS_SRC}" status --porcelain)" ]; then
-        if [ "${ALLOW_DIRTY_REIMS:-0}" != "1" ]; then
-            echo -e "${RED}Erro: fontes reims-vgpu modificadas; use cópia limpa ou defina ALLOW_DIRTY_REIMS=1 explicitamente.${NC}"
-            exit 1
+    if [ -d "${REIMS_SRC}/.git" ]; then
+        # Extração local limpa a partir de REIMS_REF (default: master)
+        if git -C "${REIMS_SRC}" rev-parse --verify "${REIMS_REF}" >/dev/null 2>&1; then
+            TARGET_REF="${REIMS_REF}"
+        else
+            TARGET_REF="HEAD"
         fi
-        echo -e "${YELLOW}AVISO: empacotando checkout reims-vgpu dirty por solicitação explícita.${NC}"
-    fi
-    if [ -d "${REIMS_SRC}/vendor/qemu" ]; then
-        QEMU_SUBMODULE_STATUS="$(git -C "${REIMS_SRC}" submodule status -- vendor/qemu 2>/dev/null || true)"
-        if [[ "${QEMU_SUBMODULE_STATUS}" != ' '* ]]; then
-            echo -e "${RED}Erro: submódulo QEMU ausente, não inicializado, divergente ou com merge conflict.${NC}"
-            exit 1
+        REIMS_GIT_HEAD="$(git -C "${REIMS_SRC}" rev-parse "${TARGET_REF}" 2>/dev/null || echo unknown)"
+        REIMS_GIT_BRANCH="$(git -C "${REIMS_SRC}" rev-parse --abbrev-ref "${TARGET_REF}" 2>/dev/null || echo "${TARGET_REF}")"
+        QEMU_GIT_PIN="$(git -C "${REIMS_SRC}" rev-parse "${TARGET_REF}:vendor/qemu" 2>/dev/null || git -C "${REIMS_SRC}/vendor/qemu" rev-parse HEAD 2>/dev/null || echo unknown)"
+
+        echo -e "${BLUE}▶ Extraindo fontes limpas do reims-vgpu a partir de '${TARGET_REF}' (${REIMS_GIT_HEAD:0:8})...${NC}"
+        git -C "${REIMS_SRC}" archive "${TARGET_REF}" | tar -x -C "${REIMS_DEST}"
+
+        if [ -d "${REIMS_SRC}/vendor/qemu" ]; then
+            echo -e "${BLUE}▶ Extraindo fontes limpas do QEMU a partir do commit do submódulo (${QEMU_GIT_PIN:0:8})...${NC}"
+            mkdir -p "${REIMS_DEST}/vendor/qemu"
+            if git -C "${REIMS_SRC}/vendor/qemu" rev-parse --verify "${QEMU_GIT_PIN}" >/dev/null 2>&1; then
+                git -C "${REIMS_SRC}/vendor/qemu" archive "${QEMU_GIT_PIN}" | tar -x -C "${REIMS_DEST}/vendor/qemu"
+            else
+                rsync -a --exclude='build' --exclude='.git' --exclude='*.a' \
+                    --exclude='*.so' --exclude='*.dylib' --exclude='*.dll' --exclude='*.exe' \
+                    "${REIMS_SRC}/vendor/qemu/" "${REIMS_DEST}/vendor/qemu/"
+            fi
         fi
+    else
+        REIMS_GIT_HEAD="unknown"
+        REIMS_GIT_BRANCH="unknown"
+        QEMU_GIT_PIN="unknown"
+        rsync -a --exclude='target' --exclude='build' --exclude='.git' "${REIMS_SRC}/" "${REIMS_DEST}/"
     fi
-    REIMS_GIT_HEAD="$(git -C "${REIMS_SRC}" rev-parse HEAD 2>/dev/null || echo unknown)"
-    REIMS_GIT_BRANCH="$(git -C "${REIMS_SRC}" branch --show-current 2>/dev/null || echo unknown)"
-    QEMU_GIT_PIN="$(git -C "${REIMS_SRC}/vendor/qemu" rev-parse HEAD 2>/dev/null || echo unknown)"
-    printf '%s\n' "source=${REIMS_SRC}" "branch=${REIMS_GIT_BRANCH}" "commit=${REIMS_GIT_HEAD}" "qemu=${QEMU_GIT_PIN}" "dirty_allowed=${ALLOW_DIRTY_REIMS:-0}" > "${REIMS_DEST}/SOURCE-PROVENANCE.txt"
-    echo -e "${BLUE}▶ Empacotando apenas fontes do reims-vgpu para build no appliance...${NC}"
-    for src_file in Cargo.toml Cargo.lock; do
-        [ -f "${REIMS_SRC}/${src_file}" ] && cp -a "${REIMS_SRC}/${src_file}" "${REIMS_DEST}/"
-    done
-    if [ -d "${REIMS_SRC}/crates" ]; then
-        rsync -a --exclude='target' --exclude='out' --exclude='*.pyc' \
-            --exclude='*.a' --exclude='*.so' --exclude='*.dylib' \
-            "${REIMS_SRC}/crates/" "${REIMS_DEST}/crates/"
-    fi
-    if [ -d "${REIMS_SRC}/firmware" ]; then
-        rsync -a --exclude='out' --exclude='target' \
-            "${REIMS_SRC}/firmware/" "${REIMS_DEST}/firmware/"
-    fi
-    if [ -d "${REIMS_SRC}/vendor/qemu" ]; then
-        echo -e "${BLUE}▶ Empacotando fontes do QEMU (sem build e sem git metadata)...${NC}"
-        mkdir -p "${REIMS_DEST}/vendor/qemu"
-        rsync -a --exclude='build' --exclude='.git' --exclude='*.a' \
-            --exclude='*.so' --exclude='*.dylib' --exclude='*.dll' --exclude='*.exe' \
-            "${REIMS_SRC}/vendor/qemu/" "${REIMS_DEST}/vendor/qemu/"
-    fi
-    if [ -d "${REIMS_SRC}/scripts" ]; then
-        rsync -a --exclude='*.pyc' "${REIMS_SRC}/scripts/" "${REIMS_DEST}/scripts/"
-    fi
-    if [ -d "${REIMS_SRC}/vm" ]; then
-        mkdir -p "${REIMS_DEST}/vm"
-        [ -f "${REIMS_SRC}/vm/boot-x86.sh" ] && cp -a "${REIMS_SRC}/vm/boot-x86.sh" "${REIMS_DEST}/vm/"
-    fi
+
+    printf '%s\n' "source=${REIMS_SRC}" "branch=${REIMS_GIT_BRANCH}" "commit=${REIMS_GIT_HEAD}" "qemu=${QEMU_GIT_PIN}" "dirty_allowed=0" > "${REIMS_DEST}/SOURCE-PROVENANCE.txt"
+
     if [ -d "${REIMS_SRC}/vendor/cargo" ]; then
         echo -e "${BLUE}▶ Empacotando dependências Rust vendorizadas...${NC}"
         rsync -a "${REIMS_SRC}/vendor/cargo/" "${REIMS_DEST}/vendor/cargo/"
@@ -206,15 +214,8 @@ if [ -d "${REIMS_SRC}" ]; then
     else
         echo -e "${YELLOW}Aviso: vendor/cargo ausente; o appliance precisará de rede para resolver dependências.${NC}"
     fi
-    if [ -d "${REIMS_SRC}/.cargo" ]; then
-        mkdir -p "${REIMS_DEST}/.cargo"
-        rsync -a "${REIMS_SRC}/.cargo/" "${REIMS_DEST}/.cargo/"
-    fi
-    if [ -f "${REIMS_SRC}/.cargo/config.toml" ] && \
-       grep -q 'vendored-sources' "${REIMS_SRC}/.cargo/config.toml"; then
-        mkdir -p "${REIMS_DEST}/.cargo"
-        cp -a "${REIMS_SRC}/.cargo/config.toml" "${REIMS_DEST}/.cargo/config.toml"
-    fi
+
+    chmod +x "${REIMS_DEST}/scripts/"* 2>/dev/null || true
 else
     echo -e "${YELLOW}Aviso: fontes do reims-vgpu não encontradas em ${REIMS_SRC}; ISO será criada sem elas.${NC}"
 fi
@@ -222,6 +223,8 @@ fi
 # 6. Permissões de execução dos scripts da appliance
 chmod +x "${ARCHISO_PROFILE}/airootfs/usr/local/bin/"* || true
 chmod +x "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/bin/"* || true
+chmod +x "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/resources/macserial/macserial" || true
+chmod +x "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/themes/grub/install.sh" || true
 
 # 7. Execução do mkarchiso
 echo -e "\n${CYAN}▶ Iniciando montagem do sistema e compressão da ISO (ZSTD-19)...${NC}"
