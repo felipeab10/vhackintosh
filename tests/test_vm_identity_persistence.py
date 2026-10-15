@@ -52,6 +52,79 @@ class IdentityPersistenceTests(unittest.TestCase):
                 vm = VMManagerStore().get_vm("legacy")
             self.assertEqual(vm.smbios.serial_number, "")
 
+    def test_update_vm_without_identity_change_succeeds(self):
+        identity = SMBIOSConfig("iMac20,1", "C02TEST12345", "C0270000000000001",
+                                "12345678-1234-5678-1234-567812345678", "02AABBCCDDEE")
+        with tempfile.TemporaryDirectory() as td:
+            config = Path(td) / "config"
+            logs = config / "logs"
+            data = config / "vms.json"
+            with patch("core.config.CONFIG_DIR", config), patch("core.config.LOGS_DIR", logs), patch("core.config.VMS_FILE", data):
+                store = VMManagerStore()
+                vm = VMConfig(id="tahoe-test", name="Tahoe", macos_version="tahoe", smbios=identity)
+                store.add_vm(vm)
+
+                # Mutate non-identity fields and call update_vm
+                vm.last_booted_at = "2026-10-15T01:00:00"
+                vm.install_phase = "installing"
+                vm.ram_gb = 16
+                store.update_vm(vm)
+
+                updated = store.get_vm("tahoe-test")
+                self.assertEqual(updated.last_booted_at, "2026-10-15T01:00:00")
+                self.assertEqual(updated.install_phase, "installing")
+                self.assertEqual(updated.ram_gb, 16)
+                self.assertEqual(updated.smbios, identity)
+
+    def test_update_vm_with_identity_change_requires_backup(self):
+        identity = SMBIOSConfig("iMac20,1", "C02TEST12345", "C0270000000000001",
+                                "12345678-1234-5678-1234-567812345678", "02AABBCCDDEE")
+        new_identity = SMBIOSConfig("iMac20,1", "C02NEW999999", "C0279999999999999",
+                                    "87654321-4321-8765-4321-876543210987", "02FFEEBBDDCC")
+        with tempfile.TemporaryDirectory() as td:
+            config = Path(td) / "config"
+            logs = config / "logs"
+            data = config / "vms.json"
+            vm_dir = config / "vms" / "tahoe-test"
+            vm_dir.mkdir(parents=True)
+            with patch("core.config.CONFIG_DIR", config), patch("core.config.LOGS_DIR", logs), patch("core.config.VMS_FILE", data):
+                store = VMManagerStore()
+                vm = VMConfig(id="tahoe-test", name="Tahoe", macos_version="tahoe", smbios=identity, disk_path=str(vm_dir / "hdd.qcow2"))
+                store.add_vm(vm)
+
+                # Without backup, changing SMBIOS must fail
+                vm.smbios = new_identity
+                with self.assertRaisesRegex(ValueError, "requires a verified OpenCore backup"):
+                    store.update_vm(vm)
+
+                # With backup in place, changing SMBIOS must succeed
+                backup_dir = vm_dir / "smbios-backup-before-regeneration"
+                backup_dir.mkdir()
+                (backup_dir / "OpenCore.qcow2").write_bytes(b"dummy backup")
+                store.update_vm(vm)
+
+                self.assertEqual(store.get_vm("tahoe-test").smbios, new_identity)
+
+    def test_add_vm_cannot_overwrite_with_different_identity(self):
+        identity = SMBIOSConfig("iMac20,1", "C02TEST12345", "C0270000000000001",
+                                "12345678-1234-5678-1234-567812345678", "02AABBCCDDEE")
+        new_identity = SMBIOSConfig("iMac20,1", "C02NEW999999", "C0279999999999999",
+                                    "87654321-4321-8765-4321-876543210987", "02FFEEBBDDCC")
+        with tempfile.TemporaryDirectory() as td:
+            config = Path(td) / "config"
+            logs = config / "logs"
+            data = config / "vms.json"
+            with patch("core.config.CONFIG_DIR", config), patch("core.config.LOGS_DIR", logs), patch("core.config.VMS_FILE", data):
+                store = VMManagerStore()
+                store.add_vm(VMConfig(id="tahoe-test", name="Tahoe", macos_version="tahoe", smbios=identity))
+
+                with self.assertRaisesRegex(ValueError, "Refusing to overwrite VM with a different SMBIOS identity"):
+                    store.add_vm(VMConfig(id="tahoe-test", name="Tahoe Updated", macos_version="tahoe", smbios=new_identity))
+
+                # Overwriting with same identity should succeed
+                store.add_vm(VMConfig(id="tahoe-test", name="Tahoe Renamed", macos_version="tahoe", smbios=identity))
+                self.assertEqual(store.get_vm("tahoe-test").name, "Tahoe Renamed")
+
 
 if __name__ == "__main__":
     unittest.main()

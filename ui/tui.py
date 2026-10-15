@@ -26,6 +26,7 @@ from core.reims_build import (
     evaluate as evaluate_reims_build,
     build as build_reims_vgpu,
     ensure_executable_bits,
+    find_reims_dir,
 )
 from core import reims_ctl
 from core.hardware import HardwareAdvisor
@@ -988,11 +989,8 @@ class VMTUI:
         try:
             console.print(i18n.t("tui.launch.starting", name=vm.name, version=vm.macos_version.capitalize()))
 
-            reims_dir = None
-            for cand in ["/opt/reims-vgpu", "/home/felipeab10/reims-vgpu", os.path.expanduser("~/reims-vgpu")]:
-                if os.path.exists(os.path.join(cand, "vm", "boot-x86.sh")):
-                    reims_dir = cand
-                    break
+            found_reims = find_reims_dir()
+            reims_dir = str(found_reims) if found_reims else None
 
             # ------------------------------------------------------------------
             # Verificação prévia de hardware (Vulkan 1.2+):

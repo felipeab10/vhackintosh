@@ -10,6 +10,7 @@ import json
 import fcntl
 import logging
 import tempfile
+import copy
 import dataclasses
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
@@ -160,30 +161,48 @@ class VMManagerStore:
 
     def add_vm(self, vm: VMConfig) -> None:
         existing = self._vms.get(vm.id)
-        if existing and self._has_identity_conflict(existing.smbios, vm.smbios):
+        if existing and self._has_identity_changed(existing.smbios, vm.smbios):
             raise ValueError("Refusing to overwrite VM with a different SMBIOS identity")
         self._assert_unique_identity(vm)
         if vm.auto_start:
             self._clear_auto_start()
-        self._vms[vm.id] = vm
+        self._vms[vm.id] = copy.deepcopy(vm)
         self.save()
 
     def update_vm(self, vm: VMConfig) -> None:
         existing = self._vms.get(vm.id)
-        if existing and self._has_identity_conflict(existing.smbios, vm.smbios):
+        if existing and self._has_identity_changed(existing.smbios, vm.smbios):
             vm_dir = Path(existing.disk_path).parent if existing.disk_path else Path(os.path.expanduser(f"~/.config/vhackintosh/vms/{vm.id}"))
             if not (vm_dir / "smbios-backup-before-regeneration" / "OpenCore.qcow2").is_file():
                 raise ValueError("SMBIOS change for an existing VM requires a verified OpenCore backup")
         self._assert_unique_identity(vm)
         if vm.auto_start:
             self._clear_auto_start(exclude_id=vm.id)
-        self._vms[vm.id] = vm
+        self._vms[vm.id] = copy.deepcopy(vm)
         self.save()
 
     @staticmethod
     def _has_identity_conflict(left: SMBIOSConfig, right: SMBIOSConfig) -> bool:
         return any(
             a and b and a.lower() == b.lower()
+            for a, b in (
+                (left.serial_number, right.serial_number),
+                (left.board_serial, right.board_serial),
+                (left.smuuid, right.smuuid),
+                (left.rom, right.rom),
+            )
+        )
+
+    @staticmethod
+    def _has_identity_changed(left: SMBIOSConfig, right: SMBIOSConfig) -> bool:
+        had_identity = any(
+            bool((a or "").strip())
+            for a in (left.serial_number, left.board_serial, left.smuuid, left.rom)
+        )
+        if not had_identity:
+            return False
+        return any(
+            (a or "").strip().lower() != (b or "").strip().lower()
             for a, b in (
                 (left.serial_number, right.serial_number),
                 (left.board_serial, right.board_serial),
