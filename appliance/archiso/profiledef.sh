@@ -24,7 +24,10 @@ file_permissions=(
   ["/usr/local/bin/vhack-copy-system"]="0:0:755"
   ["/usr/local/bin/vhackintosh-waysession"]="0:0:755"
   ["/etc/vhackintosh/sway.conf"]="0:0:644"
+  ["/opt/vhackintosh/bin/"]="0:0:755"
   ["/opt/vhackintosh/bin/vhackintosh"]="0:0:755"
+  ["/opt/vhackintosh/resources/macserial/macserial"]="0:0:755"
+  ["/opt/vhackintosh/themes/grub/install.sh"]="0:0:755"
   # O mkarchiso copia o airootfs com `cp -af --no-preserve=ownership,mode` e só
   # reaplica os modos listados aqui — e esta lista **não aceita glob**. Sem as
   # duas linhas abaixo, todo /opt/reims-vgpu chega na ISO como 0644, e o

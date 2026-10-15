@@ -51,6 +51,18 @@ def main():
                 if not quiet:
                     print("OK: Hardware compatível com vHackintosh OS (KVM e Reims vGPU prontos).")
                 sys.exit(0)
+        elif cmd in ["check-vulkan"]:
+            quiet = "-q" in sys.argv or "--quiet" in sys.argv
+            from core.gpu import GPUChecker
+            ok, msg = GPUChecker.check_vulkan_host_readiness()
+            if not ok:
+                if not quiet:
+                    print(f"ERRO: {msg}")
+                sys.exit(1)
+            else:
+                if not quiet:
+                    print(f"OK: {msg}")
+                sys.exit(0)
         elif cmd in ["test-install", "test"]:
             from core.installer_runner import ABInstallerTest
             ABInstallerTest.run_interactive()

@@ -93,6 +93,29 @@ class SMBIOSIdentityTests(unittest.TestCase):
             with self.assertRaises(SMBIOSError):
                 GenSMBIOS.generate("tahoe")
 
+    def test_macserial_resolves_and_self_heals_chmod(self):
+        with tempfile.TemporaryDirectory() as td:
+            dummy_bin = Path(td) / "macserial"
+            dummy_bin.write_bytes(b"\x7fELFfake")
+            dummy_bin.chmod(0o644)
+            self.assertFalse(bool(dummy_bin.stat().st_mode & 0o111))
+            with patch("core.smbios.MACSERIAL_CANDIDATES", (dummy_bin,)):
+                found = GenSMBIOS._macserial()
+                self.assertEqual(found, dummy_bin)
+                self.assertTrue(bool(dummy_bin.stat().st_mode & 0o111))
+
+    def test_macserial_chmod_failure_raises_smbioserror(self):
+        with tempfile.TemporaryDirectory() as td:
+            dummy_bin = Path(td) / "macserial"
+            dummy_bin.write_bytes(b"\x7fELFfake")
+            dummy_bin.chmod(0o644)
+            with patch("core.smbios.MACSERIAL_CANDIDATES", (dummy_bin,)), patch.object(
+                Path, "chmod", side_effect=OSError("Read-only file system")
+            ):
+                with self.assertRaises(SMBIOSError) as ctx:
+                    GenSMBIOS._macserial()
+                self.assertIn("macserial is not executable", str(ctx.exception))
+
 
 
 if __name__ == "__main__":

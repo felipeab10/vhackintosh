@@ -32,20 +32,15 @@ fi
 # requisitos obrigatórios do vHackintosh OS (KVM na BIOS e Reims vGPU / Vulkan 1.2+).
 # ------------------------------------------------------------------------------
 echo -e "${CYAN}▶ Validando requisitos de hardware para virtualização do macOS...${NC}"
-FORCE_INSTALL=0
-for arg in "$@"; do
-    if [ "$arg" = "--force" ]; then
-        FORCE_INSTALL=1
-    fi
-done
 
 CHECK_OK=1
+CHECK_ERR=""
 if command -v vhackintosh >/dev/null 2>&1; then
-    if ! vhackintosh check; then
+    if ! CHECK_ERR="$(vhackintosh check 2>&1)"; then
         CHECK_OK=0
     fi
 elif [ -f "/opt/vhackintosh/bin/vhackintosh" ]; then
-    if ! /opt/vhackintosh/bin/vhackintosh check; then
+    if ! CHECK_ERR="$(/opt/vhackintosh/bin/vhackintosh check 2>&1)"; then
         CHECK_OK=0
     fi
 fi
@@ -56,20 +51,32 @@ if [ "$CHECK_OK" -ne 1 ]; then
     echo -e "${RED}======================================================================${NC}\n"
     echo -e "${YELLOW}Este computador não atende aos requisitos mínimos para executar máquinas"
     echo -e "virtuais macOS com aceleração gráfica pelo Reims vGPU.${NC}\n"
+    echo -e "${BOLD}Diagnóstico:${NC}"
+    echo -e "${CHECK_ERR}\n"
     echo -e "Instalar o vHackintosh OS em disco apagaria os dados do SSD sem que"
     echo -e "fosse possível executar o macOS após a instalação.\n"
     echo -e "${BOLD}Requisitos obrigatórios:${NC}"
     echo -e "  • Processador com VT-x (Intel) ou AMD-V (AMD) ativado na BIOS (/dev/kvm)"
     echo -e "  • GPU física com Vulkan 1.2+ (Intel Gen9+, NVIDIA GTX 900+ ou AMD GCN 4+)"
-    echo -e "  • Instalação em computador físico real (não suportado em VM sem GPU Passthrough)\n"
-    if [ "$FORCE_INSTALL" -eq 1 ]; then
-        echo -e "${YELLOW}Aviso: flag --force detectada. Prosseguindo por insistência do usuário...${NC}\n"
-    else
-        echo -e "${CYAN}A instalação foi cancelada para proteger seus discos e dados.${NC}"
-        echo -e "Pressione Enter para retornar ao menu..."
-        read -r
-        exit 1
-    fi
+    echo -e "  • Computador físico real (não suportado em VM sem GPU Passthrough)\n"
+    echo -e "${RED}A instalação foi abortada para proteger seu computador e seus discos.${NC}\n"
+    while true; do
+        echo -ne "${YELLOW}Pressione [Enter] para desligar o computador (ou 'r' para reiniciar): ${NC}"
+        read -r shutdown_key
+        if [ "$shutdown_key" = "r" ] || [ "$shutdown_key" = "R" ]; then
+            echo -e "\n${CYAN}Reiniciando o computador...${NC}"
+            reboot
+        else
+            echo -e "\n${RED}Desligando o computador...${NC}"
+            if command -v systemctl >/dev/null 2>&1; then
+                systemctl poweroff -i || poweroff
+            else
+                poweroff
+            fi
+        fi
+        sleep 2
+    done
+    exit 1
 fi
 echo -e "${GREEN}✔ Hardware compatível! Prosseguindo com o instalador de disco...${NC}\n"
 
@@ -429,6 +436,8 @@ echo -e "  • Registrado marcador de instalação em /etc/vhackintosh/installed
 
 # Permissões de execução dos binários
 chmod +x /mnt/opt/vhackintosh/bin/* 2>/dev/null || true
+chmod +x /mnt/opt/vhackintosh/resources/macserial/macserial 2>/dev/null || true
+chmod +x /mnt/opt/vhackintosh/themes/grub/install.sh 2>/dev/null || true
 chmod +x /mnt/usr/local/bin/* 2>/dev/null || true
 
 # Copia o kernel do Linux para /mnt/boot/vmlinuz-linux

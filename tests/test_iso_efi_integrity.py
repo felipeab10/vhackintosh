@@ -58,6 +58,12 @@ class TemplateIntegrityTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr.decode(errors="replace"))
             self.assertEqual(dest.read_bytes(), (ROOT / "templates/config.plist").read_bytes())
 
+    def test_profiledef_declares_executable_permissions_for_opt_vhackintosh(self):
+        profiledef = (ROOT / "appliance/archiso/profiledef.sh").read_text(encoding="utf-8")
+        self.assertIn('["/opt/vhackintosh/resources/macserial/macserial"]="0:0:755"', profiledef)
+        self.assertIn('["/opt/vhackintosh/bin/"]="0:0:755"', profiledef)
+        self.assertIn('["/opt/vhackintosh/themes/grub/install.sh"]="0:0:755"', profiledef)
+
 
 if __name__ == "__main__":
     unittest.main()

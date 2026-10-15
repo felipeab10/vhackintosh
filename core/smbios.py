@@ -31,6 +31,11 @@ class GenSMBIOS:
         for candidate in MACSERIAL_CANDIDATES:
             if candidate.is_file():
                 if not candidate.stat().st_mode & 0o111:
+                    try:
+                        candidate.chmod(candidate.stat().st_mode | 0o755)
+                    except OSError:
+                        pass
+                if not candidate.stat().st_mode & 0o111:
                     raise SMBIOSError(f"macserial is not executable: {candidate}")
                 return candidate
         found = shutil.which("macserial")

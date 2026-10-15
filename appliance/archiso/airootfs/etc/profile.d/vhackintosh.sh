@@ -137,6 +137,58 @@ if [ "$(tty)" = "/dev/tty1" ]; then
     echo -e "\033[1;36mVerificando conexão de rede...\033[0m"
     vhack_wait_internet 4 || true
 
+    # 4. Checagem Rigorosa de Hardware do Host (Vulkan 1.2+ para Reims vGPU)
+    echo -e "\033[1;36mVerificando aceleração de vídeo do host (Vulkan 1.2+)...\033[0m"
+    VULKAN_OUTPUT=""
+    VULKAN_OK=1
+
+    if command -v vhackintosh >/dev/null 2>&1; then
+        if ! VULKAN_OUTPUT="$(vhackintosh check-vulkan 2>&1)"; then
+            VULKAN_OK=0
+        fi
+    elif [ -f "/opt/vhackintosh/bin/vhackintosh" ]; then
+        if ! VULKAN_OUTPUT="$(/opt/vhackintosh/bin/vhackintosh check-vulkan 2>&1)"; then
+            VULKAN_OK=0
+        fi
+    fi
+
+    if [ "$VULKAN_OK" -ne 1 ]; then
+        clear
+        echo -e "\033[1;31m======================================================================\033[0m"
+        echo -e "\033[1;31m  BLOQUEIO CRÍTICO: GPU / HARDWARE INCOMPATÍVEL COM vHACKINTOSH OS    \033[0m"
+        echo -e "\033[1;31m======================================================================\033[0m\n"
+        echo -e "\033[1;37mEste computador não possui os requisitos de hardware necessários.\033[0m\n"
+        echo -e "\033[1;33mDiagnóstico:\033[0m"
+        echo -e "  ${VULKAN_OUTPUT}\n"
+        echo -e "\033[1;37mMotivo do Bloqueio:\033[0m"
+        echo -e "  • O vHackintosh OS depende do motor Reims vGPU para acelerar o macOS."
+        echo -e "  • O Reims vGPU exige obrigatoriamente GPU física com Vulkan 1.2 ou superior."
+        echo -e "  • GPUs emuladas/virtuais (QEMU, VMware, VirtualBox, llvmpipe) e GPUs antigas"
+        echo -e "    sem Vulkan 1.2+ não conseguem executar o macOS com aceleração.\n"
+        echo -e "\033[1;33mRequisitos Mínimos de GPU:\033[0m"
+        echo -e "  • Intel: HD Graphics Gen9 (Skylake 6ª Geração) ou superior"
+        echo -e "  • NVIDIA: GeForce GTX série 900 (Maxwell), GTX série 10/16, RTX ou superior"
+        echo -e "  • AMD: Radeon GCN 4ª Geração (RX 400/500), Vega, RDNA (RX 5000+) ou superior\n"
+        echo -e "\033[1;31mNão é permitido instalar o vHackintosh OS neste computador.\033[0m\n"
+
+        while true; do
+            echo -ne "\033[1;33mPressione [Enter] para desligar o computador (ou 'r' para reiniciar): \033[0m"
+            read -r shutdown_key
+            if [ "$shutdown_key" = "r" ] || [ "$shutdown_key" = "R" ]; then
+                echo -e "\n\033[1;36mReiniciando o computador...\033[0m"
+                reboot
+            else
+                echo -e "\n\033[1;31mDesligando o computador...\033[0m"
+                if command -v systemctl >/dev/null 2>&1; then
+                    systemctl poweroff -i || poweroff
+                else
+                    poweroff
+                fi
+            fi
+            sleep 2
+        done
+    fi
+
     if [ "$VHACK_MODE" = "live" ]; then
         # ==========================================================================
         # MODO LIVE USB — Menu de instalação e demonstração

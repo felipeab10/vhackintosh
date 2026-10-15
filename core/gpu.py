@@ -8,6 +8,7 @@ from __future__ import annotations
 import ctypes
 import os
 import re
+import struct
 import subprocess
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -177,7 +178,8 @@ class GPUChecker:
             ]
 
         # VK_STRUCTURE_TYPE_APPLICATION_INFO = 1, VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 10
-        # Solicita API Vulkan 1.2 mínimo: (1 << 22) | (2 << 12)
+        # Solicita API Vulkan 1.2 mínimo: (1 << 22) | (2 << 12) = 0x00402000
+        min_vulkan_1_2 = (1 << 22) | (2 << 12)
         app_info = VkApplicationInfo(
             sType=1,
             pNext=None,
@@ -185,7 +187,7 @@ class GPUChecker:
             applicationVersion=1,
             pEngineName=b"reims-preflight",
             engineVersion=1,
-            apiVersion=(1 << 22) | (2 << 12),
+            apiVersion=min_vulkan_1_2,
         )
         inst_info = VkInstanceCreateInfo(
             sType=10,
@@ -208,7 +210,36 @@ class GPUChecker:
             lib.vkEnumeratePhysicalDevices(instance, ctypes.byref(gpu_count), None)
             if gpu_count.value == 0:
                 return False, "Nenhuma GPU física com suporte a Vulkan foi encontrada no host."
-            return True, f"{gpu_count.value} GPU(s) física(s) compatível(is) com Vulkan detectada(s)."
+
+            devs = (ctypes.c_void_p * gpu_count.value)()
+            lib.vkEnumeratePhysicalDevices(instance, ctypes.byref(gpu_count), devs)
+
+            lib.vkGetPhysicalDeviceProperties.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            lib.vkGetPhysicalDeviceProperties.restype = None
+
+            compatible_gpus: List[str] = []
+            for i in range(gpu_count.value):
+                raw_buf = (ctypes.c_char * 2048)()
+                lib.vkGetPhysicalDeviceProperties(devs[i], ctypes.byref(raw_buf))
+                api_ver, driver_ver, vendor_id, dev_id, dev_type = struct.unpack_from("<IIIII", raw_buf, 0)
+                dev_name = raw_buf[20:276].split(b"\x00")[0].decode("utf-8", "replace").strip()
+
+                major = api_ver >> 22
+                minor = (api_ver >> 12) & 0x3ff
+                patch = api_ver & 0xfff
+
+                # Desconsidera emuladores por software de CPU (deviceType == 4 / VK_PHYSICAL_DEVICE_TYPE_CPU)
+                is_cpu_software = dev_type == 4 or any(x in dev_name.lower() for x in ["llvmpipe", "lavapipe", "software"])
+                if is_cpu_software:
+                    continue
+
+                if api_ver >= min_vulkan_1_2:
+                    compatible_gpus.append(f"{dev_name} (Vulkan {major}.{minor}.{patch})")
+
+            if not compatible_gpus:
+                return False, "Nenhuma GPU física com suporte a Vulkan 1.2+ encontrada (detectada apenas emulação por software ou versão inferior)."
+
+            return True, f"{len(compatible_gpus)} GPU(s) física(s) compatível(is) com Vulkan 1.2+ detectada(s): {', '.join(compatible_gpus)}."
         finally:
             lib.vkDestroyInstance(instance, None)
 
