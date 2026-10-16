@@ -108,7 +108,12 @@ def main() -> int:
                     "(OpenCore would be provisioned via guestfish instead of reims-util)"
                 )
             if not reims_util.stat().st_mode & 0o111:
-                raise RuntimeError("bundled reims-util is not executable in ISO rootfs")
+                raise RuntimeError(
+                    "bundled reims-util is not executable in ISO rootfs "
+                    "(o mkarchiso copia o airootfs com --no-preserve=mode e só reaplica os "
+                    'modos listados em file_permissions: falta ["/usr/local/bin/reims-util"]'
+                    '="0:0:755" em appliance/archiso/profiledef.sh)'
+                )
             try:
                 util_version = command(str(reims_util), "--version").stdout.strip()
             except subprocess.CalledProcessError as exc:

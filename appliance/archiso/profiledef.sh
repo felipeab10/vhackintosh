@@ -23,6 +23,12 @@ file_permissions=(
   ["/usr/local/bin/dmg2img"]="0:0:755"
   ["/usr/local/bin/vhack-copy-system"]="0:0:755"
   ["/usr/local/bin/vhackintosh-waysession"]="0:0:755"
+  # O reims-util é instalado em tempo de build de ISO
+  # (appliance/build-iso.sh) e sem esta linha chega na ISO como 0644 — a
+  # validação falha com "bundled reims-util is not executable in ISO rootfs",
+  # que foi exatamente o que a 1.1.0 mostrou em 16/10. Toda entrada nova em
+  # /usr/local/bin precisa da sua linha aqui.
+  ["/usr/local/bin/reims-util"]="0:0:755"
   ["/etc/vhackintosh/sway.conf"]="0:0:644"
   ["/opt/vhackintosh/bin/"]="0:0:755"
   ["/opt/vhackintosh/bin/vhackintosh"]="0:0:755"

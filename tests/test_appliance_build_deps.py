@@ -12,6 +12,9 @@ marcador de arquivo para o `validate_iso.py` provar que está dentro do squashfs
 """
 from __future__ import annotations
 
+import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -266,3 +269,97 @@ def test_validate_iso_requires_the_baked_reims_util():
     assert "usr/local/bin/reims-util" in text
     assert "reims_util_sha256" in text
     assert "reims-util-packaged" in text
+
+
+# --------------------------------------------------------------------------- modos na ISO
+#
+# Regressão de 16/10 (primeira ISO com o provisionamento nativo): o build
+# terminou, o mkarchiso gerou a imagem e o validate_iso reprovou com
+# "bundled reims-util is not executable in ISO rootfs". O mkarchiso copia o
+# airootfs com `cp -af --no-preserve=ownership,mode` — o que zera os bits de
+# execução de TODO arquivo — e só reaplica os modos declarados em
+# `file_permissions` do profiledef.sh. O reims-util não estava na lista.
+# A lista não aceita glob, então cada arquivo precisa da sua linha.
+
+def _declared_permission_paths() -> set[str]:
+    text = (PROFILE_DIR / "profiledef.sh").read_text()
+    return set(re.findall(r'\["(/[^"]+)"\]\s*=', text))
+
+
+def _paths_landing_in_usr_local_bin() -> set[str]:
+    """Os arquivos do perfil e os que o build-iso.sh instala em tempo de build."""
+    source = PROFILE_DIR / "airootfs" / "usr" / "local" / "bin"
+    names = {path.name for path in source.iterdir() if path.is_file()}
+    build = (ROOT / "appliance" / "build-iso.sh").read_text()
+    names |= set(re.findall(r"airootfs/usr/local/bin/([A-Za-z0-9._+-]+)", build))
+    return names
+
+
+def test_every_file_in_usr_local_bin_declares_its_mode():
+    declared = _declared_permission_paths()
+    missing = sorted(
+        name
+        for name in _paths_landing_in_usr_local_bin()
+        if f"/usr/local/bin/{name}" not in declared
+    )
+    assert not missing, (
+        "sem entrada em file_permissions estes arquivos chegam 0644 na ISO: "
+        + ", ".join(missing)
+    )
+
+
+MKARCHISO_PERMISSIONS_LOOP = r"""
+set -euo pipefail
+profile_airootfs="$1"
+pacstrap_dir="$2"
+profiledef="$3"
+umask 022
+# Mesma linha do _prepare_airootfs do /usr/bin/mkarchiso.
+cp -af --no-preserve=ownership,mode -- "${profile_airootfs}/." "${pacstrap_dir}"
+# Como no mkarchiso (linha 48), o array é associativo antes de o perfil preenchê-lo.
+declare -A file_permissions=()
+source "${profiledef}"
+for filename in "${!file_permissions[@]}"; do
+    IFS=':' read -ra permissions <<<"${file_permissions[${filename}]}"
+    if [ "${filename}" = "${filename%/}" ]; then
+        chmod -f -- "${permissions[2]}" "${pacstrap_dir}${filename}" 2>/dev/null || true
+    else
+        chmod -fR -- "${permissions[2]}" "${pacstrap_dir}${filename}" 2>/dev/null || true
+    fi
+done
+stat -c '%a' "${pacstrap_dir}/usr/local/bin/reims-util"
+"""
+
+
+def _emulate_mkarchiso(tmp_path: Path, profiledef: Path) -> str:
+    airootfs = tmp_path / "profile" / "airootfs" / "usr" / "local" / "bin"
+    airootfs.mkdir(parents=True)
+    # O conteúdo é irrelevante: o alvo da emulação é o bit de execução.
+    baked = airootfs / "reims-util"
+    shutil.copyfile(PROFILE_DIR / "airootfs" / "usr" / "local" / "bin" / "vhackintosh", baked)
+    baked.chmod(0o755)
+
+    pacstrap = tmp_path / "pacstrap"
+    pacstrap.mkdir()
+    result = subprocess.run(
+        ["bash", "-c", MKARCHISO_PERMISSIONS_LOOP, "emul", str(tmp_path / "profile" / "airootfs"), str(pacstrap), str(profiledef)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def test_mkarchiso_loop_restores_the_exec_bit_of_the_baked_reims_util(tmp_path):
+    assert _emulate_mkarchiso(tmp_path, PROFILE_DIR / "profiledef.sh") == "755"
+
+
+def test_without_the_entry_the_binary_would_reach_the_iso_as_0644(tmp_path):
+    """Prova que o teste acima não passa à toa: sem a linha, o loop não salva."""
+    stripped = tmp_path / "profiledef.sh"
+    stripped.write_text(
+        (PROFILE_DIR / "profiledef.sh")
+        .read_text()
+        .replace('  ["/usr/local/bin/reims-util"]="0:0:755"\n', "")
+    )
+    assert _emulate_mkarchiso(tmp_path, stripped) == "644"
