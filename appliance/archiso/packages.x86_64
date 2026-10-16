@@ -138,6 +138,54 @@ llvm
 # trazido de forma implícita; declarado agora para não depender de sorte.
 spirv-tools
 
+# Dependências que o `scripts/install-ctl.sh` do fork confere POR NOME antes de
+# compilar (`pacman_pkgs`), e que a ISO precisa levar prontas.
+#
+# Sintoma real (ISO 1.1.0, 16/10): o script chamou
+#   sudo pacman -S --needed --noconfirm cmake libxss libdecor
+# e o pacman respondeu
+#   warning: database file for 'core' does not exist (use '-Sy' to download)
+#   error: target not found: cmake
+# porque o appliance é uma imagem **live** do archiso, que não leva
+# /var/lib/pacman/sync/*.db — e o primeiro boot pode não ter rede. Nada é
+# instalável em runtime: ou o pacote já está na imagem, ou o build morre.
+#
+# Várias destas entram sozinhas, como dependência transitiva de
+# sway/qemu-desktop/gtk3; declarar explicitamente tira o build da sorte de um
+# pai continuar puxando a biblioteca. `appliance/check_build_deps.py` falha o
+# build da ISO se o fork pedir um nome ausente desta lista, e o
+# `validate_iso.py` confere os arquivos dentro do squashfs.
+#
+# Build nativo (o `cargo xtask dist` compila SDL3 do zero; o QEMU usa meson):
+cmake
+lld
+flex
+bison
+bzip2
+dtc
+libslirp
+#
+# Janela e áudio do QEMU/reims-vgpu:
+gtk3
+libx11
+libxext
+libxrandr
+libxcursor
+libxi
+libxfixes
+# Protetor de tela X e decoração client-side do Wayland: o build do SDL3 procura
+# as duas (libXss e libdecor) e reprova sem elas.
+libxss
+libxtst
+libxkbcommon
+libdecor
+libpulse
+alsa-lib
+#
+# Bibliotecas de sistema linkadas pelos crates:
+dbus
+systemd-libs
+
 # Runtimes e CLI Tools para Harnesses de IA (Claude Code, OpenCode, Codex)
 nodejs
 npm

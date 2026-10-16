@@ -226,6 +226,21 @@ chmod +x "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/bin/"* || true
 chmod +x "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/resources/macserial/macserial" || true
 chmod +x "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/themes/grub/install.sh" || true
 
+# 6.5. O appliance é uma imagem live: o pacman não tem bases de sincronização
+# (/var/lib/pacman/sync) e pode não haver rede no primeiro boot, então o build do
+# reims-vgpu só funciona se a ISO já levar todas as dependências que o
+# `scripts/install-ctl.sh` exige por nome. Aqui isso é contrato, não esperança:
+# o perfil tem de declarar cada nome de `pacman_pkgs`. (A checagem dos arquivos
+# dentro do squashfs fica no validate_iso.py, depois do mkarchiso.)
+echo -e "\n${BLUE}▶ Conferindo dependências do build do reims-vgpu no perfil...${NC}"
+if ! python3 "${PROJECT_ROOT}/appliance/check_build_deps.py" \
+    --reims-src "${REIMS_SRC}" \
+    --profile "${ARCHISO_PROFILE}"; then
+    echo -e "${RED}Erro: o perfil da ISO não cobre as dependências exigidas pelo reims-vgpu.${NC}"
+    echo -e "${RED}Declare os pacotes listados acima em appliance/archiso/packages.x86_64.${NC}"
+    exit 1
+fi
+
 # 7. Execução do mkarchiso
 echo -e "\n${CYAN}▶ Iniciando montagem do sistema e compressão da ISO (ZSTD-19)...${NC}"
 if [ -e "${BUILD_WORK}" ]; then

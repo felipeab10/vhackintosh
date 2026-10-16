@@ -1,4 +1,7 @@
 """Focused checks for build artifact paths and active-build rollback."""
+import os
+import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -61,17 +64,42 @@ def test_failed_stage_does_not_write_success_stamp(tmp_path: Path):
     assert stamp.read_text() == "previous-success\n"
 
 
-def test_install_script_publishes_artifacts_transactionally():
-    script = Path(__file__).resolve().parents[1] / "appliance/archiso/airootfs/opt/reims-vgpu/scripts/install-ctl.sh"
-    text = script.read_text()
-    cargo = text.index('cargo install --locked --force')
-    publish = text.index('mv "$STAGED_BIN" "$FINAL_BIN"')
-    activate = text.index('ln -sfn "$(basename "$QEMU_DIR")"')
-    record = text.index('"$FINAL_BIN" __record-install')
-    cleanup = text.index('Cleanup only after the active controller')
-import unittest
-import tempfile
-import os
+def authoritative_install_ctl() -> Path:
+    """O `install-ctl.sh` que a ISO empacota de verdade.
+
+    NÃO é a cópia em `appliance/archiso/airootfs/opt/` — esse diretório é
+    gitignored e o `build-iso.sh` o apaga e reescreve a partir da árvore do fork
+    (`rm -rf "${ARCHISO_PROFILE}/airootfs/opt"` + `git archive`), então ele é
+    lixo de build, não fonte da verdade.
+    """
+    candidates = [os.environ.get("REIMS_SRC", ""), "/opt/reims-vgpu", str(Path.home() / "reims-vgpu")]
+    for candidate in candidates:
+        script = Path(candidate) / "scripts" / "install-ctl.sh" if candidate else None
+        if script is not None and script.is_file():
+            return script
+    raise unittest.SkipTest("árvore do reims-vgpu ausente neste host")
+
+
+def test_install_script_publishes_the_qemu_build_atomically():
+    """O build novo só vira `current` depois de existir por inteiro no stage.
+
+    Um QEMU publicado pela metade derruba o appliance inteiro (é ele que abre a
+    janela), e o appliance recompila no primeiro boot — sem esta ordem, uma
+    interrupção deixa `current` apontando para um diretório incompleto.
+    """
+    text = authoritative_install_ctl().read_text()
+    staged = text.index('DESTDIR="$STAGE" ninja -C "$BUILD" install')
+    binary = text.index('"$STAGE$PREFIX/bin/$QEMU_BINARY"', staged)
+    rom = text.index("ReimsVgpu.rom", binary)
+    publish = text.index('mv "$STAGE$PREFIX" "$DATA/qemu/$ID"', rom)
+    activate = text.index('ln -sfn "$ID" "$DATA/qemu/current"', publish)
+    in_use = text.index("in_use", activate)
+    record = text.index("__record-install", in_use)
+    assert staged < binary < rom < publish < activate < in_use < record
+    # A limpeza dos builds antigos respeita uma VM em execução: apagar o QEMU de
+    # uma VM viva a mata no meio.
+    cleanup = text[in_use:record]
+    assert 'grep -qF "$old"' in cleanup and "rm -rf" in cleanup
 
 class ReimsBuildStampTests(unittest.TestCase):
     def test_stamp_lifecycle_and_invalidation(self):

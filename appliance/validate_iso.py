@@ -11,6 +11,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+# O perfil define (e o build-iso.sh já confere) os nomes de pacote que o
+# install-ctl.sh exige; aqui provamos que os ARQUIVOS estão dentro da imagem.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_build_deps import missing_markers, parse_pacman_packages  # noqa: E402
+
 
 def command(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(args, check=True, capture_output=True, text=True)
@@ -67,6 +72,20 @@ def main() -> int:
             ):
                 if not (rootfs / required_path).is_file():
                     raise RuntimeError(f"ISO payload missing required file: {required_path}")
+            # O appliance compila o reims-vgpu na máquina do usuário, e é uma
+            # imagem live: sem /var/lib/pacman/sync o `pacman -S` do
+            # install-ctl.sh não instala nada em runtime. Logo, todo pacote que o
+            # próprio script empacotado exige por nome tem de estar DENTRO do
+            # squashfs (não basta estar declarado no perfil).
+            packaged_ctl = rootfs / "opt/reims-vgpu/scripts/install-ctl.sh"
+            if packaged_ctl.is_file():
+                required_pkgs = parse_pacman_packages(packaged_ctl.read_text(encoding="utf-8"))
+                absent = missing_markers(rootfs, required_pkgs)
+                if absent:
+                    detail = ", ".join(f"{name} ({marker})" for name, marker in absent)
+                    raise RuntimeError(
+                        "ISO rootfs cannot build reims-vgpu offline, missing package markers: " + detail
+                    )
             payload = rootfs / "opt/vhackintosh/templates"
             external = Path(__file__).resolve().parents[1] / "templates/config.plist"
             embedded = payload / "config.plist"
@@ -137,7 +156,7 @@ def main() -> int:
                 "config_sha256": hashlib.sha256(embedded.read_bytes()).hexdigest(),
                 "macserial_sha256": hashlib.sha256(macserial.read_bytes()).hexdigest(),
                 "ovmf_vars_sha256": ovmf_vars_hash,
-                "checks": ["squashfs-extracted", "opencore-qcow2", "plist-neutral", "source-complete", "macserial-pinned", "ovmf-vars-match"],
+                "checks": ["squashfs-extracted", "opencore-qcow2", "plist-neutral", "source-complete", "macserial-pinned", "ovmf-vars-match", "reims-build-deps"],
             }
         # Atomic metadata publication only after all checks complete.
         target = iso.with_suffix(iso.suffix + ".manifest.json")
