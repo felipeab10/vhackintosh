@@ -157,9 +157,15 @@ class DiskProvisioner:
                     if not shutil.which("guestfish"):
                         opencore_path.unlink(missing_ok=True)
                         raise RuntimeError("guestfish ou reims-util é necessário para provisionar o OpenCore EFI com segurança")
+                    # Dizer POR QUE caiu no fallback: sem isto a TUI mostra
+                    # "via guestfish" e ninguém sabe que o binário nativo falta.
+                    if not reims_util_ready:
+                        motive = f"reims-util ausente (procurei em {reims_util.search_summary()})"
+                    else:
+                        motive = f"reims-util falhou (veja {reims_util.LOG_FILE})"
                     shutil.copyfile(template_oc, opencore_path)
                     try:
-                        progress.update(task2, description="Aplicando identidade SMBIOS à EFI via guestfish...")
+                        progress.update(task2, description=f"[yellow]{motive}: aplicando identidade SMBIOS à EFI via guestfish...[/yellow]")
                         cls._inject_smbios_to_opencore_qcow2(opencore_path, vm)
                     except Exception:
                         opencore_path.unlink(missing_ok=True)

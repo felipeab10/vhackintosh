@@ -15,6 +15,9 @@ from typing import Optional
 
 from core.config import LOGS_DIR, SMBIOSConfig
 
+# Onde cada chamada ao reims-util é registrada (com stdout/stderr e returncode).
+LOG_FILE = LOGS_DIR / "reims-util-opencore.log"
+
 
 REIMS_UTIL_CANDIDATES = (
     Path(os.path.expanduser("~/.cargo/bin/reims-util")),
@@ -23,27 +26,97 @@ REIMS_UTIL_CANDIDATES = (
     Path("/opt/reims-vgpu/target/release/reims-util"),
 )
 
+# Onde o binário pode estar, na ordem em que é procurado, fora do CARGO_HOME e
+# do PATH do processo.
+REIMS_UTIL_EXTRA_LOCATIONS = (
+    Path("/root/.cargo/bin/reims-util"),
+    Path("/usr/local/bin/reims-util"),
+    Path("/opt/reims-vgpu/target/release/reims-util"),
+)
 
-def find_reims_util() -> Optional[Path]:
+
+def _is_executable_file(candidate: Path) -> bool:
+    try:
+        return candidate.is_file() and os.access(candidate, os.X_OK)
+    except OSError:
+        return False
+
+
+def _runs(candidate: Path) -> bool:
+    """Confirma que o candidato EXECUTA, não apenas que existe.
+
+    Um cargo install interrompido, ou um binário de outra arquitetura, deixa um
+    arquivo executável que falha ao rodar; sem esta sonda ele venceria a busca e
+    a geração nativa cairia no fallback por guestfish sem explicação.
+    """
+    try:
+        res = subprocess.run(
+            [str(candidate), "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return res.returncode == 0
+
+
+def _cargo_home_bin() -> Path:
+    cargo_home = os.environ.get("CARGO_HOME") or os.path.expanduser("~/.cargo")
+    return Path(cargo_home) / "bin" / "reims-util"
+
+
+def candidate_binaries() -> tuple[Path, ...]:
+    """Candidatos na ordem em que são testados.
+
+    Espelha o `reims_util::binary()` do reims-ctl: primeiro o binário instalado
+    ao lado do reims-ctl (o que o próprio appliance compilou, na revisão que o
+    reims-ctl exige), depois o PATH — onde a ISO deixa o binário que carrega
+    pronto em /usr/local/bin. Um reims-util antigo vindo da ISO nunca deve
+    vencer o que o appliance acabou de instalar.
+    """
+    which_path = shutil.which("reims-util")
+    raw: tuple[Optional[Path], ...] = (
+        _cargo_home_bin(),
+        *REIMS_UTIL_CANDIDATES[:2],
+        Path(which_path) if which_path else None,
+        *REIMS_UTIL_EXTRA_LOCATIONS[1:],
+    )
+    ordered: list[Path] = []
+    for candidate in raw:
+        if candidate is not None and candidate not in ordered:
+            ordered.append(candidate)
+    return tuple(ordered)
+
+
+def search_summary() -> str:
+    """Resumo curto dos lugares onde procuramos, para a mensagem da TUI."""
+    seen: list[str] = []
+    home = os.path.expanduser("~")
+    for candidate in candidate_binaries():
+        directory = str(candidate.parent)
+        if directory.startswith(home):
+            directory = "~" + directory[len(home):]
+        if directory not in seen:
+            seen.append(directory)
+    return ", ".join(seen)
+
+
+def find_reims_util(*, probe: bool = True) -> Optional[Path]:
     """Resolve o binário do reims-util no sistema ou ambiente de compilação."""
     env_bin = os.environ.get("REIMS_UTIL_BIN")
     if env_bin:
         cand = Path(env_bin)
-        if cand.is_file() and os.access(cand, os.X_OK):
+        if _is_executable_file(cand) and (not probe or _runs(cand)):
             return cand
 
-    which_path = shutil.which("reims-util")
-    if which_path:
-        cand = Path(which_path)
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return cand
-
-    for cand in REIMS_UTIL_CANDIDATES:
-        try:
-            if cand.is_file() and os.access(cand, os.X_OK):
-                return cand
-        except OSError:
+    for cand in candidate_binaries():
+        if not _is_executable_file(cand):
             continue
+        if probe and not _runs(cand):
+            continue
+        return cand
 
     return None
 
@@ -113,7 +186,7 @@ def generate_opencore(
         cmd.append("--text-picker")
 
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    log_file = LOGS_DIR / "reims-util-opencore.log"
+    log_file = LOG_FILE
 
     try:
         res = subprocess.run(

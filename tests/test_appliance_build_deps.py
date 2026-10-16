@@ -141,3 +141,128 @@ def test_validate_iso_proves_the_markers_inside_the_image():
     assert "missing_markers" in text
     assert "parse_pacman_packages" in text
     assert "reims-build-deps" in text
+
+
+# ------------------------------------------------------- reims-util dentro da ISO
+#
+# Sem o binário na imagem o OpenCore é provisionado por template + guestfish: o
+# appliance compila o reims-vgpu offline, mas o `reims-ctl __record-install`
+# instala o reims-util com `cargo install --git` (rede), e o primeiro boot pode
+# estar offline. Estes testes executam o resolvedor de verdade, com HOME e PATH
+# isolados, e guardam a fiação do build e da validação.
+
+RESOLVER = ROOT / "appliance" / "find_reims_util.sh"
+
+
+def _executable(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n")
+    path.chmod(0o755)
+    return path
+
+
+def _resolve(tmp_path: Path, **env: str):
+    import os
+    import shutil
+    import subprocess
+
+    complete = {"HOME": str(tmp_path / "home"), "PATH": str(tmp_path / "empty")}
+    complete.update(env)
+    return subprocess.run(
+        [shutil.which("bash") or "bash", str(RESOLVER)],
+        env=complete,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=False,
+    )
+
+
+def test_resolver_prefers_the_binary_installed_beside_reims_ctl(tmp_path):
+    fresh = _executable(tmp_path / "cargo" / "bin" / "reims-util")
+    _executable(tmp_path / "usr-local-bin" / "reims-util")
+    result = _resolve(
+        tmp_path,
+        CARGO_HOME=str(tmp_path / "cargo"),
+        PATH=str(tmp_path / "usr-local-bin"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(fresh)
+
+
+def test_resolver_falls_back_to_the_path(tmp_path):
+    baked = _executable(tmp_path / "usr-local-bin" / "reims-util")
+    result = _resolve(tmp_path, PATH=str(tmp_path / "usr-local-bin"))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(baked)
+
+
+def test_resolver_fails_loudly_when_the_host_has_none(tmp_path):
+    result = _resolve(tmp_path)
+    assert result.returncode == 1
+    assert result.stdout.strip() == ""
+
+
+def test_resolver_honours_an_explicit_override(tmp_path):
+    explicit = _executable(tmp_path / "explicit-reims-util")
+    result = _resolve(tmp_path, REIMS_UTIL_HOST_BIN=str(explicit))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(explicit)
+
+
+def test_resolver_rejects_a_broken_override(tmp_path):
+    result = _resolve(tmp_path, REIMS_UTIL_HOST_BIN=str(tmp_path / "nao-existe"))
+    assert result.returncode == 1
+    assert "REIMS_UTIL_HOST_BIN" in result.stderr
+
+
+def test_resolver_finds_the_binary_under_the_invoking_users_home_after_sudo(tmp_path):
+    """A ISO 1.1.0 saiu sem o binário porque o build roda como root.
+
+    Com `sudo`, `$HOME` é `/root`; o reims-util estava em
+    `/home/felipeab10/.cargo/bin/reims-util`. O registro de SUDO_USER resolve.
+    """
+    user_home = tmp_path / "home" / "felipe"
+    installed = _executable(user_home / ".cargo" / "bin" / "reims-util")
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    getent = fake_bin / "getent"
+    getent.write_text(f"#!/bin/sh\necho 'felipe:x:1000:1000::{user_home}:/bin/bash'\n")
+    getent.chmod(0o755)
+
+    result = _resolve(
+        tmp_path,
+        HOME=str(tmp_path / "root"),
+        PATH=f"{fake_bin}:/usr/bin",
+        SUDO_USER="felipe",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(installed)
+
+
+def test_resolver_without_sudo_user_does_not_look_into_other_homes(tmp_path):
+    """Guarda a regressão: sem SUDO_USER o home de quem chamou não é visto."""
+    user_home = tmp_path / "home" / "felipe"
+    _executable(user_home / ".cargo" / "bin" / "reims-util")
+
+    result = _resolve(tmp_path, HOME=str(tmp_path / "root"))
+
+    assert result.returncode == 1
+
+
+def test_build_iso_packages_reims_util_or_refuses_to_build():
+    text = (ROOT / "appliance" / "build-iso.sh").read_text()
+    assert "find_reims_util.sh" in text
+    assert 'install -m 0755 "${REIMS_UTIL_HOST_BIN}"' in text
+    assert "airootfs/usr/local/bin/reims-util" in text
+    # A cópia só acontece depois de o resolvedor ter encontrado o binário.
+    assert text.index("find_reims_util.sh") < text.index('install -m 0755 "${REIMS_UTIL_HOST_BIN}"')
+    assert "exit 1" in text[text.index("find_reims_util.sh") :]
+
+
+def test_validate_iso_requires_the_baked_reims_util():
+    text = (ROOT / "appliance" / "validate_iso.py").read_text()
+    assert "usr/local/bin/reims-util" in text
+    assert "reims_util_sha256" in text
+    assert "reims-util-packaged" in text

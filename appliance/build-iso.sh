@@ -143,19 +143,24 @@ install -m 0755 "${PROJECT_ROOT}/resources/macserial/macserial" "${ARCHISO_PROFI
 install -m 0644 "${PROJECT_ROOT}/resources/macserial/LICENSE.txt" "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/resources/macserial/LICENSE.txt"
 install -m 0644 "${PROJECT_ROOT}/resources/macserial/README.md" "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/resources/macserial/README.md"
 
-# Empacotamento do binário reims-util se presente no ambiente do host de build.
-REIMS_UTIL_HOST_BIN=""
-if [ -f "${HOME}/.cargo/bin/reims-util" ]; then
-    REIMS_UTIL_HOST_BIN="${HOME}/.cargo/bin/reims-util"
-elif command -v reims-util >/dev/null 2>&1; then
-    REIMS_UTIL_HOST_BIN="$(command -v reims-util)"
+# Empacotamento do binário reims-util. É OBRIGATÓRIO: o reims-util não é
+# compilado junto com o reims-vgpu (o `reims-ctl __record-install` o instala de
+# https://github.com/steelbrain/reims-util com `cargo install --git`, e isso
+# exige rede que o primeiro boot pode não ter). Sem ele na imagem,
+# `core/reims_util.py:is_available()` devolve False e o OpenCore volta a ser
+# provisionado por template + guestfish. Ver appliance/find_reims_util.sh.
+if ! REIMS_UTIL_HOST_BIN="$(bash "${SCRIPT_DIR}/find_reims_util.sh")"; then
+    echo -e "${RED}✖ reims-util não encontrado neste host de build.${NC}"
+    echo -e "  A ISO precisa levá-lo: no primeiro boot o appliance compila o reims-vgpu"
+    echo -e "  offline, mas o reims-util só existe se a imagem o trouxer consigo."
+    echo -e "  Compile uma vez com ${CYAN}${REIMS_SRC}/scripts/install-ctl.sh${NC} (ele instala o"
+    echo -e "  reims-util ao lado do reims-ctl) ou aponte ${CYAN}REIMS_UTIL_HOST_BIN=/caminho/para/reims-util${NC}."
+    exit 1
 fi
 
-if [ -n "${REIMS_UTIL_HOST_BIN}" ]; then
-    echo -e "${BLUE}▶ Empacotando utilitário nativo reims-util (${REIMS_UTIL_HOST_BIN})...${NC}"
-    mkdir -p "${ARCHISO_PROFILE}/airootfs/usr/local/bin"
-    install -m 0755 "${REIMS_UTIL_HOST_BIN}" "${ARCHISO_PROFILE}/airootfs/usr/local/bin/reims-util"
-fi
+echo -e "${BLUE}▶ Empacotando utilitário nativo reims-util (${REIMS_UTIL_HOST_BIN})...${NC}"
+mkdir -p "${ARCHISO_PROFILE}/airootfs/usr/local/bin"
+install -m 0755 "${REIMS_UTIL_HOST_BIN}" "${ARCHISO_PROFILE}/airootfs/usr/local/bin/reims-util"
 
 # 5. Empacotamento exclusivo das fontes do reims-vgpu. Não transportar
 # binários de um host de build: o QEMU, a ROM e o reims-ctl são compilados no

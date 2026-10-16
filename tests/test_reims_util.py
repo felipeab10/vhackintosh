@@ -4,9 +4,91 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from rich.progress import Progress
+
 from core.config import SMBIOSConfig, VMConfig
 from core.disk import DiskProvisioner
 from core import reims_util
+
+
+def _fake_util(path: Path, exit_code: int = 0) -> Path:
+    """Um reims-util de mentira: existe, é executável e responde `--version`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\nexit {exit_code}\n")
+    path.chmod(0o755)
+    return path
+
+
+class ReimsUtilLocatorTests(unittest.TestCase):
+    """A ordem de busca espelha o `reims_util::binary()` do reims-ctl.
+
+    Regressão que estes testes guardam: com `shutil.which` na frente, o
+    reims-util que a ISO carrega pronto em /usr/local/bin vencia o binário que o
+    appliance acabou de compilar em $CARGO_HOME/bin — e a imagem do OpenCore
+    passava a ser gerada por um reims-util diferente do que o reims-ctl usaria.
+    """
+
+    def test_prefers_the_binary_the_appliance_itself_installed(self):
+        with tempfile.TemporaryDirectory() as td:
+            fresh = _fake_util(Path(td) / "cargo" / "bin" / "reims-util")
+            stale = _fake_util(Path(td) / "usr-local-bin" / "reims-util")
+
+            with patch.dict("os.environ", {}, clear=True), patch(
+                "core.reims_util.candidate_binaries", return_value=(fresh, stale)
+            ):
+                self.assertEqual(reims_util.find_reims_util(), fresh)
+
+    def test_uses_the_binary_the_iso_carries_when_nothing_was_built_here(self):
+        with tempfile.TemporaryDirectory() as td:
+            baked = _fake_util(Path(td) / "reims-util")
+
+            with patch.dict("os.environ", {}, clear=True), patch(
+                "core.reims_util.candidate_binaries",
+                return_value=(Path(td) / "ausente" / "reims-util", baked),
+            ):
+                self.assertEqual(reims_util.find_reims_util(), baked)
+
+    def test_skips_a_candidate_that_does_not_run(self):
+        with tempfile.TemporaryDirectory() as td:
+            broken = _fake_util(Path(td) / "quebrado", exit_code=127)
+            working = _fake_util(Path(td) / "ok")
+
+            with patch.dict("os.environ", {}, clear=True), patch(
+                "core.reims_util.candidate_binaries", return_value=(broken, working)
+            ):
+                self.assertEqual(reims_util.find_reims_util(), working)
+
+    def test_reports_nothing_when_every_candidate_is_broken(self):
+        with tempfile.TemporaryDirectory() as td:
+            broken = _fake_util(Path(td) / "quebrado", exit_code=1)
+
+            with patch.dict("os.environ", {}, clear=True), patch(
+                "core.reims_util.candidate_binaries", return_value=(broken,)
+            ):
+                self.assertIsNone(reims_util.find_reims_util())
+                self.assertFalse(reims_util.is_available())
+
+    def test_cargo_home_comes_before_path_and_before_the_baked_copy(self):
+        with tempfile.TemporaryDirectory() as td:
+            cargo_home = Path(td) / "cargo"
+
+            with patch.dict("os.environ", {"CARGO_HOME": str(cargo_home)}, clear=True), patch(
+                "shutil.which", return_value="/usr/local/bin/reims-util"
+            ):
+                order = [str(candidate) for candidate in reims_util.candidate_binaries()]
+
+            self.assertIn(str(cargo_home / "bin" / "reims-util"), order)
+            self.assertLess(
+                order.index(str(cargo_home / "bin" / "reims-util")),
+                order.index("/usr/local/bin/reims-util"),
+            )
+
+    def test_search_summary_names_where_it_looked(self):
+        with patch(
+            "core.reims_util.candidate_binaries",
+            return_value=(Path("/usr/local/bin/reims-util"),),
+        ):
+            self.assertIn("/usr/local/bin", reims_util.search_summary())
 
 
 class ReimsUtilTests(unittest.TestCase):
@@ -29,14 +111,15 @@ class ReimsUtilTests(unittest.TestCase):
                 found = reims_util.find_reims_util()
                 self.assertEqual(found, fake_bin)
 
-    def test_find_reims_util_via_which(self):
+    def test_find_reims_util_uses_path_before_the_fixed_baked_locations(self):
         with tempfile.TemporaryDirectory() as td:
-            fake_bin = Path(td) / "reims-util"
-            fake_bin.write_bytes(b"#!/bin/sh\nexit 0\n")
-            fake_bin.chmod(0o755)
+            fake_bin = _fake_util(Path(td) / "reims-util")
 
             with patch.dict("os.environ", {}, clear=True), patch(
                 "shutil.which", return_value=str(fake_bin)
+            ), patch(
+                "core.reims_util.candidate_binaries",
+                return_value=(fake_bin, Path("/usr/local/bin/reims-util")),
             ):
                 found = reims_util.find_reims_util()
                 self.assertEqual(found, fake_bin)
@@ -210,6 +293,45 @@ class ReimsUtilTests(unittest.TestCase):
 
                 mock_gen.assert_called_once_with("sequoia")
                 self.assertEqual(vm.smbios.serial_number, "C02NEWSERIAL1")
+
+    def test_disk_fallback_says_that_reims_util_is_missing(self):
+        """O usuário viu "injetando EFI via guestfish" sem saber o motivo."""
+        with tempfile.TemporaryDirectory() as td:
+            vm_storage = Path(td) / "vms"
+            vm = VMConfig(
+                id="reason-test",
+                name="ReasonTest",
+                macos_version="sequoia",
+                disk_size_gb=32,
+                smbios=self.sample_smbios,
+            )
+            dummy_template = Path(td) / "template-OpenCore.qcow2"
+            dummy_template.write_bytes(b"TEMPLATE_DATA")
+            descriptions: list[str] = []
+
+            with patch("core.disk.VM_STORAGE_BASE", vm_storage), patch.object(
+                DiskProvisioner, "_create_qcow2_disk"
+            ), patch.object(
+                DiskProvisioner, "ensure_ovmf_code"
+            ), patch.object(
+                DiskProvisioner, "get_template_opencore_path", return_value=dummy_template
+            ), patch(
+                "core.reims_util.is_available", return_value=False
+            ), patch(
+                "shutil.which", return_value="/usr/bin/guestfish"
+            ), patch.object(
+                DiskProvisioner, "_inject_smbios_to_opencore_qcow2"
+            ), patch.object(
+                Progress,
+                "update",
+                autospec=True,
+                side_effect=lambda _self, _task, **kw: descriptions.append(str(kw.get("description", ""))),
+            ):
+                DiskProvisioner.provision(vm)
+
+            joined = " ".join(descriptions)
+            self.assertIn("reims-util ausente", joined)
+            self.assertIn("via guestfish", joined)
 
     def test_real_reims_util_execution_if_present(self):
         if not reims_util.is_available():

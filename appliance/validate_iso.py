@@ -97,6 +97,24 @@ def main() -> int:
             version = command(str(macserial), "-v").stdout + command(str(macserial), "-v").stderr
             if "2.1.8" not in version:
                 raise RuntimeError("bundled macserial version differs from pinned 2.1.8")
+            # O provisionamento NATIVO do OpenCore (core/reims_util.py) depende
+            # deste binário DENTRO da imagem. Sem ele — ou sem o bit de execução
+            # — o appliance cai em template + guestfish e injeta o SMBIOS na mão:
+            # é a regressão que a ISO 1.1.0 mostrou em 16/10.
+            reims_util = rootfs / "usr/local/bin/reims-util"
+            if not reims_util.is_file():
+                raise RuntimeError(
+                    "ISO payload missing required file: usr/local/bin/reims-util "
+                    "(OpenCore would be provisioned via guestfish instead of reims-util)"
+                )
+            if not reims_util.stat().st_mode & 0o111:
+                raise RuntimeError("bundled reims-util is not executable in ISO rootfs")
+            try:
+                util_version = command(str(reims_util), "--version").stdout.strip()
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError(f"bundled reims-util does not run: {exc}") from exc
+            if "reims-util" not in util_version:
+                raise RuntimeError(f"bundled reims-util reports no version: {util_version!r}")
             vars_file = rootfs / "opt/vhackintosh/templates/OVMF_VARS.fd"
             ovmf_vars_hash = hashlib.sha256(vars_file.read_bytes()).hexdigest()
             expected_vars = Path(__file__).resolve().parents[1] / "templates/OVMF_VARS.fd"
@@ -155,8 +173,9 @@ def main() -> int:
                 "opencore_sha256": hashlib.sha256(opencore.read_bytes()).hexdigest(),
                 "config_sha256": hashlib.sha256(embedded.read_bytes()).hexdigest(),
                 "macserial_sha256": hashlib.sha256(macserial.read_bytes()).hexdigest(),
+                "reims_util_sha256": hashlib.sha256(reims_util.read_bytes()).hexdigest(),
                 "ovmf_vars_sha256": ovmf_vars_hash,
-                "checks": ["squashfs-extracted", "opencore-qcow2", "plist-neutral", "source-complete", "macserial-pinned", "ovmf-vars-match", "reims-build-deps"],
+                "checks": ["squashfs-extracted", "opencore-qcow2", "plist-neutral", "source-complete", "macserial-pinned", "reims-util-packaged", "ovmf-vars-match", "reims-build-deps"],
             }
         # Atomic metadata publication only after all checks complete.
         target = iso.with_suffix(iso.suffix + ".manifest.json")
