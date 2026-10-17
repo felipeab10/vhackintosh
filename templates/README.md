@@ -11,7 +11,7 @@ A configuração descrita foi testada com macOS Tahoe 26.6.2 no reims-vgpu (KVM 
 
 ## Compatibilidade com ReimsVgpu
 
-O template inclui `ReimsVgpu.kext` habilitada para `x86_64` e macOS 26 (Kernel 25.x), construída a partir de `reims-util` commit `5405b2d`. Lilu foi atualizado para a versão usada pela combinação testada e também limitado a macOS 26; isto é intencional, não um template genérico para versões anteriores/futuras. Serial/MLB estão vazios e UUID/ROM são placeholders neutros; cada VM deve receber identidade SMBIOS própria na criação. `OVMF_VARS.fd` versionado é o modelo limpo, não o NVRAM da VM testada.
+O template inclui `ReimsVgpu.kext` habilitada para `x86_64` e macOS 26 (Kernel 25.x), construída a partir de `reims-util` commit `b302389`. Lilu foi atualizado para a versão usada pela combinação testada e também limitado a macOS 26; isto é intencional, não um template genérico para versões anteriores/futuras. Serial/MLB estão vazios e UUID/ROM são placeholders neutros; cada VM deve receber identidade SMBIOS própria na criação. `OVMF_VARS.fd` versionado é o modelo limpo, não o NVRAM da VM testada.
 
 **Estado de verificação (2026-10-13):** a EFI foi inspecionada e sanitizada em `DataHub`, `Generic`, `PlatformNVRAM` e `SMBIOS`; o `config.plist` versionado tem o mesmo SHA-256 da cópia extraída da imagem. `qemu-img check` não encontrou erros. Isso valida o artefato EFI, não um boot Tahoe nem a GPU acelerada.
 

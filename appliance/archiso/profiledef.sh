@@ -5,7 +5,7 @@ iso_name="vhackintosh-os"
 iso_label="VHACK_$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y%m)"
 iso_publisher="vHackintosh Project <https://github.com/felipeab10/vhackintosh>"
 iso_application="vHackintosh Appliance - Dedicated Linux for macOS VMs"
-iso_version="1.1.0"
+iso_version="1.1.1"
 install_dir="arch"
 buildmodes=('iso')
 bootmodes=('uefi.grub')
