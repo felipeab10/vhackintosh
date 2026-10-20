@@ -187,9 +187,11 @@ class ReimsUtilTests(unittest.TestCase):
                 ok = reims_util.generate_opencore(dest, self.sample_smbios)
                 self.assertFalse(ok)
 
-    def test_disk_provisioner_prefers_reims_util(self):
+    def test_disk_provisioner_uses_ultimate_template_not_reims_util(self):
         with tempfile.TemporaryDirectory() as td:
             vm_storage = Path(td) / "vms"
+            template = Path(td) / "OpenCore-template.qcow2"
+            template.write_bytes(b"ULTIMATE-MACOS-KVM-OPENCORE")
             vm = VMConfig(
                 id="native-test",
                 name="NativeTest",
@@ -200,29 +202,28 @@ class ReimsUtilTests(unittest.TestCase):
 
             with patch("core.disk.VM_STORAGE_BASE", vm_storage), patch.object(
                 DiskProvisioner, "_create_qcow2_disk"
-            ) as mock_qcow2, patch.object(
+            ), patch.object(
                 DiskProvisioner, "ensure_ovmf_code"
+            ), patch.object(
+                DiskProvisioner, "get_template_opencore_path", return_value=template
+            ), patch(
+                "shutil.which", return_value="/usr/bin/guestfish"
             ), patch(
                 "core.reims_util.is_available", return_value=True
-            ), patch(
+            ) as mock_reims_available, patch(
                 "core.reims_util.generate_opencore"
             ) as mock_gen_oc, patch.object(
                 DiskProvisioner, "_inject_smbios_to_opencore_qcow2"
             ) as mock_guestfish:
-                def fake_generate(out_path, *args, **kwargs):
-                    p = Path(out_path)
-                    p.write_bytes(b"FAKE_QCOW2_DATA")
-                    return True
-
-                mock_gen_oc.side_effect = fake_generate
-
                 bundle = DiskProvisioner.provision(vm)
 
-                self.assertTrue(mock_gen_oc.called)
-                self.assertFalse(mock_guestfish.called)
+                mock_reims_available.assert_not_called()
+                mock_gen_oc.assert_not_called()
+                mock_guestfish.assert_called_once_with(bundle.opencore_path, vm)
+                self.assertEqual(bundle.opencore_path.read_bytes(), template.read_bytes())
                 self.assertEqual(bundle.opencore_path, vm_storage / "native-test" / "OpenCore.qcow2")
 
-    def test_disk_provisioner_fallback_to_guestfish(self):
+    def test_disk_provisioner_requires_the_ultimate_template(self):
         with tempfile.TemporaryDirectory() as td:
             vm_storage = Path(td) / "vms"
             vm = VMConfig(
@@ -233,26 +234,16 @@ class ReimsUtilTests(unittest.TestCase):
                 smbios=self.sample_smbios,
             )
 
-            dummy_template = Path(td) / "template-OpenCore.qcow2"
-            dummy_template.write_bytes(b"TEMPLATE_DATA")
-
             with patch("core.disk.VM_STORAGE_BASE", vm_storage), patch.object(
                 DiskProvisioner, "_create_qcow2_disk"
             ), patch.object(
                 DiskProvisioner, "ensure_ovmf_code"
             ), patch(
                 "core.disk.DiskProvisioner.get_template_opencore_path",
-                return_value=dummy_template,
-            ), patch(
-                "core.reims_util.is_available", return_value=False
-            ), patch(
-                "shutil.which", return_value="/usr/bin/guestfish"
-            ), patch.object(
-                DiskProvisioner, "_inject_smbios_to_opencore_qcow2"
-            ) as mock_guestfish:
-                bundle = DiskProvisioner.provision(vm)
-                self.assertTrue(mock_guestfish.called)
-                self.assertEqual(bundle.opencore_path, vm_storage / "fallback-test" / "OpenCore.qcow2")
+                return_value=None,
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "Ultimate-macOS-KVM"):
+                    DiskProvisioner.provision(vm)
 
     def test_disk_provisioner_generates_fresh_serial_for_new_vm_if_empty(self):
         with tempfile.TemporaryDirectory() as td:
@@ -279,23 +270,20 @@ class ReimsUtilTests(unittest.TestCase):
                 DiskProvisioner, "ensure_ovmf_code"
             ), patch(
                 "core.smbios.GenSMBIOS.generate", return_value=generated_identity
-            ) as mock_gen, patch(
-                "core.reims_util.is_available", return_value=True
+            ) as mock_gen, patch.object(
+                DiskProvisioner, "get_template_opencore_path", return_value=Path(td) / "template.qcow2"
             ), patch(
-                "core.reims_util.generate_opencore", return_value=True
+                "shutil.which", return_value="/usr/bin/guestfish"
+            ), patch.object(
+                DiskProvisioner, "_inject_smbios_to_opencore_qcow2"
             ):
-                def fake_generate(out_path, *args, **kwargs):
-                    Path(out_path).write_bytes(b"DATA")
-                    return True
-
-                with patch("core.reims_util.generate_opencore", side_effect=fake_generate):
-                    DiskProvisioner.provision(vm)
+                (Path(td) / "template.qcow2").write_bytes(b"TEMPLATE")
+                DiskProvisioner.provision(vm)
 
                 mock_gen.assert_called_once_with("sequoia")
                 self.assertEqual(vm.smbios.serial_number, "C02NEWSERIAL1")
 
-    def test_disk_fallback_says_that_reims_util_is_missing(self):
-        """O usuário viu "injetando EFI via guestfish" sem saber o motivo."""
+    def test_disk_provisioning_reports_template_smbios_injection(self):
         with tempfile.TemporaryDirectory() as td:
             vm_storage = Path(td) / "vms"
             vm = VMConfig(
@@ -316,8 +304,6 @@ class ReimsUtilTests(unittest.TestCase):
             ), patch.object(
                 DiskProvisioner, "get_template_opencore_path", return_value=dummy_template
             ), patch(
-                "core.reims_util.is_available", return_value=False
-            ), patch(
                 "shutil.which", return_value="/usr/bin/guestfish"
             ), patch.object(
                 DiskProvisioner, "_inject_smbios_to_opencore_qcow2"
@@ -330,8 +316,35 @@ class ReimsUtilTests(unittest.TestCase):
                 DiskProvisioner.provision(vm)
 
             joined = " ".join(descriptions)
-            self.assertIn("reims-util ausente", joined)
-            self.assertIn("via guestfish", joined)
+            self.assertIn("SMBIOS exclusivo", joined)
+            self.assertNotIn("reims-util", joined)
+
+    def test_opencore_config_edit_preserves_the_existing_efi_image(self):
+        with tempfile.TemporaryDirectory() as td:
+            image = Path(td) / "OpenCore.qcow2"
+            image.write_bytes(b"ULTIMATE-EFI-WITH-DRIVERS")
+            vm = VMConfig(
+                id="preserve-efi",
+                name="Preserve EFI",
+                macos_version="tahoe",
+                disk_size_gb=32,
+                smbios=self.sample_smbios,
+            )
+
+            def edit_plist(staged, _vm, _picker):
+                with Path(staged).open("ab") as stream:
+                    stream.write(b"-SMBIOS-UPDATED")
+
+            with patch("shutil.which", side_effect=lambda tool: "/usr/bin/guestfish" if tool == "guestfish" else None), \
+                 patch.object(DiskProvisioner, "_inject_opencore_config_in_place", side_effect=edit_plist), \
+                 patch("core.reims_util.is_available") as reims_available, \
+                 patch("core.reims_util.generate_opencore") as generate_opencore:
+                DiskProvisioner.inject_opencore_config(image, vm)
+
+            reims_available.assert_not_called()
+            generate_opencore.assert_not_called()
+            self.assertEqual(image.read_bytes(), b"ULTIMATE-EFI-WITH-DRIVERS-SMBIOS-UPDATED")
+            self.assertEqual(list(image.parent.iterdir()), [image])
 
     def test_real_reims_util_execution_if_present(self):
         if not reims_util.is_available():

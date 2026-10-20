@@ -191,15 +191,14 @@ def main() -> int:
             version = command(str(macserial), "-v").stdout + command(str(macserial), "-v").stderr
             if "2.1.8" not in version:
                 raise RuntimeError("bundled macserial version differs from pinned 2.1.8")
-            # O provisionamento NATIVO do OpenCore (core/reims_util.py) depende
-            # deste binário DENTRO da imagem. Sem ele — ou sem o bit de execução
-            # — o appliance cai em template + guestfish e injeta o SMBIOS na mão:
-            # é a regressão que a ISO 1.1.0 mostrou em 16/10.
+            # O reims-ctl usa o reims-util em operações nativas de OpenCore.
+            # A criação pelo wizard parte do template versionado derivado do
+            # Ultimate-macOS-KVM e edita o SMBIOS in-place; não substitui essa EFI.
             reims_util = rootfs / "usr/local/bin/reims-util"
             if not reims_util.is_file():
                 raise RuntimeError(
                     "ISO payload missing required file: usr/local/bin/reims-util "
-                    "(OpenCore would be provisioned via guestfish instead of reims-util)"
+                    "(required by reims-ctl's native OpenCore operations)"
                 )
             if not reims_util.stat().st_mode & 0o111:
                 raise RuntimeError(

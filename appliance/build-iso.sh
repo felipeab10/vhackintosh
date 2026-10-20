@@ -245,12 +245,13 @@ install -m 0755 "${PROJECT_ROOT}/resources/macserial/macserial" "${ARCHISO_PROFI
 install -m 0644 "${PROJECT_ROOT}/resources/macserial/LICENSE.txt" "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/resources/macserial/LICENSE.txt"
 install -m 0644 "${PROJECT_ROOT}/resources/macserial/README.md" "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/resources/macserial/README.md"
 
-# Empacotamento do binário reims-util. É OBRIGATÓRIO: o reims-util não é
-# compilado junto com o reims-vgpu (o `reims-ctl __record-install` o instala de
-# https://github.com/steelbrain/reims-util com `cargo install --git`, e isso
-# exige rede que o primeiro boot pode não ter). Sem ele na imagem,
-# `core/reims_util.py:is_available()` devolve False e o OpenCore volta a ser
-# provisionado por template + guestfish. Ver appliance/find_reims_util.sh.
+# Empacotamento do binário reims-util, usado pelas operações nativas de OpenCore
+# do reims-ctl. Ele não escolhe a EFI inicial do wizard: novas VMs copiam o
+# template versionado derivado do Ultimate-macOS-KVM e injetam nele o SMBIOS.
+# O reims-util não é compilado junto com o reims-vgpu (o `reims-ctl
+# __record-install` o instala de https://github.com/steelbrain/reims-util com
+# `cargo install --git`), então a ISO precisa levá-lo para funcionar offline.
+# Ver appliance/find_reims_util.sh.
 if ! REIMS_UTIL_HOST_BIN="$(bash "${SCRIPT_DIR}/find_reims_util.sh")"; then
     echo -e "${RED}✖ reims-util não encontrado neste host de build.${NC}"
     echo -e "  A ISO precisa levá-lo: no primeiro boot o appliance compila o reims-vgpu"
