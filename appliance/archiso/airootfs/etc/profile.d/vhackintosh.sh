@@ -92,7 +92,8 @@ vhack_flush_input() {
 #      não, que foi o defeito: o boot normal desligava a máquina mesmo com o
 #      usuário tendo pedido o pulo.
 #
-#   2. `vhack_skip_vulkan=1` no cmdline do kernel — porque dentro da ISO o
+#   2. `vhack_skip_vulkan=true` no cmdline do kernel ou como SMBIOS OEM string
+#      — porque dentro da ISO o
 #      usuário NÃO tem como definir uma variável de ambiente antes do gate
 #      rodar: o gate roda no login, e a variável só existiria se ele já
 #      estivesse logado. Sem esta segunda via o escape seria decorativo na
@@ -112,11 +113,21 @@ vhack_vulkan_check_skipped() {
         1|true|yes|on|sim) return 0 ;;
     esac
 
-    # `(^| )chave=1( |$)` — mesma forma do hook de build: exige o valor 1
-    # separado, para `vhack_skip_vulkan=10` ou `...=1abc` não passarem.
-    if grep -qE '(^| )vhack_skip_vulkan=1( |$)' /proc/cmdline 2>/dev/null; then
+    # Valores verdadeiros iguais ao ambiente, em token completo. Valores
+    # parciais como `vhack_skip_vulkan=1abc` não passam.
+    if grep -qiE '(^| )vhack_skip_vulkan=(1|true|yes|on|sim)( |$)' /proc/cmdline 2>/dev/null; then
         return 0
     fi
+
+    # verify-iso.sh --vmware-svga envia o marcador como SMBIOS Type 11 para
+    # manter o boot normal por OVMF/GRUB (e permitir Esc no menu de boot).
+    local dmi_raw
+    for dmi_raw in /sys/firmware/dmi/entries/11-*/raw; do
+        [ -f "$dmi_raw" ] || continue
+        if grep -aqF 'vhack_skip_vulkan=true' "$dmi_raw" 2>/dev/null; then
+            return 0
+        fi
+    done
 
     return 1
 }
@@ -243,7 +254,7 @@ if [ "$(tty)" = "/dev/tty1" ]; then
     VULKAN_OK=1
 
     if vhack_vulkan_check_skipped; then
-        VULKAN_OUTPUT="Checagem de Vulkan PULADA a pedido explícito (VHACK_SKIP_VULKAN_CHECK=1 no ambiente ou vhack_skip_vulkan=1 no cmdline)."
+        VULKAN_OUTPUT="Checagem de Vulkan PULADA a pedido explícito (ambiente, cmdline ou marcador SMBIOS de teste)."
         echo -e "\033[1;33m${VULKAN_OUTPUT}\033[0m"
     elif command -v vhackintosh >/dev/null 2>&1; then
         if ! VULKAN_OUTPUT="$(vhackintosh check-vulkan 2>&1)"; then
@@ -281,7 +292,7 @@ if [ "$(tty)" = "/dev/tty1" ]; then
         # teste numa VM, em que a única saída era trocar o SSD do notebook.
         echo -e "\033[1;33mSó para testar a ISO numa VM emulada (não valida GPU nenhuma):\033[0m"
         echo -e "  \033[1;37m1.\033[0m Reinicie e, no menu do GRUB, pressione \033[1;36me\033[0m na entrada do vHackintosh."
-        echo -e "  \033[1;37m2.\033[0m No fim da linha que começa com \033[1;36mlinux\033[0m, acrescente: \033[1;32mvhack_skip_vulkan=1\033[0m"
+        echo -e "  \033[1;37m2.\033[0m No fim da linha que começa com \033[1;36mlinux\033[0m, acrescente: \033[1;32mvhack_skip_vulkan=true\033[0m (ou legado: vhack_skip_vulkan=1)"
         echo -e "  \033[1;37m3.\033[0m \033[1;36mCtrl+X\033[0m (ou \033[1;36mF10\033[0m) para bootar. Para desfazer, é só não salvar."
         echo -e "  \033[2mAlternativa, se você tem acesso ao shell: export VHACK_SKIP_VULKAN_CHECK=1\033[0m\n"
 
@@ -308,6 +319,14 @@ if [ "$(tty)" = "/dev/tty1" ]; then
         # MODO LIVE USB — Menu de instalação e demonstração
         # ==========================================================================
         vhack_flush_input
+
+        # A instalação em disco é escolhida neste menu antes de o gerenciador
+        # TUI iniciar. Portanto, ofereça a escolha de idioma ainda no fluxo do
+        # instalador Live; o settings.json fica em /root/.config e é levado
+        # junto para o sistema instalado pela cópia do rootfs.
+        if [ -x /opt/vhackintosh/bin/vhackintosh-lang ]; then
+            /opt/vhackintosh/bin/vhackintosh-lang --choose
+        fi
 
         while true; do
             clear

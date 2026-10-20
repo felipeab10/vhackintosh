@@ -145,6 +145,7 @@ class ABInstallerTest:
             console.print(i18n.t("installer.info.installer", image=installer_img))
 
             env = os.environ.copy()
+            reims_ctl.apply_test_graphics_environment(env)
             # O vm.toml carrega tudo o que o antigo bloco de env fazia: cpus/
             # RAM (do próprio VMConfig), áudio ligado, e o instalador da fase
             # (imagem absoluta, entrai em [q35].installer). O reboot do

@@ -1,7 +1,8 @@
 """
 vHackintosh — Troca de idioma do appliance (task 2.5)
 
-`vhackintosh-lang pt|en` — valida a entrada, persiste em
+`vhackintosh-lang --choose` abre a tela interativa usada antes do menu de
+instalação do ISO Live; `vhackintosh-lang pt|en` — valida a entrada, persiste em
 `~/.config/vhackintosh/settings.json` e vale na próxima abertura da TUI e em
 reboots (o settings sobrevive ao live). Sem argumentos, mostra o idioma atual
 e os suportados. Entrada inválida: recusa, mantém o atual e lista os aceitos
@@ -14,11 +15,40 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.i18n import LANGUAGES, get_language, set_language
+from core.i18n import (
+    LANGUAGES,
+    get_language,
+    has_language_choice,
+    set_language,
+)
 
 
 def main() -> int:
     args = [a.lower() for a in sys.argv[1:]]
+
+    # The live ISO presents the choice before its installation menu. Keeping
+    # the picker here lets the shell boot flow and the TUI share the same
+    # persisted setting without starting the full VM manager.
+    if args == ["--choose"]:
+        if has_language_choice():
+            return 0
+        print("Escolha o idioma do appliance — Choose the appliance language")
+        options = list(LANGUAGES)
+        for index, code in enumerate(options, 1):
+            print(f"  {index} - {LANGUAGES[code]}")
+        while True:
+            try:
+                choice = input("Idioma / Language [1/2] (1): ").strip() or "1"
+            except (EOFError, KeyboardInterrupt):
+                # Preserve the appliance's Portuguese default if input is
+                # unavailable, so unattended boots remain usable.
+                choice = "1"
+            if choice in {str(i) for i in range(1, len(options) + 1)}:
+                code = options[int(choice) - 1]
+                set_language(code)
+                print(f"Idioma / Language: {LANGUAGES[code]}")
+                return 0
+            print("Opção inválida / Invalid choice. Select 1 or 2.")
 
     if not args:
         current = get_language()

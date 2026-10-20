@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.config import VMConfig, CONFIG_DIR
+from core.gpu import smbios_oem_string_present
 from core.virt import cpu_flags as _nested_cpu_flags
 
 # Baseline de CPU flags do q35-x86_64 do reims-ctl (vm.rs); o appliance só
@@ -45,6 +46,35 @@ def cpu_flags_str() -> str:
 # O mesmo diretório de `core/disk.py` (VM_STORAGE_BASE) — calculado aqui para
 # não importar o disk.py (que puxa rich) neste módulo de launch.
 VM_STORAGE_BASE = CONFIG_DIR / "vms"
+VMWARE_SVGA_CMDLINE = "vhack_graphics=vmware-svga"
+TEST_GRAPHICS_ENV = "VHACK_TEST_GRAPHICS_BACKEND"
+
+
+def _graphics_backend_from_cmdline(cmdline: str) -> Optional[str]:
+    return "vmware-svga" if VMWARE_SVGA_CMDLINE in cmdline.split() else None
+
+
+def _requested_test_graphics_backend() -> Optional[str]:
+    """Retorna o backend alternativo solicitado pelo kernel ou SMBIOS OEM."""
+    try:
+        cmdline = Path("/proc/cmdline").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    return _graphics_backend_from_cmdline(cmdline) or (
+        "vmware-svga"
+        if smbios_oem_string_present("vhack_graphics=vmware-svga")
+        else None
+    )
+
+
+def apply_test_graphics_environment(env: dict) -> Optional[str]:
+    """Propaga o backend de teste somente à sessão que iniciará a VM."""
+    backend = _requested_test_graphics_backend()
+    if backend:
+        env[TEST_GRAPHICS_ENV] = backend
+    else:
+        env.pop(TEST_GRAPHICS_ENV, None)
+    return backend
 
 
 class GPUSelectionError(ValueError):
@@ -375,6 +405,13 @@ def write_vm_toml(
         "disk_port = 3",
     ]
 
+    # O modo de validação nested é opt-in pelo cmdline injetado por
+    # verify-iso.sh --vmware-svga. No uso normal omitimos graphics e deixamos
+    # o default do reims-ctl (reims-vgpu) intacto.
+    graphics_backend = _requested_test_graphics_backend()
+    if graphics_backend:
+        lines.insert(5, f"graphics = {s(graphics_backend)}")
+
     if installer:
         lines += [f"installer = {s(installer)}"]
 
@@ -387,7 +424,7 @@ def write_vm_toml(
     #
     # A escolha explícita vence a preservação: se o operador trocou a placa no
     # wizard, gravar a antiga de novo seria justamente o bug.
-    gpu_section = _gpu_section(vm, existing)
+    gpu_section = {} if graphics_backend == "vmware-svga" else _gpu_section(vm, existing)
     if gpu_section:
         lines += ["", "[gpu]"]
         for k, v in gpu_section.items():
@@ -469,6 +506,39 @@ def vms_rodando() -> dict:
         if nome and isinstance(pid, int) and pid > 0:
             rodando[nome] = pid
     return rodando
+
+
+def vm_record(name: str) -> Optional[dict]:
+    """Retorna o registro completo de uma VM conhecida pelo reims-ctl.
+
+    O caminho `dir` é necessário para recuperar VMs que foram criadas pelo
+    reims-ctl antes de o vHackintosh manter seu próprio catálogo. Em caso de
+    erro de comando ou JSON inválido, devolve None sem inventar um caminho.
+    """
+    binario = reims_ctl_bin()
+    if not binario:
+        return None
+    try:
+        proc = subprocess.run(
+            [str(binario), "list", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        dados = json.loads(proc.stdout or "[]")
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return None
+    if proc.returncode != 0:
+        return None
+    if isinstance(dados, dict):
+        dados = dados.get("vms", [])
+    if not isinstance(dados, list):
+        return None
+    return next(
+        (entry for entry in dados if isinstance(entry, dict) and entry.get("name") == name),
+        None,
+    )
 
 
 def parar_vm(vm: VMConfig, *, force: bool = False) -> tuple:

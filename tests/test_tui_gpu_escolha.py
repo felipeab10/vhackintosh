@@ -30,6 +30,7 @@ import inspect
 import os
 import re
 import sys
+import subprocess
 import tempfile
 import time
 import unittest
@@ -80,6 +81,54 @@ class AEscolhaDoWizardChegaAoTomlTests(unittest.TestCase):
             texto = destino.read_text(encoding="utf-8")
         self.assertIn("[gpu]", texto, "a escolha do wizard sumiu do vm.toml")
         self.assertIn("driver_file", texto)
+
+    def test_modo_de_validacao_grava_vmware_sem_configurar_gpu_vulkan(self):
+        """O modo da ISO cria uma VM visível mesmo sem Vulkan no host aninhado."""
+        from core import reims_ctl
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(reims_ctl, "vm_dir", return_value=Path(tmp)), \
+                 mock.patch.object(reims_ctl, "_requested_test_graphics_backend", return_value="vmware-svga"):
+                destino = reims_ctl.write_vm_toml(_vm("0000:00:02.0", "Intel Iris Xe"))
+            texto = destino.read_text(encoding="utf-8")
+        self.assertIn('graphics = "vmware-svga"', texto)
+        self.assertNotIn("[gpu]", texto)
+
+    def test_backend_alternativo_exige_parametro_exato_no_cmdline(self):
+        from core import reims_ctl
+
+        self.assertEqual(
+            reims_ctl._graphics_backend_from_cmdline(
+                "quiet archisobasedir=arch vhack_graphics=vmware-svga"
+            ),
+            "vmware-svga",
+        )
+        self.assertIsNone(
+            reims_ctl._graphics_backend_from_cmdline("quiet vhack_graphics=vmware-svga-test")
+        )
+        self.assertIsNone(reims_ctl._graphics_backend_from_cmdline("quiet"))
+
+    def test_backend_alternativo_le_smbios_oem_string(self):
+        from unittest import mock
+        from core import reims_ctl
+
+        with mock.patch.object(reims_ctl.Path, "read_text", return_value="quiet"), \
+             mock.patch.object(reims_ctl, "smbios_oem_string_present", return_value=True):
+            self.assertEqual(reims_ctl._requested_test_graphics_backend(), "vmware-svga")
+
+    def test_renderer_software_so_e_habilitado_no_modo_vmware(self):
+        from core import reims_ctl
+
+        env = {reims_ctl.TEST_GRAPHICS_ENV: "stale"}
+        with mock.patch.object(reims_ctl, "_requested_test_graphics_backend", return_value=None):
+            self.assertIsNone(reims_ctl.apply_test_graphics_environment(env))
+        self.assertNotIn(reims_ctl.TEST_GRAPHICS_ENV, env)
+
+        with mock.patch.object(
+            reims_ctl, "_requested_test_graphics_backend", return_value="vmware-svga"
+        ):
+            self.assertEqual(reims_ctl.apply_test_graphics_environment(env), "vmware-svga")
+        self.assertEqual(env[reims_ctl.TEST_GRAPHICS_ENV], "vmware-svga")
 
     def test_a_secao_gpu_traz_o_icd_medido_nao_o_nome_do_fabricante(self):
         """O campo é o manifest ICD que o reims-ctl aceita, não um rótulo."""
@@ -319,6 +368,33 @@ class EsperarPorPidTemFimTests(unittest.TestCase):
             script.index('swaymsg exit >/dev/null 2>&1 || true'),
         )
 
+    def test_waysession_permite_renderer_software_com_valor_wlroots_valido(self):
+        script = (
+            ROOT / "appliance" / "archiso" / "airootfs" / "usr" / "local" /
+            "bin" / "vhackintosh-waysession"
+        ).read_text(encoding="utf-8")
+        self.assertIn("export WLR_RENDERER_ALLOW_SOFTWARE=1", script)
+        self.assertNotIn("export WLR_RENDERER_ALLOW_SOFTWARE=true", script)
+        bloco = re.search(
+            r'if \[ "\$\{VHACK_TEST_GRAPHICS_BACKEND:-\}" = "vmware-svga" \]; then\n'
+            r'.*?\nfi',
+            script,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(bloco)
+        for backend, esperado in [(None, "unset"), ("vmware-svga", "1")]:
+            env = os.environ.copy()
+            env.pop("VHACK_TEST_GRAPHICS_BACKEND", None)
+            env["WLR_RENDERER_ALLOW_SOFTWARE"] = "true"
+            if backend:
+                env["VHACK_TEST_GRAPHICS_BACKEND"] = backend
+            saida = subprocess.check_output(
+                ["bash", "-c", f'{bloco.group(0)}; printf "%s" "${{WLR_RENDERER_ALLOW_SOFTWARE-unset}}"'],
+                env=env,
+                text=True,
+            )
+            self.assertEqual(saida, esperado)
+
     def test_reboot_qmp_relanca_durante_instalacao(self):
         from ui.tui import run_rail_session
 
@@ -493,6 +569,11 @@ class DaParaPararAVmTests(unittest.TestCase):
         self.assertIn('elif action in ("p", "P"):', tui)
         self.assertRegex(tui, r'allowed_actions = \[[^\]]*"p"[^\]]*\]')
 
+    def test_excluir_vm_aceita_a_tecla_7_mostrada_quando_ha_uma_gpu(self):
+        tui = TUI.read_text(encoding="utf-8")
+        self.assertIn('allowed_actions = ["1", "2", "3", "4", "5", "7", "d", "D", "i", "I", "p", "P", "0"]', tui)
+        self.assertIn('elif action == "7":', tui)
+
     def test_parar_de_tentativa_educada_antes_da_forcada(self):
         """A UI mantém a parada normal e a forçada em ações separadas."""
         from core import reims_ctl
@@ -531,6 +612,111 @@ class DaParaRetomarATelaDaVmTests(unittest.TestCase):
         self.assertIn('allowed_actions.extend(["f", "F", "v", "V"])', fonte)
         self.assertIn('"tui.vm.actions.start_running" if pid_desta else "tui.vm.actions.start"', fonte)
         self.assertIn('self._visualizar_vm_interativo(vm)\n                    continue', fonte)
+
+
+class RecuperarArmazenamentoReimsCtlTests(unittest.TestCase):
+    def test_consulta_o_diretorio_registrado_pelo_reims_ctl(self):
+        from core import reims_ctl
+
+        resposta = '[{"name":"macos-tahoe","dir":"/vm/tahoe","pid":null,"state":"stopped"}]'
+        with mock.patch.object(reims_ctl, "reims_ctl_bin", return_value="/bin/reims-ctl"), \
+             mock.patch.object(
+                 reims_ctl.subprocess,
+                 "run",
+                 return_value=mock.Mock(returncode=0, stdout=resposta),
+             ) as run:
+            record = reims_ctl.vm_record("macos-tahoe")
+
+        self.assertEqual(record["dir"], "/vm/tahoe")
+        run.assert_called_once_with(
+            ["/bin/reims-ctl", "list", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+    def test_reaproveita_disco_e_opencore_nativos_da_vm_parada(self):
+        from ui import tui as tui_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "reims-ctl" / "macos-tahoe"
+            source.mkdir(parents=True)
+            (source / "disk.qcow2").write_bytes(b"disk")
+            (source / "opencore.qcow2").write_bytes(b"native ULT OpenCore")
+            (source / "OVMF_VARS.fd").write_bytes(b"vars")
+            (source / "OVMF_CODE.fd").write_bytes(b"code")
+            (source / "vm.toml").write_text(
+                'name = "macos-tahoe"\n'
+                'disk = "disk.qcow2"\n'
+                '[network]\n'
+                'enabled = true\n'
+                'mac = "52:54:00:19:8a:22"\n'
+                '[gpu]\n'
+                'driver_file = "/usr/share/vulkan/icd.d/intel_icd.json"\n'
+                'name = "Intel Iris Xe Graphics (ADL GT2)"\n'
+                '[q35]\n'
+                'opencore = "opencore.qcow2"\n'
+                'firmware_vars = "OVMF_VARS.fd"\n'
+                'firmware_code = "OVMF_CODE.fd"\n',
+                encoding="utf-8",
+            )
+            config_root = root / "config"
+            vm = _vm()
+            target = config_root / "vms" / vm.id
+
+            with mock.patch.object(tui_module, "CONFIG_DIR", config_root), \
+                 mock.patch.object(
+                     tui_module.reims_ctl, "VM_STORAGE_BASE", config_root / "vms"
+                 ), \
+                 mock.patch.object(
+                     tui_module.reims_ctl,
+                     "vm_record",
+                     return_value={"name": vm.id, "dir": str(source), "state": "stopped", "pid": None},
+                 ), \
+                 mock.patch.object(
+                     tui_module.DiskProvisioner,
+                     "provision",
+                     side_effect=AssertionError("não deve substituir o OpenCore nativo"),
+                 ) as provision:
+                recovered, reason = tui_module.recover_reimsctl_vm_storage(vm)
+
+            self.assertEqual(recovered, target)
+            self.assertIn("OpenCore nativos", reason)
+            self.assertTrue((target / "macos.qcow2").is_symlink())
+            self.assertEqual((target / "macos.qcow2").resolve(), (source / "disk.qcow2").resolve())
+            self.assertEqual((target / "OVMF_VARS.fd").read_bytes(), b"vars")
+            self.assertEqual((target / "OVMF_CODE.fd").read_bytes(), b"code")
+            self.assertTrue((target / "OpenCore.qcow2").is_symlink())
+            self.assertEqual(
+                (target / "OpenCore.qcow2").resolve(),
+                (source / "opencore.qcow2").resolve(),
+            )
+            provision.assert_not_called()
+            self.assertEqual(vm.disk_path, str(target / "macos.qcow2"))
+
+            with mock.patch.object(
+                tui_module.reims_ctl, "VM_STORAGE_BASE", config_root / "vms"
+            ):
+                tui_module.reims_ctl.write_vm_toml(vm)
+            written_toml = (target / "vm.toml").read_text(encoding="utf-8")
+            self.assertIn('driver_file = "/usr/share/vulkan/icd.d/intel_icd.json"', written_toml)
+            self.assertIn('mac = "52:54:00:19:8a:22"', written_toml)
+
+    def test_nao_reaproveita_uma_vm_reims_ctl_ativa(self):
+        from ui import tui as tui_module
+
+        vm = _vm()
+        with mock.patch.object(
+            tui_module.reims_ctl,
+            "vm_record",
+            return_value={"name": vm.id, "dir": "/tmp/nao-usar", "state": "running", "pid": 123},
+        ):
+            directory, reason = tui_module.recover_reimsctl_vm_storage(vm)
+
+        self.assertIsNone(directory)
+        self.assertIn("precisa estar parada", reason)
 
 
 # ----------------------------------------------------------- i18n coerente

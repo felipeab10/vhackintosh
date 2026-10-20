@@ -6,11 +6,52 @@ Substitui o rsync verboso por uma barra elegante com porcentagem, velocidade e t
 
 import sys
 import re
+import os
 import subprocess
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 
 console = Console()
+
+_PROGRESS_RE = re.compile(
+    r"\b(?P<percent>\d{1,3})%\s+"
+    r"(?P<speed>[\d.,]+\s*[kMGT]?B/s)\s+"
+    r"(?P<eta>\d+:\d+:\d+)"
+)
+
+
+def parse_progress_record(record: str):
+    """Parse one rsync --info=progress2 update (rsync separates updates with CR)."""
+    match = _PROGRESS_RE.search(record)
+    if not match:
+        return None
+    return int(match.group("percent")), match.group("speed").strip(), match.group("eta")
+
+
+class RsyncProgressParser:
+    """Collect progress records even when pipe reads split or join CR updates."""
+
+    def __init__(self):
+        self._buffer = ""
+
+    def feed(self, text: str):
+        self._buffer += text
+        updates = []
+        while True:
+            match = re.search(r"[\r\n]", self._buffer)
+            if match is None:
+                break
+            record = self._buffer[:match.start()]
+            self._buffer = self._buffer[match.end():]
+            parsed = parse_progress_record(record)
+            if parsed is not None:
+                updates.append(parsed)
+        return updates
+
+    def finish(self):
+        parsed = parse_progress_record(self._buffer)
+        self._buffer = ""
+        return parsed
 
 def main():
     src = sys.argv[1] if len(sys.argv) > 1 else "/"
@@ -25,7 +66,8 @@ def main():
         exclude_args.extend(["--exclude", exc])
 
     cmd = [
-        "rsync", "-aAX", "--delete", "--info=progress2", "--no-inc-recursive"
+        "rsync", "-aAX", "--delete", "--info=progress2", "--no-inc-recursive",
+        "--outbuf=none",
     ] + exclude_args + [src, dest]
 
     with Progress(
@@ -44,22 +86,23 @@ def main():
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            bufsize=0,
         )
 
-        regex = re.compile(r"(\d+)%\s+([\d\.]+[A-Za-z]+/s)\s+(\d+:\d+:\d+)")
-
+        parser = RsyncProgressParser()
         try:
-            for line in iter(process.stdout.readline, ""):
-                match = regex.search(line)
-                if match:
-                    percent = int(match.group(1))
-                    speed = match.group(2)
-                    eta = match.group(3)
+            while True:
+                chunk = os.read(process.stdout.fileno(), 4096)
+                if not chunk:
+                    break
+                for percent, speed, eta in parser.feed(chunk.decode("utf-8", errors="replace")):
                     progress.update(task, completed=percent, speed=speed, eta=f"ETA: {eta}")
-        except Exception:
-            pass
+            final_update = parser.finish()
+            if final_update:
+                percent, speed, eta = final_update
+                progress.update(task, completed=percent, speed=speed, eta=f"ETA: {eta}")
+        except OSError as exc:
+            console.print(f"[yellow]Não foi possível ler o progresso do rsync: {exc}[/yellow]")
 
         process.wait()
         if process.returncode != 0:
