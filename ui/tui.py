@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 20110)
+Total output lines: 1704
+
 """
 vHackintosh — Modern Terminal User Interface (TUI)
 Interface rica em terminal construída com Python Rich para gestão de VMs macOS.
@@ -863,18 +866,7 @@ class VMTUI:
         vcpus = IntPrompt.ask(i18n.t("tui.wizard.vcpus.prompt"), default=profile.cpu.suggested_vcpus)
 
         # 4. RAM recomendada
-        console.print(i18n.t("tui.wizard.ram.host_total", gb=profile.ram.total_gb))
-        ram_gb = IntPrompt.ask(i18n.t("tui.wizard.ram.prompt"), default=profile.ram.suggested_vm_ram_gb)
-
-        # 5. Tamanho do Disco
-        disk_size_gb = IntPrompt.ask(i18n.t("tui.wizard.disk.prompt"), default=64)
-
-        # 6. Seleção de Placa de Vídeo (somente se houver mais de 1 GPU no host)
-        gpus = GPUChecker.list_gpus()
-        selected_gpu_slot = None
-        selected_gpu_name = None
-
-        if len(gpus) > 1:
+        console.print(i18n.t("tui.wizard.ram.host_total"…110 tokens truncated…       if len(gpus) > 1:
             console.print(i18n.t("tui.gpu.detected"))
             # Pré-seleção: NÃO por fabricante. Até 19/10 o critério era
             # `vendor_name in ("NVIDIA", "AMD")`, o que pré-selecionava a RTX
@@ -1057,7 +1049,7 @@ class VMTUI:
             border_style="cyan",
         ))
         from core.updater import SystemUpdater
-        SystemUpdater.run_full_update(force=False)
+        SystemUpdater.run_vhackintosh_update()
         Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))
 
     def _menu_download_images(self) -> None:

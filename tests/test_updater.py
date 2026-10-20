@@ -51,22 +51,43 @@ def make_pair(base: Path, *, engine_sources=False):
     return {"vHackintosh": app, "reims-vgpu": engine}, (app, app_work, app_remote), (engine, engine_work, engine_remote)
 
 
-def test_full_update_builds_exact_default_checkout():
+def test_menu_update_only_updates_vhackintosh_sources():
     from unittest.mock import patch
     from core.updater import RepositoryUpdate
-    app, engine = Path("/opt/vhackintosh"), Path("/opt/reims-vgpu")
-    results = [RepositoryUpdate("vHackintosh", app, "a", "b", False),
-               RepositoryUpdate("reims-vgpu", engine, "c", "d", False)]
+    app = Path("/opt/vhackintosh")
+    result = RepositoryUpdate("vHackintosh", app, "a", "b", True)
     with patch("core.updater.os.geteuid", return_value=0), \
-         patch.object(SystemUpdater, "update_repositories", return_value=results), \
-         patch("core.reims_build.build", return_value=True) as build, \
-         patch.object(SystemUpdater, "_has_build_sources", return_value=True), \
+         patch.object(SystemUpdater, "_preflight", return_value=(result, app)), \
+         patch.object(SystemUpdater, "_apply", return_value=result) as apply, \
          patch.object(SystemUpdater, "_install_waysession") as install_waysession, \
          patch("core.i18n.t", side_effect=lambda key, **kwargs: key), \
          patch("core.updater.console.print"):
-        assert SystemUpdater.run_full_update()
-        assert build.call_args.args[0] == Path("/opt/reims-vgpu")
-        install_waysession.assert_called_once_with()
+        assert SystemUpdater.run_vhackintosh_update()
+        assert apply.call_args.args == (result, app)
+        install_waysession.assert_called_once_with(
+            source=app / "appliance/archiso/airootfs/usr/local/bin/vhackintosh-waysession"
+        )
+
+
+def test_menu_update_does_not_fetch_or_advance_reims_vgpu(base: Path):
+    from unittest.mock import patch
+
+    _, (app, app_work, _), (engine, engine_work, _) = make_pair(base)
+    for work in (app_work, engine_work):
+        (work / "source.txt").write_text("remote update\n")
+        git(work, "commit", "-am", "remote update")
+        git(work, "push")
+    engine_before = git(engine, "rev-parse", "HEAD")
+    with patch("core.updater.DEFAULT_VHACK_DIR", app), \
+         patch("core.updater.os.geteuid", return_value=0), \
+         patch.object(LocalTestUpdater, "_install_waysession"), \
+         patch("core.i18n.t", side_effect=lambda key, **kwargs: key), \
+         patch("core.updater.console.print"):
+        assert LocalTestUpdater.run_vhackintosh_update()
+
+    assert git(app, "rev-parse", "HEAD") == git(app, "rev-parse", "origin/master")
+    assert git(engine, "rev-parse", "HEAD") == engine_before
+    assert git(engine, "rev-parse", "origin/master") == engine_before
 
 
 def test_waysession_install_replaces_destination_and_sets_executable_mode(base: Path):
@@ -313,9 +334,10 @@ def test_unpopulated_qemu_submodule_clone_rejected(base: Path):
 def run():
     test_remote_validation()
     test_appliance_update_requires_root()
-    test_full_update_builds_exact_default_checkout()
+    test_menu_update_only_updates_vhackintosh_sources()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
+        test_menu_update_does_not_fetch_or_advance_reims_vgpu(root / "menu-vhack-only")
         test_fast_forward_and_idempotence(root / "ff")
         test_dirty_checkout_rejected(root / "dirty")
         test_ahead_branch_rejected(root / "ahead")

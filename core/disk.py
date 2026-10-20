@@ -18,15 +18,14 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from core.config import VMConfig, CONFIG_DIR
 from core.smbios import GenSMBIOS
-from core import reims_util
 
 console = Console()
 
 VM_STORAGE_BASE = CONFIG_DIR / "vms"
-# O template canônico vem de templates/ neste repositório (versionado): EFI
-# genérica com ReimsVgpu habilitada para Tahoe 26. Não implica que runtime e host
-# estejam na configuração GPU já testada (ver templates/README.md). A ISO o instala
-# em /opt/vhackintosh/templates; ~/.config é o override do usuário.
+# O template canônico é a EFI completa baseada no Ultimate-macOS-KVM, versionada
+# neste repositório e preparada com ReimsVgpu para Tahoe 26. Novas VMs partem
+# desta imagem e recebem SMBIOS próprio; não substitua por uma EFI mínima gerada
+# pelo reims-util. Ver templates/README.md para limites de compatibilidade.
 DEFAULT_OPENCORE_TEMPLATES = [
     Path("/opt/vhackintosh/templates/OpenCore.qcow2"),
     Path(__file__).resolve().parent.parent / "templates" / "OpenCore.qcow2",
@@ -135,41 +134,24 @@ class DiskProvisioner:
             # no diretório da VM — ver core/reims_ctl.py).
             cls.ensure_ovmf_code(vm_dir)
 
-            # 4. Geração do OpenCore (reims-util preferencial, fallback para template + guestfish)
+            # 4. Novas VMs devem partir do template OpenCore versionado, que
+            # preserva os drivers e ajustes do Ultimate-macOS-KVM/Reims. O
+            # reims-util produz uma EFI mínima própria e não é intercambiável
+            # com este template. Injete somente a identidade SMBIOS da VM.
             if new_opencore:
-                reims_util_ready = reims_util.is_available()
-                generated = False
-                if reims_util_ready:
-                    progress.update(task2, description="Gerando bootloader OpenCore EFI via reims-util...")
-                    try:
-                        generated = reims_util.generate_opencore(
-                            opencore_path,
-                            vm.smbios,
-                            no_ovmf=True,
-                        )
-                    except Exception:
-                        generated = False
-
-                if not generated:
-                    template_oc = cls.get_template_opencore_path()
-                    if not template_oc:
-                        raise FileNotFoundError("Imagem base OpenCore.qcow2 não encontrada e reims-util indisponível.")
-                    if not shutil.which("guestfish"):
-                        opencore_path.unlink(missing_ok=True)
-                        raise RuntimeError("guestfish ou reims-util é necessário para provisionar o OpenCore EFI com segurança")
-                    # Dizer POR QUE caiu no fallback: sem isto a TUI mostra
-                    # "via guestfish" e ninguém sabe que o binário nativo falta.
-                    if not reims_util_ready:
-                        motive = f"reims-util ausente (procurei em {reims_util.search_summary()})"
-                    else:
-                        motive = f"reims-util falhou (veja {reims_util.LOG_FILE})"
-                    shutil.copyfile(template_oc, opencore_path)
-                    try:
-                        progress.update(task2, description=f"[yellow]{motive}: aplicando identidade SMBIOS à EFI via guestfish...[/yellow]")
-                        cls._inject_smbios_to_opencore_qcow2(opencore_path, vm)
-                    except Exception:
-                        opencore_path.unlink(missing_ok=True)
-                        raise
+                template_oc = cls.get_template_opencore_path()
+                if not template_oc:
+                    raise FileNotFoundError("Imagem base OpenCore.qcow2 do template Ultimate-macOS-KVM não encontrada.")
+                if not shutil.which("guestfish"):
+                    opencore_path.unlink(missing_ok=True)
+                    raise RuntimeError("guestfish é necessário para provisionar com segurança a EFI OpenCore do template")
+                shutil.copyfile(template_oc, opencore_path)
+                try:
+                    progress.update(task2, description="Aplicando SMBIOS exclusivo à EFI OpenCore do template...")
+                    cls._inject_smbios_to_opencore_qcow2(opencore_path, vm)
+                except Exception:
+                    opencore_path.unlink(missing_ok=True)
+                    raise
             progress.update(task2, description="[bold green]✔ OpenCore EFI pronto para boot![/bold green]")
 
         # 5. Link/cópia do instalador se fornecido
@@ -220,27 +202,21 @@ class DiskProvisioner:
             check = subprocess.run(["qemu-img", "check", str(original_image)], capture_output=True, text=True)
             if check.returncode:
                 raise RuntimeError("OpenCore image failed integrity check before injection")
+        if not original_image.is_file():
+            raise FileNotFoundError(f"OpenCore image not found: {original_image}")
+        if not shutil.which("guestfish"):
+            raise RuntimeError("guestfish é necessário para atualizar a configuração da EFI OpenCore")
+
         fd, staged_name = tempfile.mkstemp(prefix=f".{original_image.name}.", suffix=".staged", dir=original_image.parent)
         os.close(fd)
         staged_image = Path(staged_name)
         backup_name = None
         try:
-            native_generated = False
-            if reims_util.is_available():
-                native_generated = reims_util.generate_opencore(
-                    staged_image,
-                    vm.smbios,
-                    no_ovmf=True,
-                    timeout=5 if show_picker else None,
-                )
-
-            if not native_generated:
-                if not original_image.exists():
-                    raise FileNotFoundError(f"OpenCore image not found: {original_image}")
-                if not shutil.which("guestfish"):
-                    raise RuntimeError("guestfish ou reims-util é necessário para atualizar o OpenCore EFI")
-                shutil.copy2(original_image, staged_image)
-                cls._inject_opencore_config_in_place(staged_image, vm, show_picker)
+            # Preserve the full template/VM EFI (drivers, resources and kexts).
+            # reims-util can make a minimal replacement image; using it here
+            # silently discarded the Ultimate-macOS-KVM configuration.
+            shutil.copy2(original_image, staged_image)
+            cls._inject_opencore_config_in_place(staged_image, vm, show_picker)
 
             backup_fd, backup_name = tempfile.mkstemp(prefix=f".{original_image.name}.", suffix=".backup", dir=original_image.parent)
             os.close(backup_fd)

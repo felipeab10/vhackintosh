@@ -260,60 +260,42 @@ class SystemUpdater:
             raise UpdateError("update", str(exc)) from exc
 
     @classmethod
-    def run_full_update(cls, force: bool = False) -> bool:
+    def run_vhackintosh_update(cls) -> bool:
+        """Update only the appliance's vHackintosh checkout.
+
+        The reims-vgpu has its own release updater in the TUI. Keeping this
+        action scoped to vHackintosh avoids fetching/building the GPU engine
+        when the user only wants to refresh the appliance source.
+        """
         from core import i18n
-        from core.reims_build import build, tail_log
 
         console.print(f"[bold white]{i18n.t('tui.update.title')}[/bold white]")
         if os.geteuid() != 0:
             console.print(i18n.t("tui.update.not_root"))
             return False
         try:
-            results = cls.update_repositories()
+            path = DEFAULT_VHACK_DIR
+            update, target = cls._preflight("vHackintosh", path, VHACK_URL)
+            result = cls._apply(update, target)
         except Exception as exc:
             repo = getattr(exc, "repo", "update")
             console.print(i18n.t("tui.update.error", repo=repo, error=str(exc)))
-            console.print(i18n.t("tui.update.partial"))
+            console.print(i18n.t("tui.update.retry"))
             return False
-        for result in results:
-            status = i18n.t("tui.update.repo_updated") if result.changed else i18n.t("tui.update.repo_unchanged")
-            console.print(i18n.t("tui.update.repo_status", repo=result.name, status=status,
-                                 before=result.before[:12], after=result.after[:12]))
+        status = i18n.t("tui.update.repo_updated") if result.changed else i18n.t("tui.update.repo_unchanged")
+        console.print(i18n.t("tui.update.repo_status", repo=result.name, status=status,
+                             before=result.before[:12], after=result.after[:12]))
         # The source updater can advance vHackintosh while this process still has
         # the old Python modules loaded. Always flag that runtime state explicitly.
         console.print(i18n.t("tui.update.restart"))
         try:
-            cls._install_waysession()
+            source = path / "appliance/archiso/airootfs/usr/local/bin/vhackintosh-waysession"
+            cls._install_waysession(source=source)
         except UpdateError as exc:
             console.print(i18n.t("tui.update.error", repo=exc.repo, error=str(exc)))
             console.print(i18n.t("tui.update.failed"))
             console.print(i18n.t("tui.update.retry"))
             return False
         console.print(i18n.t("tui.update.waysession"))
-        # Updates are applied to the appliance checkouts under /opt. Rebuild
-        # that exact tree; never fall back to a developer's home checkout.
-        reims_dir = DEFAULT_REIMS_DIR
-        if not cls._has_build_sources(reims_dir):
-            console.print(i18n.t("tui.update.no_source", path=DEFAULT_REIMS_DIR))
-            return False
-        console.print(i18n.t("tui.update.build_start"))
-        try:
-            def on_start(name: str, _estimate: float) -> None:
-                console.print(i18n.t("tui.update.build_step", stage=name))
-
-            if not build(reims_dir, on_start=on_start):
-                console.print(i18n.t("tui.update.failed"))
-                for log_name in ("build-rom.log", "build-qemu-reims.log"):
-                    snippet = tail_log(log_name, lines=12)
-                    if snippet:
-                        console.print(i18n.t("tui.update.log_header", name=log_name))
-                        console.print(snippet)
-                console.print(i18n.t("tui.update.retry"))
-                return False
-        except Exception as exc:
-            console.print(i18n.t("tui.update.error", repo="rebuild", error=str(exc)))
-            console.print(i18n.t("tui.update.failed"))
-            console.print(i18n.t("tui.update.retry"))
-            return False
         console.print(i18n.t("tui.update.success"))
         return True
