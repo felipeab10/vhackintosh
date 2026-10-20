@@ -17,6 +17,11 @@ REIMS_URL = "https://github.com/felipeab10/reims-vgpu.git"
 VHACK_URL = "https://github.com/felipeab10/vhackintosh.git"
 DEFAULT_REIMS_DIR = Path("/opt/reims-vgpu")
 DEFAULT_VHACK_DIR = Path("/opt/vhackintosh")
+WAYSESSION_SOURCE = (
+    DEFAULT_VHACK_DIR / "appliance" / "archiso" / "airootfs" / "usr" / "local" / "bin"
+    / "vhackintosh-waysession"
+)
+WAYSESSION_DEST = Path("/usr/local/bin/vhackintosh-waysession")
 
 
 @dataclass
@@ -139,6 +144,31 @@ class SystemUpdater:
         except Exception as exc:
             raise UpdateError(update.name, str(exc)) from exc
 
+    @staticmethod
+    def _install_waysession(source: Path = WAYSESSION_SOURCE,
+                            destination: Path = WAYSESSION_DEST) -> None:
+        """Promote the kiosk launcher from the updated checkout atomically."""
+        if not source.is_file():
+            raise UpdateError("vHackintosh", f"vhackintosh-waysession source missing: {source}")
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp_name = tempfile.mkstemp(
+                prefix=f".{destination.name}.", dir=destination.parent
+            )
+            temp_path = Path(temp_name)
+            try:
+                with os.fdopen(fd, "wb") as target, source.open("rb") as original:
+                    shutil.copyfileobj(original, target)
+                    target.flush()
+                    os.fsync(target.fileno())
+                temp_path.chmod(0o755)
+                os.replace(temp_path, destination)
+            except Exception:
+                temp_path.unlink(missing_ok=True)
+                raise
+        except Exception as exc:
+            raise UpdateError("vHackintosh", f"could not install vhackintosh-waysession: {exc}") from exc
+
     @classmethod
     def _clone_staged(cls, path: Path, clone_fn: Callable[[str, Path], None]) -> Path:
         if not path.is_dir() or not any(path.iterdir()):
@@ -252,6 +282,14 @@ class SystemUpdater:
         # The source updater can advance vHackintosh while this process still has
         # the old Python modules loaded. Always flag that runtime state explicitly.
         console.print(i18n.t("tui.update.restart"))
+        try:
+            cls._install_waysession()
+        except UpdateError as exc:
+            console.print(i18n.t("tui.update.error", repo=exc.repo, error=str(exc)))
+            console.print(i18n.t("tui.update.failed"))
+            console.print(i18n.t("tui.update.retry"))
+            return False
+        console.print(i18n.t("tui.update.waysession"))
         # Updates are applied to the appliance checkouts under /opt. Rebuild
         # that exact tree; never fall back to a developer's home checkout.
         reims_dir = DEFAULT_REIMS_DIR

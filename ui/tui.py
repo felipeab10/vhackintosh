@@ -27,6 +27,7 @@ from core.reims_build import (
     build as build_reims_vgpu,
     ensure_executable_bits,
     find_reims_dir,
+    install_prebuilt,
 )
 from core import reims_ctl
 from core.hardware import HardwareAdvisor
@@ -240,13 +241,14 @@ class VMTUI:
                 console.print(i18n.t("tui.menu.create_vm"))
             console.print(i18n.t("tui.menu.diagnostics"))
             console.print(i18n.t("tui.menu.update_upstream"))
+            console.print(i18n.t("tui.menu.reims_release"))
             console.print(i18n.t("tui.menu.download_images"))
             console.print(i18n.t("tui.menu.ab_test"))
             console.print(i18n.t("tui.menu.build_iso"))
             console.print(i18n.t("tui.menu.smbios_diagnostics"))
             console.print(i18n.t("tui.menu.exit"))
 
-            choices = ["1", "2", "3", "4", "5", "6", "7", "9", "0"]
+            choices = ["1", "2", "3", "4", "5", "6", "7", "9", "0", "A", "a"]
             if installer_available:
                 choices.extend(["I", "i", "8"])
 
@@ -275,6 +277,8 @@ class VMTUI:
                 self._view_hardware_diagnostics()
             elif choice == "4":
                 self._update_upstream()
+            elif choice in ("A", "a"):
+                self._menu_reims_release()
             elif choice == "9":
                 self._view_smbios_diagnostics(vms)
             elif choice == "5":
@@ -542,6 +546,58 @@ class VMTUI:
 
         Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))
 
+    def _parar_vm_interativo(
+        self, vm: VMConfig, pid: int, *, force: bool = False
+    ) -> None:
+        """Encerra a VM pela TUI. Até 19/10 não havia como: só o `reims-ctl`
+        cru parava uma VM, e uma VM morta ficava presa como "already runs".
+
+        A ação normal pede ao macOS para desligar. A ação forçada é separada,
+        pede confirmação explícita e corta o processo sem esperar pelo convidado.
+        """
+        from core import reims_ctl
+
+        if not pid:
+            # Chegou aqui por chamada direta, não pela tela (que só oferece a
+            # opção quando há VM rodando). Não há o que parar.
+            console.print(i18n.t("tui.vm.actions.stop_none"))
+            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+            return
+
+        confirm_key = (
+            "tui.vm.actions.stop_force_confirm" if force
+            else "tui.vm.actions.stop_confirm"
+        )
+        if not Confirm.ask(
+            i18n.t(confirm_key, name=vm.name), default=not force
+        ):
+            return
+
+        if force:
+            console.print(i18n.t("tui.vm.actions.stop_force"))
+        ok, msg = reims_ctl.parar_vm(vm, force=force)
+        if ok:
+            console.print(i18n.t("tui.vm.actions.stop_done", msg=msg))
+        else:
+            console.print(i18n.t("tui.vm.actions.stop_fail", msg=msg))
+            if not force:
+                console.print(i18n.t("tui.vm.actions.stop_graceful_failed_hint"))
+
+        Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+
+    def _visualizar_vm_interativo(self, vm: VMConfig) -> None:
+        """Reconecta à tela de uma VM ativa sem tentar iniciá-la outra vez."""
+        if not sys.stdin.isatty():
+            console.print(i18n.t(
+                "tui.vm.actions.view_error",
+                error="o viewer precisa de um terminal interativo",
+            ))
+            return
+        ok, error = reims_ctl.visualizar_vm(vm)
+        if not ok:
+            console.print(i18n.t("tui.vm.actions.view_error", error=error))
+            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+
     def _menu_manage_vms(self, vms: list[VMConfig]) -> None:
         if not vms:
             console.print(i18n.t("tui.vm.manage.none"))
@@ -597,6 +653,24 @@ class VMTUI:
             else:
                 details_text.append(i18n.t("tui.vm.details.sync_off"), style="bold yellow")
 
+            # Estado de execução. Antes a TUI não dizia se a VM estava rodando;
+            # a única pista era o "already runs (pid N)" que o `start` devolvia
+            # depois de o operador já ter pedido para iniciar. Quem sabe o
+            # estado é o reims-ctl (o mesmo `runtime::pid` que barra o start).
+            rodando_agora = {}
+            try:
+                from core.reims_ctl import vms_rodando
+
+                rodando_agora = vms_rodando()
+            except Exception:  # noqa: BLE001 — estado é informativo, não bloqueia
+                rodando_agora = {}
+            pid_desta = rodando_agora.get(vm.id)
+            details_text.append(i18n.t("tui.vm.details.run_state"), style="bold")
+            if pid_desta:
+                details_text.append(i18n.t("tui.vm.actions.state_running", pid=pid_desta) + "\n")
+            else:
+                details_text.append(i18n.t("tui.vm.actions.state_stopped") + "\n")
+
             details_text.append("── OpenCore SMBIOS ──\n", style="dim cyan")
             details_text.append(i18n.t("tui.vm.details.smbios_model", value=vm.smbios.model), style="dim")
             # Hardware-like identity values are intentionally redacted in the UI/logs.
@@ -611,7 +685,9 @@ class VMTUI:
             has_multiple_gpus = len(gpus) > 1
 
             console.print(i18n.t("tui.vm.actions.title"))
-            console.print(i18n.t("tui.vm.actions.start"))
+            console.print(
+                i18n.t("tui.vm.actions.start_running" if pid_desta else "tui.vm.actions.start")
+            )
             console.print(i18n.t("tui.vm.actions.toggle_autostart"))
             console.print(i18n.t("tui.vm.actions.toggle_picker"))
             console.print(i18n.t("tui.vm.actions.adjust_resources"))
@@ -621,16 +697,34 @@ class VMTUI:
             if has_multiple_gpus:
                 console.print(i18n.t("tui.vm.actions.change_gpu"))
                 console.print(i18n.t("tui.vm.actions.delete"))
-                allowed_actions = ["1", "2", "3", "4", "5", "6", "7", "d", "D", "i", "I", "0"]
+                allowed_actions = ["1", "2", "3", "4", "5", "6", "7", "d", "D", "i", "I", "p", "P", "0"]
             else:
                 console.print(i18n.t("tui.vm.actions.delete"))
-                allowed_actions = ["1", "2", "3", "4", "5", "6", "d", "D", "i", "I", "0"]
+                allowed_actions = ["1", "2", "3", "4", "5", "6", "d", "D", "i", "I", "p", "P", "0"]
+            # Só oferece parar se há o que parar; sem isso a opção falharia
+            # sempre, e o operador não saberia por quê.
+            if pid_desta:
+                console.print(i18n.t("tui.vm.actions.stop"))
+                console.print(i18n.t("tui.vm.actions.stop_force_option"))
+                console.print(i18n.t("tui.vm.actions.view"))
+                allowed_actions.extend(["f", "F", "v", "V"])
             console.print(i18n.t("tui.vm.actions.back"))
 
             action = Prompt.ask(i18n.t("tui.vm.actions.prompt"), choices=allowed_actions, default="1")
 
             if action == "1":
+                if pid_desta:
+                    self._visualizar_vm_interativo(vm)
+                    continue
                 self._launch_vm(vm)
+                break
+            elif action in ("v", "V"):
+                self._visualizar_vm_interativo(vm)
+            elif action in ("p", "P"):
+                self._parar_vm_interativo(vm, pid_desta, force=False)
+                break
+            elif action in ("f", "F"):
+                self._parar_vm_interativo(vm, pid_desta, force=True)
                 break
             elif action in ("d", "D"):
                 self._menu_usb_devices(vm)
@@ -782,7 +876,25 @@ class VMTUI:
 
         if len(gpus) > 1:
             console.print(i18n.t("tui.gpu.detected"))
-            default_choice = "1"
+            # Pré-seleção: NÃO por fabricante. Até 19/10 o critério era
+            # `vendor_name in ("NVIDIA", "AMD")`, o que pré-selecionava a RTX
+            # 3050 por ela ser NVIDIA — e a VM abriu em tela preta, enquanto a
+            # Iris Xe funcionava. Ser discreta não é prova de funcionar.
+            #
+            # Critério medido: a GPU que o Vulkan enumera (via `reims-ctl gpus`).
+            # É o mesmo dado que o reims-ctl usa. Se mais de uma serve — o caso
+            # deste host, onde as duas são enumeradas — não há base para
+            # preferir, então a escolha fica sem preferência declarada e o
+            # operador decide. Sem reims-ctl não afirmamos nada.
+            servem = []
+            try:
+                from core.gpu import vulkan_dirige
+
+                servem = [i for i, g in enumerate(gpus, start=1) if vulkan_dirige(g)]
+            except Exception:  # noqa: BLE001 — pré-seleção nunca impede a criação
+                servem = []
+
+            default_choice = str(servem[0]) if len(servem) == 1 else "1"
             for idx, g in enumerate(gpus, start=1):
                 if g.vendor_name == "AMD":
                     tipo = i18n.t("tui.gpu.type.dedicated_apple")
@@ -791,9 +903,14 @@ class VMTUI:
                 else:
                     tipo = i18n.t("tui.gpu.type.integrated")
 
-                if g.vendor_name in ["NVIDIA", "AMD"]:
-                    default_choice = str(idx)
                 console.print(i18n.t("tui.gpu.row", idx=idx, vendor=g.vendor_name, device=g.device_name, slot=g.pci_slot, tipo=tipo))
+
+            if len(servem) == 1:
+                console.print(i18n.t("tui.gpu.only_one_vulkan", idx=servem[0]))
+            elif len(servem) > 1:
+                console.print(i18n.t("tui.gpu.many_vulkan"))
+            else:
+                console.print(i18n.t("tui.gpu.no_vulkan_known"))
 
             gpu_choices = [str(i) for i in range(1, len(gpus) + 1)]
             chosen_idx = Prompt.ask(
@@ -1090,7 +1207,16 @@ class VMTUI:
             installer_path = (
                 installer_img if (installer_img and policy.attach_installer) else None
             )
-            reims_ctl.write_vm_toml(vm, installer=installer_path)
+            try:
+                reims_ctl.write_vm_toml(vm, installer=installer_path)
+            except reims_ctl.GPUSelectionError as exc:
+                console.print(Panel(
+                    i18n.t("tui.launch.gpu_selection_failed", error=exc),
+                    border_style="red",
+                ))
+                if sys.stdin.isatty():
+                    Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+                return
             reims_ctl.ensure_registered(vm)
 
             ctl_bin = reims_ctl.reims_ctl_bin()
@@ -1227,40 +1353,40 @@ class VMTUI:
             console.print(i18n.t("tui.post.kept_installing"))
 
     def _apply_gpu_environment(self, vm: VMConfig, env_vars: dict) -> None:
-        if not vm.selected_gpu_name and not vm.selected_gpu:
-            return
-        gpu_name_upper = (vm.selected_gpu_name or "").upper()
-        if "NVIDIA" in gpu_name_upper:
-            env_vars["__NV_PRIME_RENDER_OFFLOAD"] = "1"
-            env_vars["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
-            env_vars["__VK_LAYER_NV_optimus"] = "NVIDIA_only"
-            env_vars["DRI_PRIME"] = "1"
-            if os.path.exists("/usr/share/vulkan/icd.d/nvidia_icd.json"):
-                env_vars["VK_DRIVER_FILES"] = "/usr/share/vulkan/icd.d/nvidia_icd.json"
-        elif "INTEL" in gpu_name_upper:
-            env_vars["DRI_PRIME"] = "0"
-            for intel_icd in [
-                "/usr/share/vulkan/icd.d/intel_icd.x86_64.json",
-                "/usr/share/vulkan/icd.d/intel_hasvk_icd.x86_64.json",
-            ]:
-                if os.path.exists(intel_icd):
-                    env_vars["VK_DRIVER_FILES"] = intel_icd
-                    break
-        elif "AMD" in gpu_name_upper:
-            env_vars["DRI_PRIME"] = "1"
-            if os.path.exists("/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"):
-                env_vars["VK_DRIVER_FILES"] = "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"
+        """Nada a fazer: o ICD da GPU é do `reims-ctl`, não deste lugar.
 
-        if vm.selected_gpu:
-            env_vars["REIMS_VGPU_PCI_SLOT"] = vm.selected_gpu
+        Esta função já escreveu `VK_DRIVER_FILES` escolhendo por *nome de
+        fabricante* (`"NVIDIA" in gpu_name_upper`) e procurando os manifestos
+        em `intel_icd.x86_64.json` / `radeon_icd.x86_64.json` — sufixo de
+        outra distribuição, que não existe nem aqui nem no appliance. Dois
+        defeitos de uma vez: a Intel e a AMD nunca recebiam ICD nenhum, e o
+        critério era o fabricante em vez da placa.
 
-        # `REIMS_VGPU_DISPLAY` não é gravada aqui, de propósito. Quem lê essa
-        # variável é só o boot-x86.sh, e ele já tem por default exatamente o
-        # valor que este lugar costumava escrever (gtk,show-menubar=off,
-        # zoom-to-fit=on) — gravá-lo aqui tinha um único efeito real: impedir o
-        # `${REIMS_VGPU_DISPLAY:-none}` do caso em que a janela do reims-vgpu
-        # apresenta o frame. O resultado era `-display gtk` E a janela winit na
-        # mesma boot.
+        E não faltava só isso: a variável era escrita *aqui* e *também* no
+        script do QEMU que o `reims-ctl` monta (a seção `[gpu]` do vm.toml
+        vira `VK_DRIVER_FILES`/`VK_ICD_FILENAMES` no `exec`, ver
+        `crates/reims-ctl/src/qemu.rs`). Duas fontes para o mesmo fato: quando
+        concordavam ninguém notava, e quando discordavam quem decidia era o
+        `reims-ctl` — que lê a escolha medida no Vulkan, não o nome da placa.
+
+        As demais variáveis que saíram daqui eram inócuas ou pior:
+        `__NV_PRIME_RENDER_OFFLOAD`, `__GLX_VENDOR_LIBRARY_NAME` e
+        `__VK_LAYER_NV_optimus` são do mundo GLX/X11, e o reims-vgpu fala
+        Vulkan direto; `DRI_PRIME` é do Mesa; e `REIMS_VGPU_PCI_SLOT` não é
+        lida por ninguém, nem no reims-vgpu nem aqui.
+
+        O que sobra é o que sempre bastou: `write_vm_toml` grava a escolha na
+        seção `[gpu]`, e o `reims-ctl start` a aplica ao QEMU. Este método
+        fica existindo para o chamador não precisar saber disso.
+
+        `REIMS_VGPU_DISPLAY` também não é gravada aqui, de propósito: quem lê
+        essa variável é só o boot-x86.sh, e ele já tem por default exatamente
+        o valor que este lugar costumava escrever (gtk,show-menubar=off,
+        zoom-to-fit=on) — gravá-lo aqui tinha um único efeito real: impedir o
+        `${REIMS_VGPU_DISPLAY:-none}` do caso em que a janela do reims-vgpu
+        apresenta o frame. O resultado era `-display gtk` E a janela winit na
+        mesma boot.
+        """
 
     # A janela do reims-vgpu (winit) precisa de uma conexão de display para
     # abrir. No appliance a TUI sobe pelo profile.d numa sessão TTY (autologin
@@ -1316,7 +1442,20 @@ class VMTUI:
             pass
 
         if not state.sources_present:
-            # Árvore só com binário (ISO de release): nada a compilar.
+            # Árvore só com binário (ISO de release): nada a compilar, mas o
+            # binário empacotado ainda **não** está onde a VM o executa. O
+            # prefixo do runtime (`qemu/current`, que o `reims_ctl` procura) é
+            # populado aqui, na primeira vez que se lança uma VM; a partir daí é
+            # idempotente e não recopia a árvore. Trocar de compilação é o item
+            # "A" do menu, que usa esta mesma função.
+            with console.status(i18n.t("tui.release.installing")):
+                pronto = install_prebuilt(state.reims_dir)
+            if not pronto:
+                return False
+            # O `state` acima foi avaliado ANTES da instalação: sem reavaliar, a
+            # VM seria recusada — ou pior, lançada com o binário de antes — mesmo
+            # com a compilação já no lugar.
+            state = evaluate_reims_build(explicit=reims_dir)
             return binary_present()
 
         if not state.needs_build:
@@ -1399,6 +1538,125 @@ class VMTUI:
 
         console.print(i18n.t("tui.build.success"))
         return True
+
+    def _menu_reims_release(self) -> None:
+        """Item "A": troca o reims-vgpu por uma release mais nova do fork.
+
+        É o caminho pré-compilado: a ISO nasce com o binário de uma release e
+        aqui ele é substituído por um mais novo **sem recompilar nada**. O
+        "atualizar as fontes e recompilar" continua no item 4, para quem tem as
+        fontes.
+
+        O download cai no diretório do reims-vgpu e, em seguida, `install_prebuilt`
+        copia a árvore para o prefixo que a VM executa
+        (`$XDG_DATA_HOME/reims-ctl/qemu/<tag>` + o symlink `current`), junto com o
+        motor `reims-ctl` do bundle. **Esse segundo passo é o que faz o download
+        virar a compilação do próximo lançamento** — sem ele a release era baixada
+        e a VM continuava na compilação antiga.
+
+        Nada aqui é fatal: falha de rede, API do GitHub fora do ar ou release sem
+        o asset apenas avisam.
+        """
+        try:
+            from core.reims_release import (
+                DEFAULT_REIMS_DIR,
+                REIMS_REPO,
+                ReleaseError,
+                current_release,
+                latest_release,
+                update_from_release,
+                vulkan_runtime_ok,
+            )
+        except ImportError:  # appliance sem o módulo (ISO antiga)
+            console.print(
+                i18n.t("tui.release.check_failed", error="core.reims_release ausente")
+            )
+            return
+
+        # `find_reims_dir` já reconhece tanto o checkout de fontes quanto o
+        # payload pré-compilado que a ISO instala em /opt/reims-vgpu, então o
+        # fallback aqui só cobre o caso legítimo de "ainda não existe nada" —
+        # e é para lá que a instalação grava. Ele NÃO pode ser a única coisa
+        # que faz o menu enxergar uma instalação: enquanto era, o menu dizia
+        # "instalado: v1.2.0" e o lançamento da VM dizia "sem diretório do
+        # reims-vgpu" na mesma sessão, porque só o menu tinha o fallback.
+        reims_dir = find_reims_dir() or DEFAULT_REIMS_DIR
+
+        console.clear()
+        console.print(render_banner())
+        console.print(i18n.t("tui.release.menu_title"))
+        console.print(i18n.t("tui.release.menu_desc", repo=REIMS_REPO))
+
+        try:
+            installed = current_release(reims_dir) or i18n.t("tui.release.unknown")
+
+            ok, message = vulkan_runtime_ok()
+            if not ok:
+                # Atualizar o binário não adianta se o host não tem Vulkan
+                # utilizável — mas o aviso não impede a troca: o motivo de estar
+                # aqui pode ser justamente testar uma compilação mais nova.
+                console.print(f"[yellow]{message}[/yellow]")
+
+            console.print()
+            if not Confirm.ask(
+                i18n.t("tui.release.confirm_check", installed=installed), default=False
+            ):
+                console.print(i18n.t("tui.release.skipped"))
+                return
+
+            try:
+                with console.status(i18n.t("tui.release.checking")):
+                    newest = latest_release()
+            except ReleaseError as exc:
+                console.print(i18n.t("tui.release.check_failed", error=str(exc)))
+                return
+
+            if newest is None:
+                console.print(i18n.t("tui.release.none"))
+                return
+            if newest.tag == installed:
+                console.print(i18n.t("tui.release.up_to_date", tag=installed))
+                return
+
+            console.print(Panel(
+                i18n.t("tui.release.available", installed=installed, tag=newest.tag),
+                border_style="cyan",
+            ))
+            if not Confirm.ask(
+                i18n.t("tui.release.confirm_update", tag=newest.tag), default=True
+            ):
+                console.print(i18n.t("tui.release.declined"))
+                return
+
+            try:
+                with console.status(i18n.t("tui.release.downloading", tag=newest.tag)):
+                    result = update_from_release(reims_dir=reims_dir, tag=newest.tag)
+            except ReleaseError as exc:
+                console.print(i18n.t("tui.release.update_failed", error=str(exc)))
+                return
+
+            if not result.ok:
+                console.print(i18n.t("tui.release.update_failed", error=result.message))
+                return
+            if not result.changed:
+                console.print(i18n.t("tui.release.up_to_date", tag=installed))
+                return
+
+            console.print(i18n.t("tui.release.updated", tag=newest.tag))
+
+            # Levar a árvore baixada para o prefixo que a VM executa, com o motor.
+            with console.status(i18n.t("tui.release.installing")):
+                pronto = install_prebuilt(reims_dir)
+            if not pronto:
+                console.print(i18n.t("tui.release.install_failed"))
+                return
+
+            console.print(i18n.t("tui.release.installed_ok", tag=newest.tag))
+            console.print(i18n.t("tui.release.restart_hint"))
+            console.print(i18n.t("tui.release.session_only"))
+        finally:
+            # Pausa no estilo da casa: o laço principal limpa a tela na volta.
+            Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))
 
     def _menu_build_iso(self) -> None:
         console.clear()

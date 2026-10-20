@@ -47,13 +47,46 @@ def cpu_flags_str() -> str:
 VM_STORAGE_BASE = CONFIG_DIR / "vms"
 
 
+class GPUSelectionError(ValueError):
+    """A GPU explicitamente escolhida não pôde ser mapeada a um ICD Vulkan."""
+
+
 def reims_ctl_bin() -> Optional[str]:
-    """Resolve o binário do runtime ou a instalação padrão do appliance."""
-    found = __import__("shutil").which("reims-ctl")
-    if found:
-        return found
-    candidates = [Path(os.path.expanduser("~/.cargo/bin/reims-ctl")), Path("/root/.cargo/bin/reims-ctl")]
-    return next((str(path) for path in candidates if path.is_file()), None)
+    """Resolve o binário do runtime ou a instalação padrão do appliance.
+
+    A ORDEM importa. O motor instalado pela release em `~/.cargo/bin` é o que
+    casa com o QEMU que a MESMA release instalou, então ele tem precedência
+    sobre um `reims-ctl` qualquer achado no PATH.
+
+    O contrário (PATH primeiro) é um bug de verdade: bastava existir um
+    `reims-ctl` antigo em /usr/local/bin para o appliance ignorar o motor que
+    acabara de instalar e subir a VM com o antigo — o oposto do que "Iniciar VM
+    deve usar a compilação atual" promete. Foi medido: com um motor velho no
+    PATH, a resolução devolvia o velho mesmo com o novo já instalado.
+
+    O PATH continua sendo considerado, mas DEPOIS, para não quebrar quem tem o
+    motor instalado por fora (ex.: `cargo install` manual num prefixo próprio).
+    """
+    def utilizavel(caminho: Path) -> bool:
+        # `is_file()` LEVANTA PermissionError quando o caminho está sob um
+        # diretório sem permissão de travessia — é o caso de /root/.cargo/bin
+        # para quem não é root. Sem este `except`, um usuário comum receberia
+        # uma exceção no lugar do fallback.
+        try:
+            return caminho.is_file() and os.access(caminho, os.X_OK)
+        except OSError:
+            return False
+
+    for candidato in (
+        Path(os.path.expanduser("~/.cargo/bin/reims-ctl")),
+        # Como root o `~` é /root, mas o appliance já rodou com HOME
+        # diferente: mantém o caminho explícito para não depender do
+        # expanduser nem de o usuário conseguir atravessar o diretório.
+        Path("/root/.cargo/bin/reims-ctl"),
+    ):
+        if utilizavel(candidato):
+            return str(candidato)
+    return __import__("shutil").which("reims-ctl")
 
 
 # A janela do reims-vgpu (winit) fala Wayland direto: sem conexão de display ela
@@ -145,6 +178,122 @@ def _random_mac() -> str:
     return "52:54:00:" + ":".join(f"{b:02x}" for b in secrets.token_bytes(3))
 
 
+def _gpus_do_reims_ctl() -> list:
+    """As GPUs que o reims-ctl enumera: lista de dicts com `vendor_device`,
+    `icd`, `name` e `kind`, na ordem de preferência dele.
+
+    O reims-ctl enumera as GPUs de verdade, subindo um probe Vulkan com
+    `VK_DRIVER_FILES` apontado para cada manifest ICD. Reproduzir isso aqui
+    seria pior: num host com dois manifests Intel (o `intel_icd.json` do Alder
+    Lake e o `intel_hasvk_icd.json`, que é Haswell), casar por nome de arquivo
+    escolhe o errado — medido. Então perguntamos a quem já sabe.
+
+    A saída humana tem a forma:
+        By default the library takes the first discrete GPU, ...
+         1. NVIDIA GeForce RTX 3050 Laptop GPU  [10de:25e2]  /usr/.../nvidia_icd.json
+         2. Intel(R) Iris(R) Xe Graphics (ADL GT2)  [8086:46a6]  /usr/.../intel_icd.json
+
+    A ordem da lista É significativa: é a ordem em que o reims-ctl escolheria,
+    e é o que permite dizer qual GPU ele usaria sem `[gpu]` no TOML.
+    """
+    binario = reims_ctl_bin()
+    if not binario:
+        return []
+    try:
+        proc = subprocess.run(
+            [str(binario), "gpus"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    achados = []
+    for linha in (proc.stdout or "").splitlines():
+        # " 1. NVIDIA GeForce RTX 3050 Laptop GPU  [10de:25e2]  /caminho/icd.json"
+        m = re.match(
+            r"\s*\d+\.\s+(?P<name>.+?)\s+\[(?P<vd>[0-9a-fA-F]{4}:[0-9a-fA-F]{4})\]\s+(?P<icd>\S+\.json)\s*$",
+            linha,
+        )
+        if not m:
+            continue
+        achados.append(
+            {
+                "vendor_device": m.group("vd").lower(),
+                "icd": m.group("icd"),
+                "name": m.group("name").strip(),
+            }
+        )
+    return achados
+
+
+def _vendor_device_do_slot(slot: str) -> Optional[str]:
+    """`vendor:device` (como o `reims-ctl gpus` imprime) da GPU do slot PCI."""
+    pontos = slot.split(":")
+    if len(pontos) < 3:
+        return None
+    base = Path(f"/sys/bus/pci/devices/{slot}")
+    try:
+        vendor = (base / "vendor").read_text().strip().removeprefix("0x").lower()
+        device = (base / "device").read_text().strip().removeprefix("0x").lower()
+    except OSError:
+        return None
+    if len(vendor) != 4 or len(device) != 4:
+        return None
+    return f"{vendor}:{device}"
+
+
+def _icd_para_slot(slot: Optional[str]) -> Optional[str]:
+    """O manifest ICD do Vulkan que dirige a GPU do slot PCI dado.
+
+    O `reims-ctl` seleciona GPU por driver (`driver_file`, que vira
+    `VK_DRIVER_FILES`), não por BDF. O wizard coleta o slot PCI; esta função
+    faz a ponte consultando o próprio `reims-ctl gpus`, que enumera as GPUs de
+    verdade. Quando qualquer elo falha devolve `None`: um palpite errado manda
+    a VM para a placa errada, o que é pior do que cair no default.
+    """
+    if not slot or not isinstance(slot, str):
+        return None
+    alvo = _vendor_device_do_slot(slot)
+    if not alvo:
+        return None
+    for gpu in _gpus_do_reims_ctl():
+        if gpu["vendor_device"] == alvo:
+            return gpu["icd"]
+    return None
+
+
+def _gpu_section(vm: VMConfig, existing: dict) -> dict:
+    """A seção `[gpu]` do `vm.toml`, ou `{}` quando não há o que afirmar.
+
+    O reims-ctl, sem `[gpu]`, escolhe "the first discrete GPU, then the first
+    integrated one" (medido: `reims-ctl gpus`). Num notebook com NVIDIA +
+    Intel isso significa a NVIDIA mesmo que o operador tenha escolhido a Intel
+    no wizard — foi o que produziu a tela preta de 19/10. Então a escolha do
+    wizard tem de virar TOML, e não só um campo do `config.json`.
+    """
+    slot = (vm.selected_gpu or "").strip()
+    if slot:
+        icd = _icd_para_slot(slot)
+        if icd:
+            secao: dict = {"driver_file": icd}
+            if vm.selected_gpu_name:
+                secao["name"] = vm.selected_gpu_name
+            return secao
+        # Nunca omitir a seleção explícita: sem [gpu], reims-ctl aplica o seu
+        # default (normalmente a dGPU NVIDIA) e a VM inicia com a placa errada.
+        raise GPUSelectionError(
+            f"Não foi possível mapear {vm.selected_gpu_name or slot} ({slot}) "
+            "para um ICD Vulkan. A escolha foi recusada para evitar fallback "
+            "silencioso para outra GPU."
+        )
+
+    # Nada escolhido no wizard: preserva o que um `reims-ctl set --gpu` gravou.
+    if isinstance(existing.get("gpu"), dict) and existing["gpu"]:
+        return dict(existing["gpu"])
+    return {}
+
+
 def write_vm_toml(
     vm: VMConfig,
     *,
@@ -229,10 +378,19 @@ def write_vm_toml(
     if installer:
         lines += [f"installer = {s(installer)}"]
 
-    # Se o operador escolheu GPU via `reims-ctl set/gpus`, preserva.
-    if isinstance(existing.get("gpu"), dict) and existing["gpu"]:
+    # Seção `[gpu]`: sem ela o reims-ctl pega "the first discrete GPU, then the
+    # first integrated one" — num notebook com RTX + Iris Xe isso é a NVIDIA, e
+    # a escolha do wizard virava fumaça. Duas fontes, nesta ordem:
+    #
+    #   1. `vm.selected_gpu` (o slot PCI que o operador escolheu no wizard);
+    #   2. a seção `[gpu]` já gravada, para não perdermos um `reims-ctl set --gpu`.
+    #
+    # A escolha explícita vence a preservação: se o operador trocou a placa no
+    # wizard, gravar a antiga de novo seria justamente o bug.
+    gpu_section = _gpu_section(vm, existing)
+    if gpu_section:
         lines += ["", "[gpu]"]
-        for k, v in existing["gpu"].items():
+        for k, v in gpu_section.items():
             if isinstance(v, str):
                 lines.append(f"{k} = {s(v)}")
             elif isinstance(v, bool):
@@ -247,13 +405,137 @@ def write_vm_toml(
 
 
 def _pid_alive(pid: int) -> bool:
+    """Se o processo ainda roda de verdade.
+
+    Um zumbi (`/proc/<pid>/stat` em estado `Z`) NÃO conta como vivo: o
+    `kill(pid, 0)` funciona nele, então a checagem ingênua dizia "vivo" e o
+    laço de espera do `ReimsCtlSession.wait` girava para sempre — medido em
+    19/10: a VM morria, a tela voltava e parecia que ela seguia em execução
+    com um pid. O QEMU já tinha terminado; só ninguém o havia recolhido.
+    """
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
+    # `kill` não distingue zumbi de processo vivo; o /proc distingue.
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            campos = fh.read().split(b") ", 1)
+        if len(campos) == 2 and campos[1][:1] == b"Z":
+            return False
+    except OSError:
+        # Sem /proc (ou o processo sumiu entre as duas chamadas): fica com o
+        # veredito do `kill`.
+        pass
     return True
+
+
+def vms_rodando() -> dict:
+    """`vm.id` -> pid, para as VMs que o reims-ctl considera rodando.
+
+    Usa `reims-ctl list --json`, que traz `{name, dir, state, pid}` — o mesmo
+    `runtime::pid` que decide o "already runs (pid N)" do `start`. A saída
+    humana NÃO serve: medido, ela imprime `macos-tahoe stopped …`, com o nome
+    na primeira coluna e o estado como palavra, não o pid.
+    """
+    binario = reims_ctl_bin()
+    if not binario:
+        return {}
+    try:
+        proc = subprocess.run(
+            [str(binario), "list", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    try:
+        dados = json.loads(proc.stdout or "[]")
+    except (ValueError, TypeError):
+        return {}
+    rodando: dict = {}
+    if isinstance(dados, dict):
+        dados = dados.get("vms", [])
+    if not isinstance(dados, list):
+        return {}
+    for entrada in dados:
+        if not isinstance(entrada, dict):
+            continue
+        pid = entrada.get("pid")
+        nome = entrada.get("name")
+        if nome and isinstance(pid, int) and pid > 0:
+            rodando[nome] = pid
+    return rodando
+
+
+def parar_vm(vm: VMConfig, *, force: bool = False) -> tuple:
+    """Solicita desligamento ACPI ou força o corte da VM.
+
+    O comando `reims-ctl stop` força o desligamento quando seu timeout vence,
+    então o caminho normal envia `system_powerdown` diretamente pelo QMP e
+    espera um período curto. Se o convidado não sair, devolve o controle para
+    a TUI oferecer a ação forçada separadamente.
+    """
+    binario = reims_ctl_bin()
+    if not binario:
+        return False, "reims-ctl não instalado"
+    if force:
+        try:
+            proc = subprocess.run(
+                [str(binario), "stop", vm.id, "--force"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            return False, "o reims-ctl stop --force excedeu o tempo limite"
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, str(exc)
+        saida = ((proc.stdout or "") + (proc.stderr or "")).strip()
+        return proc.returncode == 0, saida
+
+    pid = vms_rodando().get(vm.id)
+    if not pid:
+        return False, "a VM não aparece como ativa no reims-ctl"
+    try:
+        from core.passthrough import QmpClient, QmpError
+
+        with QmpClient(qmp_socket(vm), timeout=5.0) as qmp:
+            qmp.command("system_powerdown")
+    except (OSError, QmpError) as exc:
+        return False, f"não foi possível enviar o desligamento ACPI pelo QMP: {exc}"
+
+    prazo = time.monotonic() + _DESLIGAMENTO_ACPI_ESPERA_S
+    while _pid_alive(pid):
+        if time.monotonic() >= prazo:
+            return False, "pedido enviado, mas o macOS não desligou dentro do prazo"
+        time.sleep(0.5)
+    return True, "o macOS desligou após o pedido ACPI"
+
+
+def visualizar_vm(vm: VMConfig) -> tuple[bool, str]:
+    """Abre o viewer de terminal para uma VM já em execução.
+
+    O viewer herda stdin/stdout para que `reims-ctl view` possa controlar a
+    tela interativamente. Ctrl-] encerra somente o viewer; a VM continua viva.
+    """
+    binario = reims_ctl_bin()
+    if not binario:
+        return False, "reims-ctl não instalado"
+    try:
+        proc = subprocess.run([str(binario), "view", vm.id], check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    if proc.returncode:
+        return False, f"reims-ctl view encerrou com código {proc.returncode}"
+    return True, ""
+
+
+_ESPERA_MAXIMA_S = 600  # teto do laço de espera do `ReimsCtlSession.wait`
+_DESLIGAMENTO_ACPI_ESPERA_S = 20
 
 
 class ReimsCtlSession:
@@ -261,9 +543,10 @@ class ReimsCtlSession:
     enquanto o QEMU da VM vive.
 
     `argv` é o comando de start completo (já envolvido pela sessão kiosk quando
-    necessário). `reims-ctl start` é detached (retorna o pid do QEMU assim que
-    o QMP responde — runtime::start só conclui com o socket acessível); este
-    wrapper então espera o pid morrer. Se o start disser "already runs (pid N)"
+    necessário). Sem kiosk, `reims-ctl start` retorna o pid do QEMU assim que o
+    QMP responde e este wrapper espera o pid morrer. Com kiosk, o próprio
+    `vhackintosh-waysession` mantém o Sway vivo até o QEMU sair, então o fim do
+    comando da sessão encerra a espera. Se o start disser "already runs (pid N)"
     (corrida de relançamento), o pid é adotado em vez de tratado como erro.
     """
 
@@ -294,6 +577,13 @@ class ReimsCtlSession:
             if line.strip():
                 print(f"  reims-ctl: {line.strip()}")
 
+        # No appliance TTY, waysession não pode retornar quando `reims-ctl
+        # start` termina: esse comando é detached e o QEMU ainda está rodando.
+        # O cliente primário do Sway espera o PID do QEMU, mantendo a janela e
+        # esta subprocess ativa até seu término.
+        if Path(self.argv[0]).name == "vhackintosh-waysession":
+            return proc.returncode if proc.returncode else 0
+
         m = self._PID_RE.search(out)
         if not m:
             return proc.returncode if proc.returncode else 1
@@ -308,6 +598,18 @@ class ReimsCtlSession:
                 print(f"  aviso: pós-start falhou ({exc}); a VM segue normalmente")
 
         pid = int(m.group(1))
+        # Teto de espera: antes era um `while _pid_alive(pid)` sem limite. Uma
+        # VM que morre sem ser recolhida (ou um pid que nunca morre) prendia a
+        # TUI para sempre — o operador via a tela voltar e achava que a VM
+        # seguia rodando. O timeout do stop é 90s por padrão; 10 min de teto dá
+        # folga larga para o desligamento educado e devolve o controle.
+        limite = time.monotonic() + _ESPERA_MAXIMA_S
         while _pid_alive(pid):
+            if time.monotonic() >= limite:
+                print(
+                    f"  aviso: o pid {pid} nao encerrou em {_ESPERA_MAXIMA_S // 60} min; "
+                    "devolvendo o controle (a VM pode seguir rodando)"
+                )
+                break
             time.sleep(0.5)
         return 0

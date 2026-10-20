@@ -149,9 +149,14 @@ class ABInstallerTest:
             # RAM (do próprio VMConfig), áudio ligado, e o instalador da fase
             # (imagem absoluta, entrai em [q35].installer). O reboot do
             # instalador encerra o QEMU (extra_args -action reboot=shutdown).
-            reims_ctl.write_vm_toml(
-                vm, installer=str(installer_img), borderless=(fullscreen == "1")
-            )
+            try:
+                reims_ctl.write_vm_toml(
+                    vm, installer=str(installer_img), borderless=(fullscreen == "1")
+                )
+            except reims_ctl.GPUSelectionError as exc:
+                console.print(i18n.t("tui.launch.gpu_selection_failed", error=exc))
+                Prompt.ask(i18n.t("installer.prompt.exit"))
+                return
             reims_ctl.ensure_registered(vm)
 
             ctl = reims_ctl.reims_ctl_bin()

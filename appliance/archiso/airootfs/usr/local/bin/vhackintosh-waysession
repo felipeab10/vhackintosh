@@ -32,6 +32,87 @@ if [ ! -d "$XDG_RUNTIME_DIR" ]; then
 fi
 chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
 
+# ---------------------------------------------------------------------------
+# Sobe o PipeWire antes do compositor.
+#
+# O QEMU empacotado é compilado COM suporte a pipewire (o `configure` o liga
+# quando acha a lib), e o `reims-ctl` pergunta ao binário quais backends ele
+# suporta para escolher o padrão. Essa pergunta é respondida no host de BUILD,
+# onde o pipewire existe — mas o appliance é uma ISO live, sem sessão de
+# usuário systemd, então NADA iniciava o daemon aqui. O QEMU então morria com
+# "Failed to connect to PipeWire instance: Host is down" e a VM nem subia.
+#
+# Isto só é possível NESTE ponto do script porque é a sessão do console: os
+# serviços do pipewire são `systemd --user` (usr/lib/systemd/user/pipewire.socket)
+# e não existem sem um `systemd --user` rodando. Subimos os daemons à mão, na
+# mesma ordem que os socket units fariam: dbus -> pipewire -> wireplumber
+# -> pipewire-pulse.
+#
+# Tudo é best-effort: sem áudio a VM ainda tem de subir. Por isso nenhum passo
+# aborta o script (`|| true`) — o áudio nunca pode custar a VM inteira.
+vhack_sobe_pipewire() {
+    command -v pipewire >/dev/null 2>&1 || return 0
+
+    # O pipewire precisa de um barramento D-Bus para publicar os nós.
+    if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-launch >/dev/null 2>&1; then
+        # `dbus-launch --sh-syntax` emite as variáveis no formato do shell;
+        # avaliar essa saída é o uso documentado da ferramenta.
+        eval "$(dbus-launch --sh-syntax 2>/dev/null)" || true
+    fi
+
+    # A pergunta certa NÃO é "existe um processo pipewire?" mas "existe um
+    # pipewire servindo o MEU runtime dir?". A guarda antiga (`pgrep -x
+    # pipewire`) errava os dois lados: num host com pipewire de sessão — que é
+    # justamente onde o QEMU foi compilado — ela achava o daemon de OUTRO
+    # runtime dir e desistia, e a ISO ficava sem áudio. O socket em
+    # $XDG_RUNTIME_DIR é o mesmo ponto que o QEMU usa para se conectar, então é
+    # ele que responde à pergunta certa.
+    if [ -S "$XDG_RUNTIME_DIR/pipewire-0" ]; then
+        return 0
+    fi
+
+    # `setsid` + `&`: o pipewire roda em foreground por natureza — ele NÃO tem
+    # flag `--daemon` (essa é do pulseaudio/pipewire-pulse; passar `--daemon`
+    # ao pipewire só rende "opção não reconhecida" e nenhum daemon). Sem o
+    # setsid ele morreria junto com este shell quando o sway assumisse o
+    # terminal. O `</dev/null` evita o daemon segurar a entrada do script.
+    setsid pipewire </dev/null >/dev/null 2>&1 &
+
+    # Espera o socket aparecer: o wireplumber desiste na hora se conectar cedo
+    # demais, e é ele que cria os nós de áudio que o QEMU procura. Na ISO do
+    # console o primeiro start é frio, então a espera é generosa (5s).
+    local _i=0
+    while [ "$_i" -lt 50 ]; do
+        [ -S "$XDG_RUNTIME_DIR/pipewire-0" ] && break
+        sleep 0.1
+        _i=$((_i + 1))
+    done
+
+    # Sem o socket a VM ainda sobe (só sem áudio), então isto não aborta nada
+    # — mas um aviso no console evita debugar um silêncio inexplicável.
+    if [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; then
+        echo "vhackintosh-waysession: aviso: pipewire nao subiu; a VM roda sem audio." >&2
+        return 0
+    fi
+
+    # O wireplumber é quem cria os nós de áudio; a guarda usa o mesmo critério
+    # do pipewire (um processo de OUTRO runtime dir não serve a este).
+    if command -v wireplumber >/dev/null 2>&1; then
+        setsid wireplumber </dev/null >/dev/null 2>&1 &
+    fi
+
+    # O backend `pa` do QEMU fala com o pipewire-pulse, e o backend `pipewire`
+    # com o daemon principal: subir os dois cobre qualquer nome que o
+    # reims-ctl venha a escolher.
+    if command -v pipewire-pulse >/dev/null 2>&1; then
+        setsid pipewire-pulse </dev/null >/dev/null 2>&1 &
+    fi
+
+    return 0
+}
+
+vhack_sobe_pipewire
+
 CONF="${VHACK_SWAY_CONF:-/etc/vhackintosh/sway.conf}"
 if [ ! -f "$CONF" ]; then
     echo "vhackintosh-waysession: config do sway nao encontrada: $CONF" >&2
@@ -59,6 +140,56 @@ rm -f "$STATUS_FILE"
     printf 'VHACK_STATUS_FILE=%q\n' "$STATUS_FILE"
     printf '%q ' "$@"
     printf '\n__vhack_status=$?\n'
+    # `reims-ctl start` daemoniza o QEMU e retorna assim que o socket QMP fica
+    # pronto. Se o cliente Sway encerrar nesse ponto, o compositor fecha a
+    # janela enquanto o QEMU continua órfão; além disso, a TUI perde os reboots
+    # que deveria absorver durante a instalação. Mantenha o cliente primário
+    # vivo até o PID publicado por `reims-ctl list --json` terminar.
+    if [ "$#" -ge 3 ] && [ "$(basename "$1")" = "reims-ctl" ] && [ "$2" = "start" ]; then
+        printf 'VHACK_REIMS_CTL=%q\n' "$1"
+        printf 'VHACK_VM_ID=%q\n' "$3"
+        cat <<'WAIT_FOR_VM'
+__vhack_find_vm_pid() {
+    "$VHACK_REIMS_CTL" list --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if isinstance(data, dict):
+    data = data.get("vms", [])
+for vm in data if isinstance(data, list) else []:
+    pid = vm.get("pid") if vm.get("name") == sys.argv[1] else None
+    if isinstance(pid, int) and pid > 0:
+        print(pid)
+        break
+' "$VHACK_VM_ID" 2>/dev/null
+}
+
+# A lista pode levar alguns instantes para refletir a VM recém-iniciada. Não
+# segure a sessão se o comando falhou e nenhum processo apareceu.
+__vhack_vm_pid=""
+for __vhack_try in $(seq 1 40); do
+    __vhack_vm_pid="$( __vhack_find_vm_pid )"
+    case "$__vhack_vm_pid" in
+        ''|*[!0-9]*) sleep 0.25 ;;
+        *) break ;;
+    esac
+done
+
+case "$__vhack_vm_pid" in
+    ''|*[!0-9]*) ;;
+    *)
+        while [ -r "/proc/$__vhack_vm_pid/stat" ]; do
+            __vhack_state="$(awk '{sub(/^.*\) /, ""); print substr($0, 1, 1)}' "/proc/$__vhack_vm_pid/stat" 2>/dev/null)"
+            [ "$__vhack_state" = "Z" ] && break
+            kill -0 "$__vhack_vm_pid" 2>/dev/null || break
+            sleep 0.5
+        done
+        ;;
+esac
+WAIT_FOR_VM
+    fi
     printf 'printf "%%s" "$__vhack_status" > "$VHACK_STATUS_FILE" 2>/dev/null || true\n'
     # Encerra o sway; sem isto o compositor ficaria vivo sem cliente e a TUI
     # nunca retomaria o console.
@@ -125,6 +256,19 @@ fi
 
 # Força o renderizador gles2 estável do wlroots para evitar fallback falho para Vulkan no DRM
 export WLR_RENDERER="${WLR_RENDERER:-gles2}"
+
+# A VM pode renderizar numa NVIDIA secundária enquanto o painel e o Sway usam
+# a Intel. Nesse caminho, o fullscreen borderless da janela Vulkan pode ser
+# promovido a direct scan-out; o wlroots tenta apresentar no output Intel um
+# buffer alocado pela NVIDIA e há combinações Sway/wlroots/NVIDIA em que isso
+# congela a imagem. O kiosk é uma única janela fullscreen, então preferimos
+# composição normal como padrão. É possível reativar para diagnóstico com
+# WLR_SCENE_DISABLE_DIRECT_SCANOUT=0.
+if [ "${WLR_SCENE_DISABLE_DIRECT_SCANOUT:-}" = "0" ]; then
+    unset WLR_SCENE_DISABLE_DIRECT_SCANOUT
+else
+    export WLR_SCENE_DISABLE_DIRECT_SCANOUT=1
+fi
 
 # Sem isto o wlroots ABORTA quando nao encontra GPU com renderizacao acelerada
 # (ex.: virtio-gpu em VM de teste), com a mensagem "Software rendering detected,

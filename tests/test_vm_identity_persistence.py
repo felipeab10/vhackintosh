@@ -9,6 +9,21 @@ from core.smbios import GenSMBIOS
 
 
 class IdentityPersistenceTests(unittest.TestCase):
+    def test_invalid_catalog_is_preserved_and_cannot_be_overwritten(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = Path(td) / "config"
+            logs = config / "logs"
+            data = config / "vms.json"
+            data.parent.mkdir(parents=True)
+            original = b'{"vms": [broken json'
+            data.write_bytes(original)
+            with patch("core.config.CONFIG_DIR", config), patch("core.config.LOGS_DIR", logs), patch("core.config.VMS_FILE", data):
+                store = VMManagerStore()
+                self.assertEqual(store.list_vms(), [])
+                with self.assertRaisesRegex(RuntimeError, "could not be loaded"):
+                    store.add_vm(VMConfig(id="new", name="New", macos_version="tahoe"))
+            self.assertEqual(data.read_bytes(), original)
+
     def test_identity_survives_store_restart_with_private_file_mode(self):
         identity = SMBIOSConfig("iMac20,1", "C02TEST12345", "C0270000000000001",
                                 "12345678-1234-5678-1234-567812345678", "02AABBCCDDEE")

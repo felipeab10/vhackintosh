@@ -73,10 +73,10 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
 
 ### 2.10. Seletor Inteligente Dual-GPU e Suporte Multi-Vendor (NVIDIA, AMD e Intel)
 - **Detecção de Gráficos Híbridos:** Identificação automática de todas as GPUs presentes no barramento PCI do host (Intel Iris Xe / UHD, NVIDIA GeForce GTX/RTX Mobile/Desktop e AMD Radeon RX).
-- **PRIME Render Offload Dinâmico:**
-  - **NVIDIA:** Ativação automática de `__NV_PRIME_RENDER_OFFLOAD=1`, `__GLX_VENDOR_LIBRARY_NAME=nvidia` e injeção do arquivo ICD proprietário `nvidia_icd.json` para renderização Vulkan na GPU dedicada.
-  - **AMD:** Ativação de `DRI_PRIME=1` e apontamento do driver Vulkan Mesa RADV (`radeon_icd.x86_64.json`) ou AMDVLK.
-  - **Intel:** Utilização do driver Mesa ANV com aceleração vGPU Vulkan.
+- **Escolha da GPU medida, não suposta:** a placa escolhida no wizard vai para a seção `[gpu]` do `vm.toml` e é o `reims-ctl` que a aplica, escrevendo `VK_DRIVER_FILES`/`VK_ICD_FILENAMES` no script do QEMU. O launcher do appliance **não** define ICD nenhum — fazê-lo criava uma segunda fonte para o mesmo fato, que discordava em silêncio quando as duas escolhas divergiam.
+  - O manifesto vem de `reims-ctl gpus`, que sonda o Vulkan de verdade e devolve nome, `vendor:device` e ICD por placa. Não é inferido do nome do fabricante: ser NVIDIA ou AMD não é prova de funcionar, e um nome de fabricante não diz *qual* placa é.
+  - Os caminhos de manifesto **não** têm sufixo de arquitetura. Medido neste host, `/usr/share/vulkan/icd.d/` contém `intel_hasvk_icd.json`, `intel_icd.json` e `nvidia_icd.json`; nomes como `intel_icd.x86_64.json` ou `radeon_icd.x86_64.json` são de outra distribuição e não existem.
+  - Medido em 19/10: um notebook com RTX 3050 e Iris Xe subiu até o desktop com a **NVIDIA** depois que a escolha passou a ser gravada no TOML. Antes disso a seção `[gpu]` ficava vazia, o `reims-ctl` aplicava o próprio default ("the first discrete GPU, then the first integrated one" — a NVIDIA) e a escolha do operador era ignorada.
 - **VFIO Passthrough Nativo para AMD:** Para placas desktop AMD Polaris (RX 400/500), Vega e Navi (RX 5000/6000), o sistema oferece vinculação direta via `vfio-pci` com 100% de suporte nativo Apple Metal 3, DisplayPort áudio e aceleração bare-metal.
 
 ### 2.11. Resolução do Kernel Handoff em `#[EB|LOG:EXITBS:START]`
