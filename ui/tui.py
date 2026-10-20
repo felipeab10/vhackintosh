@@ -265,6 +265,11 @@ def run_rail_session(
             # O QEMU entrega o evento QMP antes de sair; sem esta pausa a thread
             # do monitor pode não tê-lo lido ainda e o reboot passa despercebido.
             time.sleep(settle_sec)
+            # Deixa a thread consumir o EOF do socket QMP. Parar imediatamente
+            # pode interromper a leitura do evento final de reboot do guest.
+            wait_for_disconnect = getattr(monitor, "wait_for_disconnect", None)
+            if callable(wait_for_disconnect):
+                wait_for_disconnect(timeout_sec=2.0)
             monitor.stop()
 
         total_resets += monitor.reset_count

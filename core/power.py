@@ -141,6 +141,13 @@ class QMPPowerMonitor:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
 
+    def wait_for_disconnect(self, timeout_sec: float = 2.0) -> bool:
+        """Aguarda o QMP fechar naturalmente para processar o último evento."""
+        if not self._thread:
+            return True
+        self._thread.join(timeout=max(timeout_sec, 0.0))
+        return not self._thread.is_alive()
+
 
 class PowerSync:
     """Gerencia a sincronização de energia entre a VM macOS e o Host Linux."""

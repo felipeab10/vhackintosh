@@ -427,6 +427,46 @@ class EsperarPorPidTemFimTests(unittest.TestCase):
         self.assertEqual(total, 1)
         self.assertEqual(reason, "guest-reset")
 
+    def test_monitor_drena_evento_final_antes_de_encerrar(self):
+        import json
+        import socket
+        import threading
+
+        from core.power import QMPPowerMonitor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sock_path = str(Path(tmp) / "qmp.sock")
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(sock_path)
+            server.listen(1)
+            received_capabilities = threading.Event()
+
+            def serve_qmp():
+                conn, _ = server.accept()
+                with conn:
+                    conn.sendall(b'{"QMP":{"version":{}}}\r\n')
+                    conn.recv(4096)  # qmp_capabilities
+                    received_capabilities.set()
+                    conn.sendall(
+                        (json.dumps({
+                            "event": "SHUTDOWN",
+                            "data": {"reason": "guest-reset"},
+                        }) + "\r\n").encode()
+                    )
+
+            server_thread = threading.Thread(target=serve_qmp, daemon=True)
+            server_thread.start()
+            monitor = QMPPowerMonitor(sock_path=sock_path, discovery_timeout_sec=2)
+            monitor.start()
+            self.assertTrue(received_capabilities.wait(timeout=2))
+            self.assertTrue(monitor.wait_for_disconnect(timeout_sec=2))
+            monitor.stop()
+            server.close()
+            server_thread.join(timeout=2)
+
+            self.assertEqual(monitor.reset_count, 1)
+            self.assertEqual(monitor.last_reason, "guest-reset")
+
 
 # ------------------------------------------------------- Bug 3: parar a VM
 
