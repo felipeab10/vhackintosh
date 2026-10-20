@@ -80,6 +80,99 @@ vhack_flush_input() {
     while read -r -t 0.1 -n 10000 discard; do :; done 2>/dev/null || true
 }
 
+# O usuário pediu explicitamente para não bloquear no gate de Vulkan?
+#
+# Duas formas, porque as duas são necessárias em momentos diferentes:
+#
+#   1. `VHACK_SKIP_VULKAN_CHECK=1` no ambiente — espelha
+#      `core/gpu.py:vulkan_check_skipped()` (mesma variável, mesma lista
+#      1/true/yes/on/sim, mesmo strip). É o ÚNICO bypass de Vulkan do projeto;
+#      existir em dois lugares só é aceitável porque ambos leem a MESMA
+#      variável e a mesma tabela. O que não pode é um caminho ler e o outro
+#      não, que foi o defeito: o boot normal desligava a máquina mesmo com o
+#      usuário tendo pedido o pulo.
+#
+#   2. `vhack_skip_vulkan=1` no cmdline do kernel — porque dentro da ISO o
+#      usuário NÃO tem como definir uma variável de ambiente antes do gate
+#      rodar: o gate roda no login, e a variável só existiria se ele já
+#      estivesse logado. Sem esta segunda via o escape seria decorativo na
+#      prática. É o mesmo mecanismo já usado e testado pelo
+#      `vhack_build_test=1` (ver o hook logo abaixo), e o parâmetro se
+#      acrescenta com `e` no menu do GRUB, sem reescrever a ISO.
+#
+# O parâmetro de cmdline só LIGA o pulo; não existe forma de forçar o
+# bloqueio a partir dele, para não abrir uma segunda política.
+vhack_vulkan_check_skipped() {
+    local valor
+    valor="$(printf '%s' "${VHACK_SKIP_VULKAN_CHECK:-}" | tr '[:upper:]' '[:lower:]')"
+    # Tira espaços das pontas para " 1 " valer tanto quanto "1".
+    valor="${valor#"${valor%%[![:space:]]*}"}"
+    valor="${valor%"${valor##*[![:space:]]}"}"
+    case "$valor" in
+        1|true|yes|on|sim) return 0 ;;
+    esac
+
+    # `(^| )chave=1( |$)` — mesma forma do hook de build: exige o valor 1
+    # separado, para `vhack_skip_vulkan=10` ou `...=1abc` não passarem.
+    if grep -qE '(^| )vhack_skip_vulkan=1( |$)' /proc/cmdline 2>/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# Hook de verificação automatizada (headless) — acionado por cmdline do kernel.
+#
+# `appliance/verify-iso.sh --build-test` injeta `vhack_build_test=1` via
+# `-append`, o que permite bootar a MESMA ISO já construída e rodar o build do
+# reims-vgpu sem reescrever o perfil archiso nem o TUI. Sem isso seria preciso
+# editar este profile (que é do usuário) ou o TUI (arriscado).
+#
+# Fica ANTES do gate de Vulkan de propósito: aquele gate entra em loop infinito
+# pedindo Enter, e num guest sem Vulkan 1.2+ a automação nunca chegaria ao
+# build. Aqui o gate é pulado porque compilar não exige GPU — o veredito que
+# interessa é sobre a compilação.
+#
+# Só na tty1, onde o appliance de fato roda, para não repetir em cada console.
+#
+# As mensagens daqui vão para o tty1 (tela) E para /dev/ttyS0 (serial) quando o
+# device existir: o host roda headless e só enxerga o serial, então sem isso um
+# erro ANTES do verify-build-in-guest.sh rodar (ex.: script ausente na ISO)
+# apareceria como TIMEOUT mudo, sem nenhuma pista.
+if [ "$(tty)" = "/dev/tty1" ] && grep -qE '(^| )vhack_build_test=1( |$)' /proc/cmdline 2>/dev/null; then
+    vhack_hook_echo() {
+        echo -e "$1"
+        [ -w /dev/ttyS0 ] && printf '%s\n' "$1" >> /dev/ttyS0 2>/dev/null || true
+    }
+    if [ -x /usr/local/bin/verify-build-in-guest.sh ]; then
+        vhack_hook_echo "\033[1;36m▶ vhack_build_test=1 detectado no cmdline — rodando verificação headless do build...\033[0m"
+        # Repassa o ÚNICO bypass de Vulkan que existe (core/gpu.py). Sem isso o
+        # `vhackintosh check-vulkan` de dentro do script falharia num guest sem
+        # GPU 1.2+, o que é ruído: compilar não exige GPU.
+        VHACK_SKIP_VULKAN_CHECK=1 /usr/local/bin/verify-build-in-guest.sh
+        __vhack_build_rc=$?
+        echo
+        if [ "$__vhack_build_rc" -eq 0 ]; then
+            vhack_hook_echo "\033[1;32m▶ Verificação concluída: PASS (rc=0). Desligando o guest.\033[0m"
+        else
+            vhack_hook_echo "\033[1;31m▶ Verificação concluída: FAIL (rc=${__vhack_build_rc}). Desligando o guest.\033[0m"
+        fi
+        # Desliga para o host saber que terminou, mesmo em modo headless onde
+        # ninguém lê a tela. O veredito já foi para o serial/log.
+        sync 2>/dev/null || true
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl poweroff -i || poweroff
+        else
+            poweroff
+        fi
+        # Se o poweroff não funcionar, não deixa o profile seguir para o TUI.
+        exit "$__vhack_build_rc"
+    else
+        vhack_hook_echo "\033[1;31m▶ vhack_build_test=1 no cmdline, mas /usr/local/bin/verify-build-in-guest.sh não existe/não é executável.\033[0m"
+    fi
+fi
+
 if [ "$(tty)" = "/dev/tty1" ]; then
     # Inicia subsistema de áudio PipeWire para a sessão de usuário
     if command -v systemctl >/dev/null 2>&1; then
@@ -138,11 +231,21 @@ if [ "$(tty)" = "/dev/tty1" ]; then
     vhack_wait_internet 4 || true
 
     # 4. Checagem Rigorosa de Hardware do Host (Vulkan 1.2+ para Reims vGPU)
+    #
+    # O escape `VHACK_SKIP_VULKAN_CHECK=1` é o MESMO de `core/gpu.py`. Ele era
+    # respeitado só no caminho `vhack_build_test=1` (logo acima): o boot normal
+    # ignorava a variável e desligava a máquina na cara do usuário, sem oferecer
+    # saída. Como o `check-vulkan` já sai 0 quando ela está ligada, basta não
+    # bloquear nesse caso — a checagem NÃO é reimplementada aqui, para não criar
+    # uma segunda política que divirja da de `core/gpu.py`.
     echo -e "\033[1;36mVerificando aceleração de vídeo do host (Vulkan 1.2+)...\033[0m"
     VULKAN_OUTPUT=""
     VULKAN_OK=1
 
-    if command -v vhackintosh >/dev/null 2>&1; then
+    if vhack_vulkan_check_skipped; then
+        VULKAN_OUTPUT="Checagem de Vulkan PULADA a pedido explícito (VHACK_SKIP_VULKAN_CHECK=1 no ambiente ou vhack_skip_vulkan=1 no cmdline)."
+        echo -e "\033[1;33m${VULKAN_OUTPUT}\033[0m"
+    elif command -v vhackintosh >/dev/null 2>&1; then
         if ! VULKAN_OUTPUT="$(vhackintosh check-vulkan 2>&1)"; then
             VULKAN_OK=0
         fi
@@ -170,6 +273,17 @@ if [ "$(tty)" = "/dev/tty1" ]; then
         echo -e "  • NVIDIA: GeForce GTX série 900 (Maxwell), GTX série 10/16, RTX ou superior"
         echo -e "  • AMD: Radeon GCN 4ª Geração (RX 400/500), Vega, RDNA (RX 5000+) ou superior\n"
         echo -e "\033[1;31mNão é permitido instalar o vHackintosh OS neste computador.\033[0m\n"
+
+        # A instrução de saída fica AQUI, na própria tela que bloqueia: quem
+        # cai neste ponto está numa tela que desliga a máquina e não tem como
+        # adivinhar que existe um parâmetro de kernel que destrava. Sem esta
+        # dica o escape existe mas é indescobrível — foi o que aconteceu no
+        # teste numa VM, em que a única saída era trocar o SSD do notebook.
+        echo -e "\033[1;33mSó para testar a ISO numa VM emulada (não valida GPU nenhuma):\033[0m"
+        echo -e "  \033[1;37m1.\033[0m Reinicie e, no menu do GRUB, pressione \033[1;36me\033[0m na entrada do vHackintosh."
+        echo -e "  \033[1;37m2.\033[0m No fim da linha que começa com \033[1;36mlinux\033[0m, acrescente: \033[1;32mvhack_skip_vulkan=1\033[0m"
+        echo -e "  \033[1;37m3.\033[0m \033[1;36mCtrl+X\033[0m (ou \033[1;36mF10\033[0m) para bootar. Para desfazer, é só não salvar."
+        echo -e "  \033[2mAlternativa, se você tem acesso ao shell: export VHACK_SKIP_VULKAN_CHECK=1\033[0m\n"
 
         while true; do
             echo -ne "\033[1;33mPressione [Enter] para desligar o computador (ou 'r' para reiniciar): \033[0m"

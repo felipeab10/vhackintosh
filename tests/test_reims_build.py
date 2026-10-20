@@ -8,18 +8,38 @@ from unittest.mock import patch
 from core import reims_build
 
 
-def test_iso_packaging_excludes_prebuilt_artifacts():
+def test_iso_packaging_supports_prebuilt_release():
+    """O caminho padrão agora é a release pré-compilada do GitHub.
+
+    Antes este teste exigia o contrário ("nunca transportar binários"), porque o
+    appliance compilava o fork do QEMU a cada boot. Compilar levava horas e o
+    usuário trocava o SSD do notebook para testar; a decisão foi reverter para o
+    binário pré-compilado, que é x86-64 genérico e carrega o Vulkan por dlopen.
+    O que continua proibido é *compilar* algo aqui, não empacotar o binário.
+    """
     script = Path(__file__).resolve().parents[1] / "appliance/build-iso.sh"
     text = script.read_text()
-    assert "RELEASE_TAG" not in text
-    assert "releases/download" not in text
-    assert "vendor/qemu/build/qemu-system-x86_64" not in text
-    assert 'cp -a /opt/reims-vgpu/*' not in text
-    assert "--exclude='build'" in text
-    assert text.index('mkdir -p "${REIMS_DEST}/vendor/qemu"') < text.index('"${REIMS_SRC}/vendor/qemu/" "${REIMS_DEST}/vendor/qemu/"')
-    assert "--exclude='out'" in text
+
+    # A release é o caminho padrão...
+    assert "-r|--release|--tag" in text
+    assert "releases/latest/download" in text
+    assert "releases/download" in text
+    assert "reims-vgpu-linux-x86_64.tar.gz" in text
+    assert "REIMS_PREBUILT=1" in text
+    # ...e o modo fontes continua existindo como alternativa.
+    assert "--from-source" in text
     assert "Cargo.toml" in text and "scripts/install-ctl.sh" in text
     assert "não contém as fontes completas" in text
+    # A opção de atualizar as fontes a partir da release.
+    assert "-u|--update-sources" in text
+
+    # Não transportar binários de um build *local* do QEMU pelos caminhos de
+    # sempre: o que vai para a ISO é o tarball da release, extraído, não um
+    # `build/` copiado do checkout do host.
+    assert 'cp -a /opt/reims-vgpu/*' not in text
+    assert "--exclude='build'" in text
+    assert "--exclude='out'" in text
+    assert text.index('mkdir -p "${REIMS_DEST}/vendor/qemu"') < text.index('"${REIMS_SRC}/vendor/qemu/" "${REIMS_DEST}/vendor/qemu/"')
 
 
 def test_root_paths_match_appliance_runtime():

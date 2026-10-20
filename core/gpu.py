@@ -14,6 +14,98 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 
+# ---------------------------------------------------------------------------
+# Escape do gate de Vulkan (temporário, para testes em VM)
+# ---------------------------------------------------------------------------
+#
+# O appliance exige GPU física com Vulkan 1.2+ e trata isso como requisito
+# crítico. Isso está certo para o produto, mas torna impossível testar a ISO
+# dentro de uma VM QEMU, onde o vídeo é emulado (`-vga std`) e o loader ou não
+# existe ou só oferece llvmpipe/lavapipe — justamente o caso que o próprio
+# verificador descarta como "emulação por software".
+#
+# Sem uma saída, a única forma de testar era gravar a ISO num SSD e bootar em
+# notebook real. `VHACK_SKIP_VULKAN_CHECK=1` destrava o fluxo de teste sem
+# afrouxar o padrão: o gate continua valendo para todo mundo que não pedir.
+#
+# O escape é **auditável**: devolve uma mensagem que diz, em texto, que a
+# checagem foi pulada, para que a UI nunca exiba "Suportado & Pronto" quando
+# nada foi verificado.
+VULKAN_SKIP_ENV = "VHACK_SKIP_VULKAN_CHECK"
+
+# A mesma saída também existe como parâmetro de kernel, porque dentro da ISO o
+# usuário NÃO consegue exportar uma variável antes do gate rodar: o gate roda no
+# login, e nesse momento o ambiente dele ainda não existe. O parâmetro se
+# acrescenta com `e` no menu do GRUB, sem reescrever a ISO.
+#
+# Estava faltando AQUI: o profile.d já o entendia, mas ele chama este módulo via
+# `vhackintosh check-vulkan`, e o Python só olhava `os.environ`. Resultado medido
+# numa ISO real — o shell decidia PULAR e o Python devolvia falha logo em
+# seguida, então a tela de bloqueio aparecia mesmo escolhendo a entrada
+# "Testar em VM". Um bypass que só metade do caminho entende não é bypass.
+VULKAN_SKIP_CMDLINE = "vhack_skip_vulkan=1"
+
+_TRUTHY = ("1", "true", "yes", "on", "sim")
+
+
+def _cmdline_do_kernel() -> str:
+    """
+    Conteúdo de `/proc/cmdline`, ou "" quando não dá para ler.
+
+    Nunca levanta: este módulo é consultado no boot, e um `/proc` indisponível
+    (container, chroot, sistema não-Linux) tem de significar "não pulou", não
+    "o gate de hardware quebrou". Falhar aqui bloquearia a máquina por um
+    motivo que não tem nada a ver com GPU.
+    """
+    try:
+        with open("/proc/cmdline") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def vulkan_check_skipped() -> bool:
+    """
+    O usuário pediu explicitamente para não bloquear no gate de Vulkan?
+
+    Verdadeiro se `VHACK_SKIP_VULKAN_CHECK` estiver ligada no ambiente OU se o
+    kernel tiver sido bootado com `vhack_skip_vulkan=1`. As duas vias leem a
+    MESMA tabela de valores e exigem o valor `1` literal no cmdline, para que
+    `vhack_skip_vulkan=10` ou `...=1abc` não passem por engano.
+
+    O `except` é de propósito amplo: uma falha ao LER o cmdline só pode
+    resultar em "não pulou" (o padrão seguro), jamais numa exceção que derrube
+    a checagem de hardware inteira.
+    """
+    if os.environ.get(VULKAN_SKIP_ENV, "").strip().lower() in _TRUTHY:
+        return True
+
+    try:
+        cmdline = _cmdline_do_kernel()
+    except Exception:
+        return False
+    if not isinstance(cmdline, str) or not cmdline:
+        return False
+
+    padrao = r"(?:^| )" + re.escape(VULKAN_SKIP_CMDLINE) + r"(?: |$)"
+    return bool(re.search(padrao, cmdline))
+
+
+def _via_do_escape() -> str:
+    """
+    Qual das duas saídas foi usada — para a mensagem não mentir.
+
+    As duas vias dão no mesmo lugar, mas são acionadas de formas diferentes
+    (variável de ambiente vs. parâmetro de kernel) e quem lê o diagnóstico
+    precisa saber qual delas está ativa para poder desfazer. Dizer
+    "VHACK_SKIP_VULKAN_CHECK=1" quando o pulo veio do cmdline manda o usuário
+    procurar uma variável que ele nunca definiu.
+    """
+    if os.environ.get(VULKAN_SKIP_ENV, "").strip().lower() in _TRUTHY:
+        return f"{VULKAN_SKIP_ENV}=1"
+    return f"{VULKAN_SKIP_CMDLINE} no cmdline do kernel"
+
+
 @dataclass
 class GPUDevice:
     pci_slot: str
@@ -141,7 +233,16 @@ class GPUChecker:
         
         Isso impede desperdiçar minutos compilando código quando o sistema estiver
         emulando vídeo básico (ex.: em testes aninhados no QEMU sem passthrough).
+
+        `VHACK_SKIP_VULKAN_CHECK=1` pula a checagem e devolve sucesso com uma
+        mensagem que declara o pulo (ver `vulkan_check_skipped`).
         """
+        if vulkan_check_skipped():
+            return True, (
+                f"Checagem de Vulkan PULADA por {_via_do_escape()}. "
+                "Nenhuma GPU foi verificada: use apenas para testar a ISO em VM."
+            )
+
         # 1. Carrega dinamicamente a biblioteca do loader Vulkan
         lib = None
         for name in ["libvulkan.so.1", "libvulkan.so"]:
@@ -242,4 +343,35 @@ class GPUChecker:
             return True, f"{len(compatible_gpus)} GPU(s) física(s) compatível(is) com Vulkan 1.2+ detectada(s): {', '.join(compatible_gpus)}."
         finally:
             lib.vkDestroyInstance(instance, None)
+
+
+def gpus_com_vulkan() -> dict:
+    """`vendor:device` -> nome, para as GPUs que o Vulkan REALMENTE enumera.
+
+    `GPUChecker.list_gpus()` lê o `lspci`: diz o que existe no barramento, não
+    o que funciona. `reims_vgpu_compatible` é decidido por fabricante
+    (`_parse_gpu_line` marca toda NVIDIA como compatível), o que não é medição.
+
+    A diferença importa: em 19/10 o wizard pré-selecionou a RTX 3050 por ser
+    NVIDIA e a VM abriu em tela preta, enquanto a Iris Xe funcionava. Quem
+    enumera de verdade é o `reims-ctl gpus`, que sobe um probe Vulkan por
+    manifest ICD — a mesma fonte que o `reims-ctl` usa para escolher.
+
+    Devolve `{}` quando o reims-ctl não está disponível: aí o chamador não deve
+    afirmar nada sobre compatibilidade.
+    """
+    try:
+        from core.reims_ctl import _gpus_do_reims_ctl
+
+        return {g["vendor_device"]: g["name"] for g in _gpus_do_reims_ctl()}
+    except Exception:  # noqa: BLE001 — sem reims-ctl não há o que medir
+        return {}
+
+
+def vulkan_dirige(gpu: "GPUDevice") -> bool:
+    """Se o Vulkan enumera a GPU `gpu` (e portanto ela serve ao reims-vgpu)."""
+    if not gpu.vendor_id or not gpu.device_id:
+        return False
+    chave = f"{gpu.vendor_id.lower()}:{gpu.device_id.lower()}"
+    return chave in gpus_com_vulkan()
 

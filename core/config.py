@@ -107,24 +107,39 @@ class VMManagerStore:
             pass
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         self._vms: Dict[str, VMConfig] = {}
+        self._load_error: Optional[Exception] = None
         self.load()
 
     def load(self) -> None:
         if not VMS_FILE.exists():
             self._vms = {}
+            self._load_error = None
             self.save()
             return
         try:
             with open(VMS_FILE, "r", encoding="utf-8") as f:
                 raw_data = json.load(f)
-                self._vms = {
+                if not isinstance(raw_data, dict) or not isinstance(raw_data.get("vms", {}), dict):
+                    raise ValueError("vms.json must contain an object with a 'vms' object")
+                loaded_vms = {
                     vm_id: VMConfig.from_dict(vm_data)
                     for vm_id, vm_data in raw_data.get("vms", {}).items()
                 }
-        except Exception:
-            self._vms = {}
+            self._vms = loaded_vms
+            self._load_error = None
+        except (OSError, UnicodeError, TypeError, ValueError, AttributeError) as exc:
+            # Keep the original file and refuse later writes from this store
+            # instance. Treating a damaged catalog as empty used to make the
+            # next add/update silently replace it with an empty catalog.
+            self._load_error = exc
+            logger.error("Unable to load VM catalog %s; writes are disabled: %s", VMS_FILE, exc)
 
     def save(self) -> None:
+        if self._load_error is not None and VMS_FILE.exists():
+            raise RuntimeError(
+                f"Cannot save VM catalog because {VMS_FILE} could not be loaded; "
+                "repair the file and reload the store first"
+            ) from self._load_error
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         data = {
             "version": "1.0",

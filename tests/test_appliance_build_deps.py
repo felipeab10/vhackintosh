@@ -264,6 +264,134 @@ def test_build_iso_packages_reims_util_or_refuses_to_build():
     assert "exit 1" in text[text.index("find_reims_util.sh") :]
 
 
+def _bloco_do_reims_util(ate_o_install: bool) -> str:
+    """Recorte CONTÍGUO do bloco do reims-util no build-iso.sh.
+
+    Contíguo de propósito: um recorte fatiado mediria uma região diferente da
+    que o script executa, e uma mutação fora do corte mudaria o arquivo com o
+    instrumento verde (foi o que aconteceu no achado H do verifier).
+    """
+    linhas = (ROOT / "appliance" / "build-iso.sh").read_text(encoding="utf-8").splitlines()
+    inicio = next(
+        i for i, ln in enumerate(linhas)
+        if ln.strip().startswith("if ! REIMS_UTIL_HOST_BIN=")
+    )
+    if ate_o_install:
+        fim = next(
+            i for i in range(inicio, len(linhas))
+            if linhas[i].strip().startswith('install -m 0755 "${REIMS_UTIL_HOST_BIN}"')
+        )
+    else:
+        fim = next(i for i in range(inicio + 1, len(linhas)) if linhas[i].strip() == "fi")
+    return "\n".join(linhas[inicio : fim + 1])
+
+
+def test_the_reims_util_install_block_actually_installs_it(tmp_path):
+    """Roda o bloco de verdade e confere que o reims-util CHEGA ao airootfs.
+
+    O teste acima checa o PREFIXO de uma linha literal
+    (`'install -m 0755 "${REIMS_UTIL_HOST_BIN}"' in text`). Isso prende um diff,
+    não um comportamento, e foi medido: envolver o `install` num `if` — o pior
+    caso, porque o teste segue verde enquanto o reims-util some da ISO e o
+    OpenCore volta a ser provisionado por template+guestfish no primeiro boot —
+    passa despercebido. Idem quebrar a linha com `\\` de continuação.
+
+    Então aqui o bloco é executado: do `if ! REIMS_UTIL_HOST_BIN=` até o
+    `install`, com o `find_reims_util.sh` dublando sucesso, e o destino é
+    conferido em disco. Se o `install` for removido, comentado ou escondido
+    atrás de um `if`, o destino fica vazio e isto falha.
+    """
+    import os
+    import stat
+    import subprocess
+
+    bloco = _bloco_do_reims_util(ate_o_install=True)
+
+    # Precondições do recorte: se um marcador sumir, o teste mediria um trecho
+    # qualquer e passaria sem exercitar nada.
+    assert "find_reims_util.sh" in bloco, "o recorte perdeu o resolvedor"
+    assert "install -m 0755" in bloco, "o recorte perdeu o install"
+    assert "reims-util" in bloco, "o recorte não nomeia o destino"
+
+    fonte = tmp_path / "reims-util"
+    fonte.write_text("#!/bin/sh\necho reims-util\n", encoding="utf-8")
+    fonte.chmod(0o755)
+
+    perfil = tmp_path / "perfil"
+    (perfil / "airootfs" / "usr" / "local" / "bin").mkdir(parents=True)
+
+    # Resolvedor dublado. O bloco o invoca como `bash "${SCRIPT_DIR}/..."` e usa
+    # o stdout como caminho. Dublar aqui é o certo: o resolvedor tem testes
+    # próprios, e o que este teste isola é a INSTALAÇÃO.
+    script_dir = tmp_path / "appliance"
+    script_dir.mkdir()
+    (script_dir / "find_reims_util.sh").write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "{fonte}"\n', encoding="utf-8"
+    )
+
+    harness = tmp_path / "t.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        # Toda variável que o bloco lê, senão `set -u` falha pelo motivo errado
+        # e a falha passa por cobertura.
+        f'SCRIPT_DIR="{script_dir}"\n'
+        f'ARCHISO_PROFILE="{perfil}"\n'
+        'RED=""; BLUE=""; CYAN=""; NC=""\n'
+        + bloco
+        + "\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(["bash", str(harness)], capture_output=True, text=True)
+    assert proc.returncode == 0, f"o bloco falhou:\n{proc.stdout}{proc.stderr}"
+
+    instalado = perfil / "airootfs" / "usr" / "local" / "bin" / "reims-util"
+    assert instalado.is_file(), (
+        "o reims-util não chegou ao airootfs — a ISO sairia sem ele e o "
+        f"OpenCore cairia para o caminho de template. stdout={proc.stdout!r}"
+    )
+    assert os.access(instalado, os.X_OK), (
+        "instalado sem bit de execução; o mkarchiso copia com "
+        "--no-preserve=mode e o validate_iso reprova"
+    )
+    assert instalado.read_bytes() == fonte.read_bytes(), "conteúdo diferente da fonte"
+    assert stat.S_IMODE(instalado.stat().st_mode) == 0o755
+
+
+def test_the_reims_util_block_refuses_when_the_resolver_fails(tmp_path):
+    """O contraponto: sem o reims-util o build PARA, não segue sem ele.
+
+    Sem isto, apagar o `exit 1` passaria no teste acima — e a ISO sairia sem o
+    utilitário enquanto o build dizia "pronto".
+    """
+    import subprocess
+
+    bloco = _bloco_do_reims_util(ate_o_install=False)
+    assert "exit 1" in bloco, "o recorte perdeu a recusa"
+
+    script_dir = tmp_path / "appliance"
+    script_dir.mkdir()
+    # Falha como o resolvedor real falha quando não acha nada.
+    (script_dir / "find_reims_util.sh").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+
+    harness = tmp_path / "t.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        f'SCRIPT_DIR="{script_dir}"\n'
+        f'ARCHISO_PROFILE="{tmp_path / "perfil"}"\n'
+        'RED=""; BLUE=""; CYAN=""; NC=""\n'
+        + bloco
+        + '\necho "NAO DEVERIA CHEGAR AQUI"\n',
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(["bash", str(harness)], capture_output=True, text=True)
+    assert proc.returncode == 1, (
+        f"sem reims-util o build tinha de parar com 1:\n{proc.stdout}{proc.stderr}"
+    )
+    assert "NAO DEVERIA" not in proc.stdout, "o script seguiu sem o reims-util"
+
+
 def test_validate_iso_requires_the_baked_reims_util():
     text = (ROOT / "appliance" / "validate_iso.py").read_text()
     assert "usr/local/bin/reims-util" in text
@@ -363,3 +491,333 @@ def test_without_the_entry_the_binary_would_reach_the_iso_as_0644(tmp_path):
         .replace('  ["/usr/local/bin/reims-util"]="0:0:755"\n', "")
     )
     assert _emulate_mkarchiso(tmp_path, stripped) == "644"
+
+
+# ------------------------------------- provenance do reims-vgpu dentro da ISO
+#
+# A ISO tem DOIS modos e cada um promete uma coisa diferente. O modo fontes
+# carrega o código de um commit exato, e aí a provenance tem de bater com o HEAD
+# do repositório. O modo pré-compilado não carrega fonte nenhuma: carrega o QEMU
+# e a ROM de uma RELEASE publicada.
+#
+# O validador exigia `commit`/`qemu` da provenance nos dois casos. Como a
+# provenance prebuilt não tem essas chaves, ele caía no default "HEAD" e
+# comparava `None != <sha do HEAD vivo>` — sempre verdadeiro. Resultado: TODA
+# ISO em modo pré-compilado era reprovada no fim da build, com a mensagem
+# "packaged ReimsVgpu provenance does not match validated source commits", e o
+# `.sha256`/manifesto nunca saíam. Não dependia de release, tag nem commit: era
+# determinístico.
+#
+# Estes testes rodam a FUNÇÃO de verdade, com a árvore do rootfs montada em
+# disco. `assertIn` sobre o texto do validador não distingue "confere a release"
+# de "confere o HEAD vivo", que era exatamente o bug.
+
+import importlib.util  # noqa: E402
+
+VALIDATE = ROOT / "appliance" / "validate_iso.py"
+
+
+def _carrega_validador():
+    spec = importlib.util.spec_from_file_location("_validate_iso_under_test", VALIDATE)
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+def _raiz_prebuilt(tmp_path: Path, *, prov: dict[str, str], release_no_pacote: str | None = None,
+                   com_qemu: bool = True, com_rom: bool = True) -> Path:
+    """Monta o mínimo de rootfs que o ramo prebuilt do validador lê."""
+    rootfs = tmp_path / "rootfs"
+    (rootfs / "opt/reims-vgpu").mkdir(parents=True)
+    linhas = "\n".join(f"{k}={v}" for k, v in prov.items())
+    (rootfs / "opt/reims-vgpu/SOURCE-PROVENANCE.txt").write_text(linhas + "\n")
+    if release_no_pacote is not None:
+        (rootfs / "opt/reims-vgpu/.release").write_text(release_no_pacote + "\n")
+    if com_qemu:
+        qemu = rootfs / "usr/local/lib/reims-vgpu-qemu/bin/qemu-system-x86_64"
+        qemu.parent.mkdir(parents=True)
+        qemu.write_bytes(b"\x7fELF qemu do pacote")
+    if com_rom:
+        rom = rootfs / "usr/local/lib/reims-vgpu-qemu/share/qemu/ReimsVgpu.rom"
+        rom.parent.mkdir(parents=True)
+        rom.write_bytes(b"\x55\xaa rom do pacote")
+    return rootfs
+
+
+def _confere_prebuilt(tmp_path: Path, **kwargs):
+    """Chama a mesma rotina que o `main()` usa para decidir a provenance."""
+    modulo = _carrega_validador()
+    rootfs = _raiz_prebuilt(tmp_path, **kwargs)
+    return modulo.confere_provenance(rootfs, Path("/tmp/reims-vgpu-inexistente"))
+
+
+def test_prebuilt_iso_is_not_compared_against_the_live_head(tmp_path):
+    """O bug: reprovava SEMPRE, porque `None != sha` é sempre verdadeiro."""
+    resultado = _confere_prebuilt(
+        tmp_path,
+        prov={"mode": "prebuilt", "release": "v1.1.1", "repo": "felipeab10/reims-vgpu",
+              "asset": "reims-vgpu-linux-x86_64.tar.gz"},
+        release_no_pacote="v1.1.1",
+    )
+    assert resultado.head == "v1.1.1", (
+        "o modo prebuilt tem de se identificar pela RELEASE, não pelo HEAD do "
+        f"checkout vivo; veio {resultado.head!r}"
+    )
+
+
+def test_prebuilt_iso_without_commit_fields_is_accepted(tmp_path):
+    """A provenance prebuilt não tem `commit` nem `qemu`: isso NÃO é erro."""
+    prov = {"mode": "prebuilt", "release": "v1.1.0", "repo": "felipeab10/reims-vgpu",
+            "asset": "reims-vgpu-linux-x86_64.tar.gz"}
+    assert "commit" not in prov and "qemu" not in prov
+    resultado = _confere_prebuilt(tmp_path, prov=prov)
+    assert resultado.head == "v1.1.0"
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _repo_de_mentira(tmp_path: Path) -> tuple[Path, Path, str, str]:
+    """Um repositório com `vendor/qemu` de verdade, para o modo fontes.
+
+    O validador resolve os commits por `git rev-parse` no repositório real: um
+    sha inventado faria o `CalledProcessError` do git aparecer no lugar da
+    checagem que se quer medir. Com um repo próprio o teste não depende nem do
+    remoto nem de existir um `vendor/qemu` neste checkout.
+    """
+    repo = tmp_path / "reims-src"
+    (repo / "vendor/qemu").mkdir(parents=True)
+    env = {
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        "HOME": str(tmp_path),
+    }
+    import os as _os
+
+    def commita(caminho: Path, texto: str) -> str:
+        (caminho / "arquivo").write_text(texto)
+        subprocess.run(["git", "-C", str(caminho), "add", "-A"], check=True,
+                       capture_output=True, env={**_os.environ, **env})
+        subprocess.run(["git", "-C", str(caminho), "commit", "-qm", texto],
+                       check=True, capture_output=True, env={**_os.environ, **env})
+        return _git(caminho, "rev-parse", "HEAD")
+
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True,
+                   capture_output=True, env={**_os.environ, **env})
+    subprocess.run(["git", "-C", str(repo / "vendor/qemu"), "init", "-q"],
+                   check=True, capture_output=True, env={**_os.environ, **env})
+    qemu = commita(repo / "vendor/qemu", "qemu")
+    head = commita(repo, "reims")
+    return repo, repo / "vendor/qemu", head, qemu
+
+
+def test_source_mode_still_demands_the_commits(tmp_path):
+    """Contraprova: o modo fontes continua exigindo o casamento com o HEAD."""
+    modulo = _carrega_validador()
+    repo, _, head, qemu = _repo_de_mentira(tmp_path)
+    # O build-iso.sh grava o SHA já resolvido na provenance, não a palavra HEAD.
+    rootfs = _raiz_prebuilt(
+        tmp_path,
+        prov={"source": str(repo), "branch": "master", "commit": head,
+              "qemu": qemu, "dirty_allowed": "0"},
+    )
+    resultado = modulo.confere_provenance(rootfs, repo)
+    assert resultado.head == head and resultado.qemu == qemu
+    assert resultado.prebuilt is False
+
+
+def test_source_mode_refuses_a_commit_that_does_not_match(tmp_path):
+    """E o casamento do modo fontes é mesmo exigido, não decorativo."""
+    modulo = _carrega_validador()
+    repo, _, head, _qemu = _repo_de_mentira(tmp_path)
+    # A provenance declara um commit que NÃO é o HEAD do repositório: é
+    # exatamente o caso que o modo fontes tem de reprovar.
+    rootfs = _raiz_prebuilt(
+        tmp_path,
+        prov={"source": str(repo), "branch": "master", "commit": head,
+              "qemu": "HEAD", "dirty_allowed": "0"},
+    )
+    (repo / "arquivo").write_text("mudou sem commitar")
+    with pytest.raises(RuntimeError, match="does not match validated source commits"):
+        modulo.confere_provenance(rootfs, repo)
+
+
+def test_a_package_from_another_release_is_refused(tmp_path):
+    """Pacote v1.1.1 com provenance dizendo v1.0.0 é erro de empacotamento."""
+    with pytest.raises(RuntimeError, match="release does not match provenance"):
+        _confere_prebuilt(
+            tmp_path,
+            prov={"mode": "prebuilt", "release": "v1.0.0", "repo": "felipeab10/reims-vgpu",
+                  "asset": "reims-vgpu-linux-x86_64.tar.gz"},
+            release_no_pacote="v1.1.1",
+        )
+
+
+def test_prebuilt_iso_without_a_release_is_refused(tmp_path):
+    with pytest.raises(RuntimeError, match="has no release"):
+        _confere_prebuilt(tmp_path, prov={"mode": "prebuilt", "repo": "felipeab10/reims-vgpu"})
+
+
+def test_prebuilt_iso_from_an_unexpected_repo_is_refused(tmp_path):
+    with pytest.raises(RuntimeError, match="unexpected repository"):
+        _confere_prebuilt(
+            tmp_path,
+            prov={"mode": "prebuilt", "release": "v1.1.1", "repo": "outro/reims-vgpu"},
+        )
+
+
+def test_prebuilt_iso_without_the_qemu_is_refused(tmp_path):
+    """Sem QEMU dentro do rootfs a ISO não sobe VM: é erro, não aviso."""
+    with pytest.raises(RuntimeError, match="has no packaged QEMU"):
+        _confere_prebuilt(
+            tmp_path,
+            prov={"mode": "prebuilt", "release": "v1.1.1", "repo": "felipeab10/reims-vgpu"},
+            com_qemu=False,
+        )
+
+
+def test_prebuilt_iso_without_the_rom_is_refused(tmp_path):
+    """Sem a ROM ao lado do QEMU o binário não acha `romfile ReimsVgpu.rom`."""
+    with pytest.raises(RuntimeError, match="ReimsVgpu.rom"):
+        _confere_prebuilt(
+            tmp_path,
+            prov={"mode": "prebuilt", "release": "v1.1.1", "repo": "felipeab10/reims-vgpu"},
+            com_rom=False,
+        )
+
+
+def test_the_qemu_and_rom_must_be_in_the_same_prefix(tmp_path):
+    """QEMU num prefixo e ROM em outro passaria se a checagem fosse por nome."""
+    modulo = _carrega_validador()
+    rootfs = _raiz_prebuilt(
+        tmp_path,
+        prov={"mode": "prebuilt", "release": "v1.1.1", "repo": "felipeab10/reims-vgpu"},
+    )
+    # Move a ROM para longe do binário.
+    rom = rootfs / "usr/local/lib/reims-vgpu-qemu/share/qemu/ReimsVgpu.rom"
+    outro = rootfs / "outro/lugar/share/qemu"
+    outro.mkdir(parents=True)
+    rom.rename(outro / "ReimsVgpu.rom")
+    with pytest.raises(RuntimeError, match="ReimsVgpu.rom"):
+        modulo.confere_provenance(rootfs, Path("/tmp/reims-vgpu-inexistente"))
+
+
+# ---------------------------------------------------------------------------
+# Portabilidade do QEMU empacotado
+# ---------------------------------------------------------------------------
+
+# O bundle é compilado numa estação de trabalho e executado dentro da ISO live,
+# cujo conjunto de pacotes é bem menor que o de um desktop. O `configure` do
+# QEMU **auto-detecta** várias bibliotecas opcionais e as liga quando as acha no
+# host de BUILD — então uma máquina com `brltty` instalado produzia um bundle
+# que não iniciava em lugar nenhum.
+#
+# Medido na v1.2.0 publicada: o binário saía com 62 NEEDED e morria com
+# `libbrlapi.so.0.8: cannot open shared object file`. Cruzando com as
+# bibliotecas da ISO, faltavam exatamente três de 62: libbrlapi, libiscsi e
+# libsndio. As outras 59 já estavam lá.
+#
+# Estes testes travam o que importa: os backends que a ISO não fornece ficam
+# DESABILITADOS explicitamente. Não travam a lista inteira de flags — a geração
+# do QEMU muda e um teste preso a "--enable-gtk" só daria manutenção falsa.
+_BACKENDS_QUE_A_ISO_NAO_TEM = {
+    "brlapi": "libbrlapi.so.0.8 (brltty): display braille, não usado pelo vGPU",
+    "libiscsi": "libiscsi.so.11: transporte SCSI remoto, não usado pelo vGPU",
+    "sndio": "libsndio.so.7: backend de áudio do BSD, não usado pelo vGPU",
+}
+
+
+def _ramo_linux_do_install_ctl() -> str:
+    """O texto do ramo `Linux/x86_64`, onde vive o QEMU_CONFIGURE do appliance."""
+    if not REIMS_CTL.is_file():
+        pytest.skip("árvore do reims-vgpu ausente neste host")
+    texto = REIMS_CTL.read_text(encoding="utf-8")
+    inicio = texto.find("Linux/x86_64)")
+    if inicio < 0:
+        pytest.fail("install-ctl.sh não tem mais o ramo Linux/x86_64")
+    fim = texto.find(";;", inicio)
+    return texto[inicio:fim if fim > 0 else len(texto)]
+
+
+@pytest.mark.parametrize("backend", sorted(_BACKENDS_QUE_A_ISO_NAO_TEM))
+def test_o_qemu_do_appliance_nao_liga_backend_ausente_na_iso(backend):
+    """Cada backend ausente tem de estar desabilitado explicitamente.
+
+    Sem o `--disable-*`, o `configure` liga o backend sempre que a lib existir
+    no host de build — e o artefato publicado passa a depender do que estava
+    instalado na máquina de quem empacotou.
+    """
+    ramo = _ramo_linux_do_install_ctl()
+    assert f"--disable-{backend}" in ramo, (
+        f"o QEMU do appliance pode voltar a exigir {_BACKENDS_QUE_A_ISO_NAO_TEM[backend]}; "
+        f"faltou --disable-{backend} no QEMU_CONFIGURE do ramo Linux/x86_64. "
+        "O sintoma no usuário é 'error while loading shared libraries' e a VM "
+        "não inicia, mesmo com a ISO recém-instalada."
+    )
+
+
+def test_as_tres_ausencias_medidas_continuam_cobertas():
+    """Trava o conjunto medido, não só cada flag isolada.
+
+    Este teste falha se alguém remover uma das três — inclusive por reescrever a
+    lista de flags e perder uma sem perceber.
+    """
+    ramo = _ramo_linux_do_install_ctl()
+    faltando = [b for b in _BACKENDS_QUE_A_ISO_NAO_TEM if f"--disable-{b}" not in ramo]
+    assert not faltando, (
+        "backends que a ISO não fornece e voltaram a ser auto-detectados: "
+        + ", ".join(sorted(faltando))
+    )
+
+
+def test_o_binario_construido_nao_pede_lib_fora_da_iso():
+    """Mede o ARTEFATO, não só a flag: nenhuma NEEDED pode estar fora da ISO.
+
+    A checagem de flag acima é barata e roda sempre; esta prova o resultado no
+    binário de verdade. Mede o build ATUAL do `install-ctl.sh` — o prefixo
+    rotulado por data em `~/.local/share/reims-ctl/qemu/`, e o symlink
+    `current` que o appliance executa.
+
+    De propósito NÃO mede uma release publicada antiga: uma v1.2.0 já no
+    GitHub carrega o defeito para sempre e reprovaria a suíte por um artefato
+    que o código atual não pode mais corrigir. Quem impede a republicação de um
+    bundle ruim é a checagem de flag, que roda sobre o fonte.
+    """
+    candidatos = [Path.home() / ".local/share/reims-ctl/qemu" / "current" / "bin"
+                  / "qemu-system-x86_64"]
+    raiz_builds = Path.home() / ".local/share/reims-ctl/qemu"
+    if raiz_builds.is_dir():
+        # O symlink `current` pode não existir; os prefixos rotulados existem.
+        rotulados = sorted(
+            (d / "bin" / "qemu-system-x86_64" for d in raiz_builds.iterdir()
+             if d.is_dir() and (d / "bin" / "qemu-system-x86_64").is_file()),
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        candidatos.extend(rotulados)
+
+    binario = next((c for c in candidatos if c.is_file()), None)
+    if binario is None:
+        pytest.skip("nenhum binário do QEMU construído neste host para medir")
+
+    objdump = shutil.which("objdump")
+    if objdump is None:
+        pytest.skip("objdump ausente; não dá para listar NEEDED")
+
+    saida = subprocess.run(
+        [objdump, "-p", str(binario)], capture_output=True, text=True, check=True
+    ).stdout
+    needed = sorted({l.split()[1] for l in saida.splitlines() if "NEEDED" in l})
+    assert needed, "objdump não listou nenhuma NEEDED; a medição não é válida"
+
+    # Os três nomes medidos não podem voltar, em nenhuma versão do artefato.
+    proibidas = {soname for soname in needed
+                 if soname.split(".so")[0] in
+                 ("libbrlapi", "libiscsi", "libsndio")}
+    assert not proibidas, (
+        f"o binário em {binario} ainda pede {sorted(proibidas)}, que a ISO não "
+        "tem: a VM morreria com 'error while loading shared libraries'"
+    )

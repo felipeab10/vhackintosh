@@ -173,6 +173,16 @@ libxrandr
 libxcursor
 libxi
 libxfixes
+# Libs de RUNTIME do QEMU pré-compilado (o binário da release é um ELF dinâmico;
+# `ldd` dele exige libepoxy, libpng16, libjpeg, libpixman, libslirp, libzstd,
+# libncursesw, libbz2, libasound, libpulse). Várias chegam por transitividade
+# (gtk3 -> glib2/cairo/pango; pixman -> libpng), mas depender de transitividade
+# é frágil: declaramos explicitamente as que o binário pede por nome.
+libepoxy
+libpng
+libjpeg-turbo
+zstd
+ncurses
 # Protetor de tela X e decoração client-side do Wayland: o build do SDL3 procura
 # as duas (libXss e libdecor) e reprova sem elas.
 libxss

@@ -61,10 +61,29 @@ def test_full_update_builds_exact_default_checkout():
          patch.object(SystemUpdater, "update_repositories", return_value=results), \
          patch("core.reims_build.build", return_value=True) as build, \
          patch.object(SystemUpdater, "_has_build_sources", return_value=True), \
+         patch.object(SystemUpdater, "_install_waysession") as install_waysession, \
          patch("core.i18n.t", side_effect=lambda key, **kwargs: key), \
          patch("core.updater.console.print"):
         assert SystemUpdater.run_full_update()
         assert build.call_args.args[0] == Path("/opt/reims-vgpu")
+        install_waysession.assert_called_once_with()
+
+
+def test_waysession_install_replaces_destination_and_sets_executable_mode(base: Path):
+    import os
+
+    source = base / "checkout/vhackintosh-waysession"
+    destination = base / "usr/local/bin/vhackintosh-waysession"
+    source.parent.mkdir(parents=True)
+    source.write_text("#!/bin/sh\necho updated\n")
+    destination.parent.mkdir(parents=True)
+    destination.write_text("old launcher\n")
+
+    SystemUpdater._install_waysession(source, destination)
+
+    assert destination.read_text() == source.read_text()
+    assert os.stat(destination).st_mode & 0o777 == 0o755
+    assert list(destination.parent.iterdir()) == [destination]
 
 
 def test_remote_validation():
