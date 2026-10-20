@@ -14,10 +14,12 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Callable, Optional
+from rich import box
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm, IntPrompt
+from rich.rule import Rule
 from rich.layout import Layout
 from rich.text import Text
 
@@ -51,7 +53,7 @@ from core.install_phase import (
 from core.smbios import GenSMBIOS
 from core.downloader import MacOSDownloader, MACOS_PRODUCTS
 from core.disk import DiskProvisioner
-from ui.banner import render_banner
+from ui.banner import animate_banner, centered_banner
 
 console = Console()
 
@@ -292,6 +294,7 @@ class VMTUI:
         # Detectado uma única vez: o modo de execução não muda durante a sessão.
         self.system_mode = detect_system_mode()
         self.installer_available = has_installer_binary()
+        self._banner_animated = False
 
     def run_main_loop(self) -> None:
         # Primeira tela do appliance (specs/language-selection): enquanto o
@@ -301,7 +304,11 @@ class VMTUI:
         self._backfill_install_phases()
         while True:
             console.clear()
-            console.print(render_banner())
+            if not getattr(self, "_banner_animated", False):
+                animate_banner(console)
+                self._banner_animated = True
+            else:
+                console.print(centered_banner(console))
 
             running_vm = self.lock.get_running_vm_info()
             if running_vm:
@@ -331,6 +338,7 @@ class VMTUI:
             vms = self.store.list_vms()
             self._render_vm_table(vms)
 
+            console.print(Rule(style="#164b66"))
             console.print(i18n.t("tui.menu.title"))
 
             # O instalador bare-metal permanece sempre acessível quando presente.
@@ -456,7 +464,7 @@ class VMTUI:
         if i18n.has_language_choice():
             return
         console.clear()
-        console.print(render_banner())
+        console.print(centered_banner(console))
         console.print(Panel(
             i18n.t("lang.subtitle"),
             title=f"[bold cyan]{i18n.t('lang.title')}[/bold cyan]",
@@ -594,10 +602,17 @@ class VMTUI:
                 print(i18n.t("tui.usb.auto_failed", device=dev.short_label, error=exc))
 
     def _render_vm_table(self, vms: list[VMConfig]) -> None:
-        table = Table(title=i18n.t("tui.vm.table.title"), border_style="cyan", header_style="bold magenta")
-        table.add_column("#", justify="center", style="bold yellow", width=4)
+        table = Table(
+            title=i18n.t("tui.vm.table.title"),
+            title_style="bold #00e5ff",
+            border_style="#168ca5",
+            header_style="bold #49d9e8",
+            box=box.ROUNDED,
+            row_styles=["", "#d6e7f5"],
+        )
+        table.add_column("#", justify="center", style="bold #79a8ff", width=4)
         table.add_column(i18n.t("tui.vm.col.name"), style="bold white")
-        table.add_column(i18n.t("tui.vm.col.macos_version"), style="cyan")
+        table.add_column(i18n.t("tui.vm.col.macos_version"), style="#49d9e8")
         table.add_column("Status", justify="center")
         table.add_column("vCPUs", justify="center")
         table.add_column("RAM", justify="center")
@@ -631,7 +646,7 @@ class VMTUI:
     def _toggle_install_phase(self, vm: VMConfig) -> None:
         """Alterna manualmente a fase da instalação do macOS desta VM."""
         console.clear()
-        console.print(render_banner())
+        console.print(centered_banner(console))
         console.print(i18n.t("tui.phase.title"))
 
         current = normalize_phase(getattr(vm, "install_phase", None))
@@ -738,7 +753,7 @@ class VMTUI:
     def _vm_details_screen(self, vm: VMConfig) -> None:
         while True:
             console.clear()
-            console.print(render_banner())
+            console.print(centered_banner(console))
 
             # Painel com todas as especificações da VM
             details_text = Text()
@@ -938,7 +953,7 @@ class VMTUI:
 
     def _wizard_create_vm(self) -> None:
         console.clear()
-        console.print(render_banner())
+        console.print(centered_banner(console))
         console.print(i18n.t("tui.wizard.title"))
 
         # ------------------------------------------------------------------
@@ -1153,7 +1168,7 @@ class VMTUI:
     def _view_hardware_diagnostics(self, interactive: bool = True) -> None:
         if interactive and sys.stdin.isatty():
             console.clear()
-        console.print(render_banner())
+        console.print(centered_banner(console))
 
         # Matriz completa de prontidão e compatibilidade
         readiness = SystemReadinessChecker.check_all()
@@ -1181,7 +1196,7 @@ class VMTUI:
 
     def _update_upstream(self) -> None:
         console.clear()
-        console.print(render_banner())
+        console.print(centered_banner(console))
         console.print(Panel(
             i18n.t("tui.update.title"),
             border_style="cyan",
@@ -1192,7 +1207,7 @@ class VMTUI:
 
     def _menu_download_images(self) -> None:
         console.clear()
-        console.print(render_banner())
+        console.print(centered_banner(console))
         console.print(i18n.t("tui.download.title"))
 
         readiness = SystemReadinessChecker.check_all()
@@ -1225,7 +1240,7 @@ class VMTUI:
 
     def _launch_vm(self, vm: VMConfig, is_installation: bool = False) -> None:
         console.clear()
-        console.print(render_banner())
+        console.print(centered_banner(console))
 
         if not self.lock.acquire(vm.name):
             console.print(i18n.t("tui.launch.other_vm_running"))
@@ -1736,7 +1751,7 @@ class VMTUI:
         reims_dir = find_reims_dir() or DEFAULT_REIMS_DIR
 
         console.clear()
-        console.print(render_banner())
+        console.print(centered_banner(console))
         console.print(i18n.t("tui.release.menu_title"))
         console.print(i18n.t("tui.release.menu_desc", repo=REIMS_REPO))
 
@@ -1813,7 +1828,7 @@ class VMTUI:
 
     def _menu_build_iso(self) -> None:
         console.clear()
-        console.print(render_banner())
+        console.print(centered_banner(console))
         console.print(i18n.t("tui.iso.title"))
         console.print(i18n.t("tui.iso.desc1"))
         console.print(i18n.t("tui.iso.desc2"))
