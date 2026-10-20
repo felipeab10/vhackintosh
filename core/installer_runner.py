@@ -16,7 +16,7 @@ from core.config import VMConfig, SMBIOSConfig, ExclusiveVMLock, VMManagerStore
 from core.smbios import GenSMBIOS
 from core.disk import DiskProvisioner
 from core.downloader import MacOSDownloader, MACOS_PRODUCTS
-from ui.banner import render_banner
+from ui.banner import centered_banner
 
 from core import i18n
 
@@ -29,7 +29,7 @@ class ABInstallerTest:
     @classmethod
     def run_interactive(cls) -> None:
         console.clear()
-        console.print(render_banner())
+        console.print(centered_banner(console))
         console.print(i18n.t("installer.title"))
 
         # Validação antecipada de hardware
