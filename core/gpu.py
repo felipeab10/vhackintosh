@@ -11,6 +11,7 @@ import re
 import struct
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 
@@ -33,7 +34,8 @@ from typing import List, Optional, Tuple
 # nada foi verificado.
 VULKAN_SKIP_ENV = "VHACK_SKIP_VULKAN_CHECK"
 
-# A mesma saída também existe como parâmetro de kernel, porque dentro da ISO o
+# A mesma saída também existe como parâmetro de kernel e SMBIOS OEM string,
+# porque dentro da ISO o
 # usuário NÃO consegue exportar uma variável antes do gate rodar: o gate roda no
 # login, e nesse momento o ambiente dele ainda não existe. O parâmetro se
 # acrescenta com `e` no menu do GRUB, sem reescrever a ISO.
@@ -43,7 +45,7 @@ VULKAN_SKIP_ENV = "VHACK_SKIP_VULKAN_CHECK"
 # numa ISO real — o shell decidia PULAR e o Python devolvia falha logo em
 # seguida, então a tela de bloqueio aparecia mesmo escolhendo a entrada
 # "Testar em VM". Um bypass que só metade do caminho entende não é bypass.
-VULKAN_SKIP_CMDLINE = "vhack_skip_vulkan=1"
+VULKAN_SKIP_CMDLINE = "vhack_skip_vulkan=1"  # parâmetro legado; o parser aceita os valores de _TRUTHY.
 
 _TRUTHY = ("1", "true", "yes", "on", "sim")
 
@@ -64,14 +66,33 @@ def _cmdline_do_kernel() -> str:
         return ""
 
 
+def smbios_oem_string_present(marker: str) -> bool:
+    """Return whether an SMBIOS Type 11 OEM string exactly matches marker."""
+    try:
+        for entry in Path("/sys/firmware/dmi/entries").glob("11-*/raw"):
+            try:
+                raw = entry.read_bytes()
+                if len(raw) < 5 or raw[0] != 11 or raw[1] < 5:
+                    continue
+                strings = raw[raw[1]:].split(b"\0")
+                if marker.encode("ascii") in strings:
+                    return True
+            except (OSError, UnicodeEncodeError):
+                continue
+    except OSError:
+        pass
+    return False
+
+
 def vulkan_check_skipped() -> bool:
     """
     O usuário pediu explicitamente para não bloquear no gate de Vulkan?
 
-    Verdadeiro se `VHACK_SKIP_VULKAN_CHECK` estiver ligada no ambiente OU se o
-    kernel tiver sido bootado com `vhack_skip_vulkan=1`. As duas vias leem a
-    MESMA tabela de valores e exigem o valor `1` literal no cmdline, para que
-    `vhack_skip_vulkan=10` ou `...=1abc` não passem por engano.
+    Verdadeiro se `VHACK_SKIP_VULKAN_CHECK` estiver ligada no ambiente, o
+    kernel tiver `vhack_skip_vulkan=1`/`=true`, ou SMBIOS Type 11 tiver a OEM
+    string exata `vhack_skip_vulkan=true`. No cmdline, aceitamos a mesma lista
+    de valores verdadeiros da variável de ambiente, sempre como token completo;
+    `vhack_skip_vulkan=1abc` não passa.
 
     O `except` é de propósito amplo: uma falha ao LER o cmdline só pode
     resultar em "não pulou" (o padrão seguro), jamais numa exceção que derrube
@@ -84,11 +105,11 @@ def vulkan_check_skipped() -> bool:
         cmdline = _cmdline_do_kernel()
     except Exception:
         return False
-    if not isinstance(cmdline, str) or not cmdline:
-        return False
-
-    padrao = r"(?:^| )" + re.escape(VULKAN_SKIP_CMDLINE) + r"(?: |$)"
-    return bool(re.search(padrao, cmdline))
+    if isinstance(cmdline, str) and cmdline:
+        padrao = r"(?:^| )vhack_skip_vulkan=(?:" + "|".join(_TRUTHY) + r")(?: |$)"
+        if re.search(padrao, cmdline, flags=re.IGNORECASE):
+            return True
+    return smbios_oem_string_present("vhack_skip_vulkan=true")
 
 
 def _via_do_escape() -> str:
@@ -103,7 +124,9 @@ def _via_do_escape() -> str:
     """
     if os.environ.get(VULKAN_SKIP_ENV, "").strip().lower() in _TRUTHY:
         return f"{VULKAN_SKIP_ENV}=1"
-    return f"{VULKAN_SKIP_CMDLINE} no cmdline do kernel"
+    if smbios_oem_string_present("vhack_skip_vulkan=true"):
+        return "vhack_skip_vulkan=true via SMBIOS"
+    return "vhack_skip_vulkan=true no cmdline do kernel"
 
 
 @dataclass

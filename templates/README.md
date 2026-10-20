@@ -4,10 +4,14 @@ A configuração descrita foi testada com macOS Tahoe 26.6.2 no reims-vgpu (KVM 
 
 | Arquivo | O que é | Tamanho esperado |
 |---|---|---|
-| `OpenCore.qcow2` | Partição EFI com OpenCore e o `config.plist` abaixo | ~21 MB |
+| `OpenCore.qcow2` | EFI do Ultimate-macOS-KVM com OpenCorePkg 1.0.8 e o `config.plist` abaixo | 384 MiB virtuais (~30 MB no host) |
 | `OVMF_VARS.fd` | NVRAM do OVMF (par do `OVMF_CODE_4M.fd`) | 540672 bytes |
-| `OVMF_CODE_4M.fd` | Código do OVMF 4M (se o host não levar o próprio) | 3653632 bytes |
+| `OVMF_CODE_4M.fd` | Código OVMF x86_64 4M com splash vHackintosh embutido | 3653632 bytes |
+| `vhackintosh-boot-logo.bmp` | Splash 8-bit usado pelo OVMF, em 386×116 px | 46086 bytes |
+| `vhackintosh-boot-logo.png` | Arte original do splash, com transparência | — |
 | `config.plist` | Cópia em texto do dentro do `OpenCore.qcow2`, versionada pra review | — |
+
+O splash foi inspirado na identidade visual do [site vHackintosh](https://vhackintosh.proclin.com.br/). O BMP é incorporado em `MdeModulePkg/Logo/Logo.bmp` no OVMF; novas VMs recebem o logo pelo `OVMF_CODE_4M.fd` deste template.
 
 ## Compatibilidade com ReimsVgpu
 

@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 20110)
-Total output lines: 1704
-
 """
 vHackintosh — Modern Terminal User Interface (TUI)
 Interface rica em terminal construída com Python Rich para gestão de VMs macOS.
@@ -12,6 +9,7 @@ import sys
 import time
 import uuid
 import datetime
+import tomllib
 import shutil
 import subprocess
 from pathlib import Path
@@ -111,6 +109,114 @@ def decide_reimsctl(
             return False, f"OVMF_CODE.fd ausente e sem template para copiar (em {custom_dir})"
 
     return True, f"reims-ctl ({macos_version})"
+
+
+def recover_reimsctl_vm_storage(vm: VMConfig) -> tuple[Optional[Path], str]:
+    """Adota com segurança o disco de uma VM existente do reims-ctl.
+
+    Catálogos antigos do vHackintosh podem apontar para o diretório removido
+    `~/reims-vgpu/vm/disks/...`, enquanto o disco foi mantido no diretório que
+    o reims-ctl registrou. Só recuperamos uma VM parada, com o mesmo ID, disco
+    e VARS válidos. Disco e OpenCore nativos ficam preservados por symlink no
+    layout do vHackintosh. Isso mantém a mesma EFI que o `reims-ctl start`
+    usava antes da migração (incluindo configurações e identidade já testadas).
+    Só gera um OpenCore do template quando o registro nativo não tem uma EFI.
+    """
+    record = reims_ctl.vm_record(vm.id)
+    if not record:
+        return None, f"não encontrei uma VM reims-ctl registrada com ID {vm.id}"
+    if record.get("state") != "stopped" or record.get("pid") is not None:
+        return None, f"a VM reims-ctl {vm.id} precisa estar parada para recuperar o armazenamento"
+
+    source_dir = Path(str(record.get("dir", ""))).expanduser()
+    if not source_dir.is_dir():
+        return None, f"o diretório registrado pelo reims-ctl não existe: {source_dir}"
+
+    config_path = source_dir / "vm.toml"
+    try:
+        with config_path.open("rb") as fh:
+            source_config = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        return None, f"não consegui ler {config_path}: {exc}"
+
+    disk_name = source_config.get("disk", "disk.qcow2")
+    q35 = source_config.get("q35") or {}
+    opencore_name = q35.get("opencore", "opencore.qcow2")
+    vars_name = q35.get("firmware_vars", "OVMF_VARS.fd")
+    source_disk = source_dir / disk_name
+    source_opencore = source_dir / opencore_name
+    source_vars = source_dir / vars_name
+    if not source_disk.is_file() or source_disk.stat().st_size == 0:
+        return None, f"o disco da VM registrada não existe ou está vazio: {source_disk}"
+    if not source_vars.is_file():
+        return None, f"as variáveis UEFI da VM registrada não existem: {source_vars}"
+
+    target_dir = CONFIG_DIR / "vms" / vm.id
+    target_disk = target_dir / "macos.qcow2"
+    target_opencore = target_dir / "OpenCore.qcow2"
+    target_vars = target_dir / "OVMF_VARS.fd"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    if target_disk.exists() or target_disk.is_symlink():
+        try:
+            same_disk = target_disk.resolve(strict=True) == source_disk.resolve(strict=True)
+        except OSError:
+            same_disk = False
+        if not same_disk:
+            return None, f"já existe outro disco no destino e não será sobrescrito: {target_disk}"
+    else:
+        target_disk.symlink_to(source_disk.resolve())
+
+    # O launcher nativo pode manter uma EFI diferente do template distribuído
+    # pelo vHackintosh. Preserve exatamente a imagem apontada pelo vm.toml que
+    # já iniciou esta VM; a capitalização do nome é só o contrato do TOML novo.
+    native_opencore = source_opencore.is_file() and source_opencore.stat().st_size > 0
+    if native_opencore:
+        if target_opencore.exists() or target_opencore.is_symlink():
+            try:
+                same_opencore = (
+                    target_opencore.resolve(strict=True)
+                    == source_opencore.resolve(strict=True)
+                )
+            except OSError:
+                same_opencore = False
+            if not same_opencore:
+                return None, (
+                    "já existe outro OpenCore no destino e ele não será substituído: "
+                    f"{target_opencore}"
+                )
+        else:
+            target_opencore.symlink_to(source_opencore.resolve())
+
+    if not target_vars.exists():
+        shutil.copy2(source_vars, target_vars)
+    # write_vm_toml preserva a GPU e o MAC do TOML anterior. Levar só esse
+    # arquivo para o novo diretório mantém a seleção Intel/NVIDIA que a VM já
+    # usava, sem reaproveitar seus caminhos de EFI ou ajustes antigos.
+    target_config = target_dir / "vm.toml"
+    if not target_config.exists():
+        shutil.copy2(config_path, target_config)
+    source_code = source_dir / q35.get("firmware_code", "OVMF_CODE.fd")
+    target_code = target_dir / "OVMF_CODE.fd"
+    if not target_code.exists() and source_code.is_file():
+        shutil.copy2(source_code, target_code)
+    if not target_code.exists() and not DiskProvisioner.ensure_ovmf_code(target_dir):
+        return None, f"OVMF_CODE.fd ausente e sem template para copiar (em {target_dir})"
+
+    if native_opencore:
+        vm.disk_path = str(target_disk)
+    else:
+        try:
+            DiskProvisioner.provision(vm)
+        except Exception as exc:  # noqa: BLE001 — devolve o motivo para a TUI
+            return None, f"falha ao preparar OpenCore/UEFI no destino {target_dir}: {exc}"
+
+    required = (target_disk, target_dir / "OpenCore.qcow2", target_vars)
+    missing = [str(path) for path in required if not path.exists()]
+    if missing:
+        return None, "a recuperação terminou sem estes arquivos: " + ", ".join(missing)
+    if native_opencore:
+        return target_dir, "disco e OpenCore nativos do reims-ctl preservados"
+    return target_dir, "disco recuperado do reims-ctl; OpenCore criado pelo template vHackintosh"
 
 
 def run_rail_session(
@@ -246,18 +352,19 @@ class VMTUI:
             console.print(i18n.t("tui.menu.update_upstream"))
             console.print(i18n.t("tui.menu.reims_release"))
             console.print(i18n.t("tui.menu.download_images"))
-            console.print(i18n.t("tui.menu.ab_test"))
+            console.print(i18n.t("tui.menu.restart"))
             console.print(i18n.t("tui.menu.build_iso"))
+            console.print(i18n.t("tui.menu.shutdown"))
             console.print(i18n.t("tui.menu.smbios_diagnostics"))
             console.print(i18n.t("tui.menu.exit"))
 
-            choices = ["1", "2", "3", "4", "5", "6", "7", "9", "0", "A", "a"]
+            choices = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "a"]
             if installer_available:
-                choices.extend(["I", "i", "8"])
+                choices.extend(["I", "i"])
 
             choice = Prompt.ask(i18n.t("tui.menu.prompt_choice"), choices=choices, default="1")
 
-            if choice in ("I", "i", "8"):
+            if choice in ("I", "i"):
                 if not readiness.can_run_vms:
                     console.print(Panel(
                         i18n.t("tui.install_blocked.panel"),
@@ -287,10 +394,23 @@ class VMTUI:
             elif choice == "5":
                 self._menu_download_images()
             elif choice == "6":
-                from core.installer_runner import ABInstallerTest
-                ABInstallerTest.run_interactive()
+                from core.power import PowerSync
+
+                console.print(i18n.t("tui.power.restarting_host"))
+                console.file.flush()
+                if PowerSync.request_host_action("reboot"):
+                    break
+                console.print(i18n.t("tui.power.host_action_failed"))
             elif choice == "7":
                 self._menu_build_iso()
+            elif choice == "8":
+                from core.power import PowerSync
+
+                console.print(i18n.t("tui.power.shutting_down_host"))
+                console.file.flush()
+                if PowerSync.request_host_action("poweroff"):
+                    break
+                console.print(i18n.t("tui.power.host_action_failed"))
             elif choice == "0":
                 console.print(i18n.t("tui.menu.goodbye"))
                 break
@@ -699,11 +819,12 @@ class VMTUI:
             console.print(i18n.t("tui.vm.actions.toggle_phase"))
             if has_multiple_gpus:
                 console.print(i18n.t("tui.vm.actions.change_gpu"))
-                console.print(i18n.t("tui.vm.actions.delete"))
                 allowed_actions = ["1", "2", "3", "4", "5", "6", "7", "d", "D", "i", "I", "p", "P", "0"]
             else:
-                console.print(i18n.t("tui.vm.actions.delete"))
-                allowed_actions = ["1", "2", "3", "4", "5", "6", "d", "D", "i", "I", "p", "P", "0"]
+                allowed_actions = ["1", "2", "3", "4", "5", "7", "d", "D", "i", "I", "p", "P", "0"]
+            # A opção de exclusão é sempre 7 na tela. Sem múltiplas GPUs,
+            # a ação 6 (alterar GPU) some, mas 7 continua disponível.
+            console.print(i18n.t("tui.vm.actions.delete"))
             # Só oferece parar se há o que parar; sem isso a opção falharia
             # sempre, e o operador não saberia por quê.
             if pid_desta:
@@ -805,7 +926,7 @@ class VMTUI:
                 self.store.update_vm(vm)
                 console.print(i18n.t("tui.gpu.updated", name=vm.selected_gpu_name))
                 Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
-            elif (has_multiple_gpus and action == "7") or (not has_multiple_gpus and action == "6"):
+            elif action == "7":
                 if Confirm.ask(i18n.t("tui.vm.delete.confirm", name=vm.name)):
                     del_disk = Confirm.ask(i18n.t("tui.vm.delete.disk"))
                     self.store.delete_vm(vm.id, delete_disk=del_disk)
@@ -866,7 +987,18 @@ class VMTUI:
         vcpus = IntPrompt.ask(i18n.t("tui.wizard.vcpus.prompt"), default=profile.cpu.suggested_vcpus)
 
         # 4. RAM recomendada
-        console.print(i18n.t("tui.wizard.ram.host_total"…110 tokens truncated…       if len(gpus) > 1:
+        console.print(i18n.t("tui.wizard.ram.host_total", gb=profile.ram.total_gb))
+        ram_gb = IntPrompt.ask(i18n.t("tui.wizard.ram.prompt"), default=profile.ram.suggested_vm_ram_gb)
+
+        # 5. Tamanho do Disco
+        disk_size_gb = IntPrompt.ask(i18n.t("tui.wizard.disk.prompt"), default=64)
+
+        # 6. Seleção de Placa de Vídeo (somente se houver mais de 1 GPU no host)
+        gpus = GPUChecker.list_gpus()
+        selected_gpu_slot = None
+        selected_gpu_name = None
+
+        if len(gpus) > 1:
             console.print(i18n.t("tui.gpu.detected"))
             # Pré-seleção: NÃO por fabricante. Até 19/10 o critério era
             # `vendor_name in ("NVIDIA", "AMD")`, o que pré-selecionava a RTX
@@ -953,6 +1085,12 @@ class VMTUI:
             vm.disk_path = str(bundle.hdd_path)
         except Exception as e:
             console.print(i18n.t("tui.wizard.provision_error", error=e))
+            # Não registre nem inicie uma VM sem os artefatos provisionados.
+            # Antes o wizard continuava após falha ao copiar/injetar o template
+            # e o reims-ctl podia acabar subindo uma EFI antiga ou própria.
+            if sys.stdin.isatty():
+                Prompt.ask(i18n.t("tui.prompt.enter_back"))
+            return
 
         self.store.add_vm(vm)
         console.print(i18n.t("tui.wizard.created", name=name))
@@ -1126,12 +1264,32 @@ class VMTUI:
                 Prompt.ask(i18n.t("tui.prompt.enter_continue"))
                 return
 
-            # Se a VM possui disco e OpenCore próprios no diretório
+            # Resolva o armazenamento persistente. Catálogos legados podem
+            # apontar para uma árvore antiga do reims-vgpu que já foi movida;
+            # nesse caso, recuperamos disco e OpenCore do registro nativo do
+            # reims-ctl para preservar o boot que já funcionava.
             custom_dir = None
-            if vm.disk_path and os.path.exists(vm.disk_path):
-                disk_parent = Path(vm.disk_path).parent
-                if (disk_parent / "OpenCore.qcow2").exists():
-                    custom_dir = disk_parent
+            recovery_error = ""
+            configured_dir = (
+                Path(vm.disk_path).expanduser().parent if vm.disk_path else None
+            )
+            if (
+                vm.disk_path
+                and Path(vm.disk_path).expanduser().is_file()
+                and configured_dir
+                and (configured_dir / "OpenCore.qcow2").is_file()
+            ):
+                custom_dir = configured_dir
+            else:
+                custom_dir, recovery_error = recover_reimsctl_vm_storage(vm)
+                if custom_dir:
+                    vm.disk_path = str(custom_dir / "macos.qcow2")
+                    self.store.update_vm(vm)
+                    console.print(f"[green]✔ {recovery_error}[/green]")
+                elif configured_dir and configured_dir.exists():
+                    # Mantém o caminho real no diagnóstico, em vez de imprimir
+                    # "layout incompleto em None".
+                    custom_dir = configured_dir
 
             # ------------------------------------------------------------------
             # Fase do ciclo de vida da instalação do macOS.
@@ -1180,6 +1338,8 @@ class VMTUI:
                 reims_dir, vm.macos_version, custom_dir
             )
             if not use_reims_rail:
+                if recovery_error and "layout persistente incompleto" in rail_reason:
+                    rail_reason = f"{rail_reason}; {recovery_error}"
                 console.print(Panel(
                     i18n.t("tui.launch.rail_unavailable", reason=rail_reason),
                     border_style="red",
@@ -1194,6 +1354,7 @@ class VMTUI:
             # nasce em <vmdir>/qmp.sock — socket fixo que o monitor observa,
             # mesmo contrato do antigo rail, sem argv de QEMU pra manter aqui.
             env_vars = os.environ.copy()
+            reims_ctl.apply_test_graphics_environment(env_vars)
             self._apply_gpu_environment(vm, env_vars)
 
             installer_path = (

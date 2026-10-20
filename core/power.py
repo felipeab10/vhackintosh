@@ -146,6 +146,26 @@ class PowerSync:
     """Gerencia a sincronização de energia entre a VM macOS e o Host Linux."""
 
     @classmethod
+    def request_host_action(cls, action: str) -> bool:
+        """Solicita reboot ou desligamento do host e informa se foi aceito."""
+        if action not in {"reboot", "poweroff"}:
+            raise ValueError("ação de energia inválida")
+
+        for command in (["systemctl", action], [action]):
+            try:
+                result = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+            except OSError:
+                continue
+            if result.returncode == 0:
+                return True
+        return False
+
+    @classmethod
     def handle_vm_exit(cls, reason: Optional[str] = None, is_kiosk_mode: bool = True) -> None:
         """Determina e executa o desligamento ou reinício do host com base na saída do macOS."""
         if reason == "guest-reset":

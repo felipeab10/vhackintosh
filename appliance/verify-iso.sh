@@ -29,6 +29,7 @@ EXTRA_ARGS=()
 ISO_FILE=""
 HEADLESS=0
 BUILD_TEST=0
+VMWARE_SVGA_TEST=0
 # Diretório temporário do kernel/initrd extraídos no modo --build-test.
 # Declarado aqui (e não só dentro do if) para o trap de limpeza poder consultá-lo
 # com `set -u` mesmo quando o modo não é usado.
@@ -45,6 +46,9 @@ usage() {
     echo "  --build-test    boota a ISO, roda o build do reims-vgpu DENTRO do guest e"
     echo "                  imprime PASS/FAIL. Implica --headless."
     echo "                  (exige uma ISO que já contenha o hook; ver AVISO abaixo)"
+    echo "  --vmware-svga   inicia a ISO via OVMF/GRUB; VMs usam VMware SVGA sem Vulkan"
+    echo "                  marcadores via SMBIOS; Esc abre o menu de boot"
+    echo "                  (não testa reims-vgpu)"
     echo "  --timeout <s>   teto de segundos do --build-test (padrão: ${BUILD_TEST_TIMEOUT})"
     echo "  args extras     repassados literalmente ao qemu-system-x86_64"
     echo
@@ -65,6 +69,7 @@ usage() {
     echo "  $(basename "$0") --window                         # janela"
     echo "  $(basename "$0") --headless                       # sem display, log em arquivo"
     echo "  $(basename "$0") --build-test                     # build automatizado PASS/FAIL"
+    echo "  $(basename "$0") --vmware-svga                    # teste interativo sem Vulkan"
 }
 
 # O parsing aceita `--timeout <s>` e `--timeout=<s>`; por isso não é um `for arg`.
@@ -80,6 +85,9 @@ while [ "$#" -gt 0 ]; do
         --build-test)
             BUILD_TEST=1
             HEADLESS=1
+            ;;
+        --vmware-svga)
+            VMWARE_SVGA_TEST=1
             ;;
         --timeout)
             if [ "$#" -lt 2 ]; then
@@ -286,7 +294,9 @@ QEMU_ARGS=(
     -smp 8
     -drive file="${TEST_SSD}",if=virtio,format=qcow2,id=ssd0
     -cdrom "${ISO_FILE}"
-    -boot d
+    # Mantém OVMF/GRUB no caminho normal. O menu de boot do firmware fica
+    # habilitado para que Esc permita escolher entre ISO e disco.
+    -boot order=d,menu=on
     # -vga std espelha o motor nativo do appliance (ui/tui.py usa `-vga std`).
     # Testar com outro dispositivo de vídeo verificaria um caminho que não é o
     # que roda de verdade.
@@ -320,7 +330,7 @@ if [ -n "${OVMF_BIOS}" ]; then
 fi
 
 # ==============================================================================
-# 5. --build-test: injeção do hook de cmdline + espera pelo veredito
+# 5. --build-test: boot direto para injetar hook de cmdline + veredito
 # ==============================================================================
 # COMO FUNCIONA (e por que assim):
 #   Passando `-append` ao QEMU (que define o cmdline do kernel, SUBSTITUINDO o
@@ -350,6 +360,14 @@ fi
 #
 #   `install_dir` e o UUID são lidos da própria ISO (grub.cfg embutido) /
 #   profiledef.sh, para não codificar valores que mudam a cada build.
+
+if [ "${VMWARE_SVGA_TEST}" -eq 1 ]; then
+    # Passa o modo de teste via SMBIOS Type 11 (OEM strings). Isso preserva
+    # OVMF/GRUB e o menu de boot do firmware; -kernel/-append os ignorariam.
+    QEMU_ARGS+=(-smbios type=11,value=vhack_skip_vulkan=true,value=vhack_graphics=vmware-svga)
+    echo -e "${BLUE}▶ Modo VMware SVGA ativado via SMBIOS (boot normal por ISO/OVMF).${NC}"
+    echo -e "${YELLOW}  O menu de boot continua disponível com Esc; este modo não valida aceleração Reims vGPU.${NC}"
+fi
 
 if [ "${BUILD_TEST}" -eq 1 ]; then
     # Descobre o UUID do archiso a partir do grub.cfg da própria ISO.
@@ -398,7 +416,10 @@ if [ "${BUILD_TEST}" -eq 1 ]; then
         echo -e "${YELLOW}Aviso: não consegui extrair archisosearchuuid do grub.cfg da ISO.${NC}" >&2
         echo -e "${YELLOW}       Bootando sem ele; se a ISO não montar a mídia, o veredito será FAIL.${NC}" >&2
     fi
-    APPEND_ARGS="${APPEND_ARGS} cow_spacesize=10G console=tty0 console=ttyS0,115200 vhack_build_test=1"
+    APPEND_ARGS="${APPEND_ARGS} cow_spacesize=10G"
+    if [ "${BUILD_TEST}" -eq 1 ]; then
+        APPEND_ARGS="${APPEND_ARGS} console=tty0 console=ttyS0,115200 vhack_build_test=1"
+    fi
 
     # --------------------------------------------------------------------------
     # SOBRE `-append`: ele NÃO funciona com boot por ISO/firmware.
@@ -453,7 +474,7 @@ if [ "${BUILD_TEST}" -eq 1 ]; then
         KERNEL_TMP=""
         echo -e "${RED}Erro: não consegui extrair vmlinuz/initramfs de ${ISO_FILE}.${NC}" >&2
         echo -e "${RED}       Sem eles o QEMU recusaria '-append' e o teste não teria como${NC}" >&2
-        echo -e "${RED}       injetar 'vhack_build_test=1'. Verifique se 'bsdtar' está instalado.${NC}" >&2
+        echo -e "${RED}       injetar parâmetros de teste. Verifique se 'bsdtar' está instalado.${NC}" >&2
         [ -n "${KEEP_KERNEL_TMP}" ] && rm -rf "${KEEP_KERNEL_TMP}"
         exit 2
     fi
@@ -487,6 +508,17 @@ echo
 # ==============================================================================
 
 if [ "${BUILD_TEST}" -eq 0 ]; then
+    if [ "${BUILD_TEST}" -eq 0 ] && [ -n "${KERNEL_TMP}" ] && [ -d "${KERNEL_TMP}" ]; then
+        # --vmware-svga usa SMBIOS e não extrai kernel/initrd. Limpa apenas
+        # arquivos temporários deixados por um eventual caminho de teste.
+        # Mantém QEMU interativo e remove os ~200 MB temporários ao sair.
+        set +e
+        "${QEMU_BIN}" "${QEMU_ARGS[@]}" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
+        QEMU_STATUS=$?
+        set -e
+        rm -rf "${KERNEL_TMP}"
+        exit "${QEMU_STATUS}"
+    fi
     exec "${QEMU_BIN}" "${QEMU_ARGS[@]}" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
 fi
 

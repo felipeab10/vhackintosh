@@ -38,6 +38,7 @@ file_permissions=(
   # 0755 é desfeito pelo `cp -af --no-preserve=...mode` do mkarchiso e o atalho
   # chega na ISO como 0644, sem poder ser executado.
   ["/usr/local/bin/reims-vgpu-qemu"]="0:0:755"
+  ["/etc/sysctl.d/90-reims-vgpu.conf"]="0:0:644"
   ["/etc/vhackintosh/sway.conf"]="0:0:644"
   ["/opt/vhackintosh/bin/"]="0:0:755"
   ["/opt/vhackintosh/bin/vhackintosh"]="0:0:755"

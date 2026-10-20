@@ -1,12 +1,37 @@
 import plistlib
+import json
+import subprocess
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 IDENTITY_KEYS = {"SystemSerialNumber", "BoardSerialNumber", "MLB", "ROM", "SystemUUID"}
 
 
 class TemplateIntegrityTests(unittest.TestCase):
+    def test_iso_validator_rejects_native_minimal_opencore_size(self):
+        from appliance import validate_iso
+
+        path = ROOT / "templates/OpenCore.qcow2"
+        wrong_size = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps({"virtual-size": 128 * 1024 * 1024}), stderr=""
+        )
+        with patch.object(validate_iso, "command", return_value=wrong_size):
+            with self.assertRaisesRegex(RuntimeError, "384 MiB Ultimate-macOS-KVM"):
+                validate_iso.validate_opencore_image(path)
+
+    def test_canonical_opencore_template_is_384_mib(self):
+        import shutil
+        import subprocess
+        if not shutil.which("qemu-img"):
+            self.skipTest("qemu-img unavailable")
+        result = subprocess.run(
+            ["qemu-img", "info", "--output=json", str(ROOT / "templates/OpenCore.qcow2")],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(json.loads(result.stdout)["virtual-size"], 384 * 1024 * 1024)
+
     def test_ovmf_code_is_generic_and_vars_matches_neutral_template(self):
         vars_path = ROOT / "templates/OVMF_VARS.fd"
         code_path = ROOT / "templates/OVMF_CODE_4M.fd"

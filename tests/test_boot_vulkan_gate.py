@@ -29,6 +29,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 RAIZ = Path(__file__).resolve().parents[1]
 PROFILE = (
@@ -44,8 +45,23 @@ sys.path.insert(0, str(RAIZ))
 from core.gpu import (  # noqa: E402
     VULKAN_SKIP_CMDLINE,
     VULKAN_SKIP_ENV,
+    smbios_oem_string_present,
     vulkan_check_skipped,
 )
+
+
+class TestSmbiosOemMarkers(unittest.TestCase):
+    def test_detecta_marcador_exato_em_smbios_type_11(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp) / "raw"
+            raw.write_bytes(
+                b"\x0b\x05\x00\x00\x02"
+                b"vhack_skip_vulkan=true\0vhack_graphics=vmware-svga\0\0"
+            )
+            with mock.patch("core.gpu.Path.glob", return_value=[raw]):
+                self.assertTrue(smbios_oem_string_present("vhack_skip_vulkan=true"))
+                self.assertTrue(smbios_oem_string_present("vhack_graphics=vmware-svga"))
+                self.assertFalse(smbios_oem_string_present("vhack_skip_vulkan=true-extra"))
 
 
 def _so_as_funcoes(destino: Path, cmdline: Path | None = None) -> Path:
@@ -312,11 +328,11 @@ class GrubMenuEntryTests(unittest.TestCase):
 
 
 class KernelParameterTests(unittest.TestCase):
-    """`vhack_skip_vulkan=1` no cmdline também destrava o boot.
+    """`vhack_skip_vulkan=true` (e o legado `=1`) também destrava o boot.
 
     É a via que o usuário REALMENTE consegue usar dentro da ISO: o gate roda
     no login, então não há como exportar a variável de ambiente antes dele.
-    Com o parâmetro de kernel dá para acrescentar `vhack_skip_vulkan=1` com
+    Com o parâmetro de kernel dá para acrescentar `vhack_skip_vulkan=true` com
     `e` no GRUB e bootar — mesmo mecanismo do `vhack_build_test=1`.
     """
 
@@ -342,6 +358,7 @@ class KernelParameterTests(unittest.TestCase):
 
     def test_the_parameter_skips_the_gate(self):
         self.assertTrue(self._pula("root=... quiet vhack_skip_vulkan=1"))
+        self.assertTrue(self._pula("root=... quiet vhack_skip_vulkan=true"))
 
     def test_the_parameter_works_alone_at_start_and_end(self):
         """Como fica depois do `e` no GRUB: pode ir em qualquer posição."""
@@ -353,8 +370,8 @@ class KernelParameterTests(unittest.TestCase):
         self.assertTrue(self._pula("vhack_build_test=1 vhack_skip_vulkan=1"))
 
     def test_other_values_of_the_parameter_do_not_skip(self):
-        """Só `=1` liga. Um typo não pode destravar o boot em silêncio."""
-        for cmdline in ["vhack_skip_vulkan=0", "vhack_skip_vulkan=true",
+        """Só valores verdadeiros completos ligam; um typo não destrava em silêncio."""
+        for cmdline in ["vhack_skip_vulkan=0",
                         "vhack_skip_vulkan=", "vhack_skip_vulkan=10",
                         "vhack_skip_vulkan=1abc", "vhack_skip_vulkan",
                         "meu_vhack_skip_vulkan=1"]:
@@ -705,6 +722,7 @@ class OsDoisGatesConcordamTests(unittest.TestCase):
         """A decisão dos dois lados tem de bater em todos os cmdlines."""
         casos = [
             "quiet splash vhack_skip_vulkan=1",
+            "quiet splash vhack_skip_vulkan=true",
             "vhack_skip_vulkan=1",
             "quiet splash",
             "",
@@ -741,12 +759,15 @@ class OsDoisGatesConcordamTests(unittest.TestCase):
         self.assertFalse(python)
 
     def test_the_real_python_rejects_partial_values(self):
-        """O valor tem de ser `1` literal, igual à tabela do shell."""
+        """Valores parciais não passam nem no parser do kernel."""
         for cmdline in ["vhack_skip_vulkan=10", "vhack_skip_vulkan=1abc",
-                        "vhack_skip_vulkan=true", "vhack_skip_vulkan="]:
+                        "vhack_skip_vulkan="]:
             with self.subTest(cmdline=cmdline):
                 self.assertFalse(self._python(cmdline),
                                  f"{cmdline!r} não pode destravar o boot")
+
+    def test_the_real_python_accepts_the_documented_true_value(self):
+        self.assertTrue(self._python("quiet splash vhack_skip_vulkan=true"))
 
     def test_a_cmdline_file_that_does_not_exist_is_not_an_error(self):
         """Fora do Linux (ou sem /proc) o gate não pode explodir.

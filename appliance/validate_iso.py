@@ -17,9 +17,22 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_build_deps import missing_markers, parse_pacman_packages  # noqa: E402
 
+EXPECTED_OPENCORE_VIRTUAL_SIZE = 384 * 1024 * 1024
+
 
 def command(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(args, check=True, capture_output=True, text=True)
+
+
+def validate_opencore_image(path: Path) -> None:
+    """Reject the small native reims-util EFI in place of the ULTMOS image."""
+    info = json.loads(command("qemu-img", "info", "--output=json", str(path)).stdout)
+    virtual_size = info.get("virtual-size")
+    if virtual_size != EXPECTED_OPENCORE_VIRTUAL_SIZE:
+        raise RuntimeError(
+            f"OpenCore image has virtual size {virtual_size!r}, expected "
+            f"{EXPECTED_OPENCORE_VIRTUAL_SIZE} bytes (384 MiB Ultimate-macOS-KVM template)"
+        )
 
 
 class Provenance(NamedTuple):
@@ -134,6 +147,7 @@ def main() -> int:
         if shutil.which("qemu-img"):
             oc = Path(__file__).resolve().parents[1] / "templates/OpenCore.qcow2"
             command("qemu-img", "check", str(oc))
+            validate_opencore_image(oc)
         tmp_parent = Path(os.environ.get("TMPDIR", "/var/tmp"))
         if not tmp_parent.is_dir() or not os.access(tmp_parent, os.W_OK):
             tmp_parent = None
@@ -222,6 +236,7 @@ def main() -> int:
             if not image.is_file():
                 raise RuntimeError("ISO has no OpenCore.qcow2 template")
             command("qemu-img", "check", str(image))
+            validate_opencore_image(image)
             with tempfile.TemporaryDirectory() as efi_tmp:
                 embedded_plist = Path(efi_tmp) / "config.plist"
                 command("guestfish", "--ro", "-a", str(image), "-m", "/dev/sda1", "download", "/EFI/OC/config.plist", str(embedded_plist))

@@ -238,6 +238,12 @@ rsync -av \
     "${PROJECT_ROOT}/.git" \
     "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/"
 
+# OVMF_CODE.fd sempre mantém o mesmo tamanho. Force a cópia para que uma
+# imagem recompilada com o mesmo mtime/tamanho do artefato anterior não fique
+# de fora por causa do quick-check padrão do rsync.
+install -m 0644 "${PROJECT_ROOT}/templates/OVMF_CODE_4M.fd" \
+    "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/templates/OVMF_CODE_4M.fd"
+
 # O macserial fica fora do rsync genérico para preservar explicitamente
 # executável e licença no payload da appliance.
 mkdir -p "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/resources/macserial"

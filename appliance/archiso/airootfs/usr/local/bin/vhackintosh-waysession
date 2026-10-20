@@ -270,12 +270,15 @@ else
     export WLR_SCENE_DISABLE_DIRECT_SCANOUT=1
 fi
 
-# Sem isto o wlroots ABORTA quando nao encontra GPU com renderizacao acelerada
-# (ex.: virtio-gpu em VM de teste), com a mensagem "Software rendering detected,
-# please use the WLR_RENDERER_ALLOW_SOFTWARE environment variable to proceed".
-# Em hardware real a aceleracao e usada normalmente; esta flag so cobre o caso
-# em que o unico renderizador disponivel e o llvmpipe.
-export WLR_RENDERER_ALLOW_SOFTWARE=true
+# Só o teste `verify-iso.sh --vmware-svga` precisa aceitar llvmpipe: essa ISO
+# roda dentro de QEMU sem GPU Vulkan física. No uso normal mantemos o renderer
+# por software desabilitado para que o caminho nativo Reims vGPU continue estrito.
+# wlroots aceita `1`; valores como `true` encerram o compositor como opção inválida.
+if [ "${VHACK_TEST_GRAPHICS_BACKEND:-}" = "vmware-svga" ]; then
+    export WLR_RENDERER_ALLOW_SOFTWARE=1
+else
+    unset WLR_RENDERER_ALLOW_SOFTWARE
+fi
 
 sway -c "$CONF"
 SWAY_STATUS=$?
