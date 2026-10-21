@@ -364,6 +364,7 @@ class VMTUI:
             console.print(i18n.t("tui.menu.diagnostics"))
             console.print(i18n.t("tui.menu.update_upstream"))
             console.print(i18n.t("tui.menu.reims_release"))
+            console.print(i18n.t("tui.menu.reims_rebuild"))
             console.print(i18n.t("tui.menu.download_images"))
             console.print(i18n.t("tui.menu.restart"))
             console.print(i18n.t("tui.menu.build_iso"))
@@ -371,7 +372,7 @@ class VMTUI:
             console.print(i18n.t("tui.menu.smbios_diagnostics"))
             console.print(i18n.t("tui.menu.exit"))
 
-            choices = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "a"]
+            choices = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "a", "B", "b"]
             if installer_available:
                 choices.extend(["I", "i"])
 
@@ -402,6 +403,8 @@ class VMTUI:
                 self._update_upstream()
             elif choice in ("A", "a"):
                 self._menu_reims_release()
+            elif choice in ("B", "b"):
+                self._menu_reims_rebuild()
             elif choice == "9":
                 self._view_smbios_diagnostics(vms)
             elif choice == "5":
@@ -1711,6 +1714,68 @@ class VMTUI:
 
         console.print(i18n.t("tui.build.success"))
         return True
+
+    def _menu_reims_rebuild(self) -> None:
+        """Faz um build limpo do fonte e deixa install-ctl instalar deps ausentes."""
+        reims_dir = find_reims_dir()
+        state = evaluate_reims_build(explicit=reims_dir)
+        if state.reims_dir is None or not state.sources_present:
+            console.print(i18n.t("tui.rebuild.no_sources"))
+            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+            return
+
+        console.clear()
+        console.print(centered_banner(console))
+        console.print(i18n.t("tui.rebuild.title", path=state.reims_dir))
+        console.print(i18n.t("tui.rebuild.description"))
+        if not Confirm.ask(i18n.t("tui.rebuild.confirm"), default=False):
+            console.print(i18n.t("tui.rebuild.cancelled"))
+            return
+
+        from rich.progress import (
+            Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn,
+        )
+
+        result = {"ok": False}
+        with Progress(
+            SpinnerColumn(spinner_name="dots"),
+            TextColumn("[bold cyan]{task.description}[/bold cyan]"),
+            BarColumn(bar_width=36),
+            TextColumn("[bold green]{task.percentage:>3.0f}%[/bold green]"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task(i18n.t("tui.build.preparing"), total=100)
+
+            def on_start(name: str, _expected: float) -> None:
+                progress.update(task, description=i18n.t("tui.build.compiling", name=name))
+
+            def on_done(name: str, ok: bool) -> None:
+                if not ok:
+                    progress.update(task, description=i18n.t("tui.build.failed_task", name=name))
+
+            try:
+                result["ok"] = build_reims_vgpu(
+                    state.reims_dir,
+                    clean=True,
+                    on_start=on_start,
+                    on_done=on_done,
+                    progress=lambda pct: progress.update(task, completed=pct),
+                )
+            except Exception as exc:  # noqa: BLE001 — reporta erro sem encerrar a TUI
+                progress.update(task, description=i18n.t("tui.build.error", error=exc))
+
+        if result["ok"]:
+            console.print(i18n.t("tui.rebuild.success"))
+        else:
+            from core.reims_build import tail_log
+            console.print(i18n.t("tui.build.failed"))
+            snippet = tail_log("build-qemu-reims.log", lines=20)
+            if snippet:
+                console.print(i18n.t("tui.build.log_header", name="build-qemu-reims.log"))
+                console.print(snippet)
+            console.print(i18n.t("tui.build.logs_path"))
+        Prompt.ask(i18n.t("tui.prompt.enter_continue"))
 
     def _menu_reims_release(self) -> None:
         """Item "A": troca o reims-vgpu por uma release mais nova do fork.

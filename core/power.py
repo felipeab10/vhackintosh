@@ -87,6 +87,11 @@ class QMPPowerMonitor:
                         break
                 except socket.timeout:
                     continue
+                except OSError:
+                    # QEMU may exit before sending the initial QMP greeting
+                    # (for example when it rejects a device model). The monitor
+                    # is already gone in that case; do not emit a thread traceback.
+                    return
 
             try:
                 s.sendall(json.dumps({"execute": "qmp_capabilities"}).encode() + b"\n")
