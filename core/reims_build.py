@@ -720,6 +720,7 @@ def install_prebuilt(reims_dir: Path) -> bool:
 def build(
     reims_dir: Path,
     *,
+    clean: bool = False,
     on_start: Optional[Callable[[str, float], None]] = None,
     on_done: Optional[Callable[[str, bool], None]] = None,
     progress: Optional[Callable[[float], None]] = None,
@@ -754,6 +755,97 @@ def build(
         cmd = ["bash", str(script), "--target", "x86_64", "--backend", "vulkan"]
     if not script.exists():
         raise BuildError(f"script de build ausente: {script}")
+
+    if clean:
+        # `install-ctl.sh` checks and installs missing OS packages before
+        # building. Remove only this project's generated Rust/QEMU outputs so
+        # a requested rebuild cannot reuse a stale Meson/Ninja configuration.
+        if new_tree:
+            qemu_source = reims_dir / "vendor" / "qemu"
+            pinned = subprocess.run(
+                ["git", "-C", str(reims_dir), "ls-tree", "HEAD", "vendor/qemu"],
+                capture_output=True, text=True, check=False,
+            ).stdout.split()
+            actual = subprocess.run(
+                ["git", "-C", str(qemu_source), "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=False,
+            )
+            expected_commit = pinned[2] if len(pinned) >= 3 and pinned[1] == "commit" else ""
+            actual_commit = actual.stdout.strip()
+            if expected_commit and actual.returncode == 0 and actual_commit != expected_commit:
+                # `ensure_executable_bits` can leave generated chmod-only
+                # changes in the vendored QEMU tree. Those are safe to replace;
+                # any content edit or untracked file means this is user work,
+                # so stop before touching it.
+                diff = subprocess.run(
+                    ["git", "-C", str(qemu_source), "diff", "HEAD", "--raw", "--no-abbrev"],
+                    capture_output=True, text=True, check=False,
+                )
+                status = subprocess.run(
+                    ["git", "-C", str(qemu_source), "status", "--porcelain", "--untracked-files=all"],
+                    capture_output=True, text=True, check=False,
+                )
+                numstat = subprocess.run(
+                    ["git", "-C", str(qemu_source), "diff", "HEAD", "--numstat"],
+                    capture_output=True, text=True, check=False,
+                )
+                raw_rows = [line for line in diff.stdout.splitlines() if line.strip()]
+                status_rows = [line for line in status.stdout.splitlines() if line.strip()]
+                numstat_rows = [line.split("\t", 2) for line in numstat.stdout.splitlines() if line.strip()]
+                mode_only = (
+                    diff.returncode == 0
+                    and numstat.returncode == 0
+                    and bool(raw_rows)
+                    and len(raw_rows) == len(status_rows)
+                    and all(
+                        len(line.split()) >= 4
+                        and line.split()[0].startswith(":")
+                        and line.split()[0][1:] != line.split()[1]
+                        and line.split()[4].startswith("M")
+                        for line in raw_rows
+                    )
+                    and all(line[:2] == " M" for line in status_rows)
+                    and all(
+                        len(row) >= 2 and row[0] == "0" and row[1] == "0"
+                        for row in numstat_rows
+                    )
+                    and len(raw_rows) == len(numstat_rows)
+                )
+                has_untracked = any(line.startswith("??") for line in status.stdout.splitlines())
+                if not mode_only or has_untracked:
+                    raise BuildError(
+                        "vendor/qemu não está no commit exigido e contém alterações locais "
+                        "de conteúdo; preserve-as e alinhe o submódulo manualmente antes do rebuild"
+                    )
+                aligned = subprocess.run(
+                    ["git", "-C", str(qemu_source), "checkout", "--force", "--detach", expected_commit],
+                    capture_output=True, text=True, check=False,
+                )
+                if aligned.returncode != 0:
+                    raise BuildError(
+                        f"não foi possível alinhar vendor/qemu ao pin {expected_commit}: "
+                        f"{aligned.stderr.strip()}"
+                    )
+
+            target = Path(os.environ.get("CARGO_TARGET_DIR") or reims_dir / "target")
+            if not target.is_absolute():
+                target = reims_dir / target
+            cache_home = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+            if not cache_home.is_absolute():
+                cache_home = Path.home() / ".cache"
+            for generated in (
+                target,
+                cache_home / "reims-ctl" / "qemu-build-linux-x86_64",
+                # install-ctl.sh compiles reims-ctl in a separate shared Cargo
+                # target directory. Leaving it intact lets a different
+                # checkout's motor survive while QEMU is rebuilt from this
+                # branch, producing incompatible device arguments.
+                cache_home / "reims-ctl" / "ctl-target",
+            ):
+                if generated.exists():
+                    shutil.rmtree(generated)
+        elif (reims_dir / "vendor" / "qemu" / "build").exists():
+            shutil.rmtree(reims_dir / "vendor" / "qemu" / "build")
 
     # A ISO entrega a árvore em 0644 (ver `ensure_executable_bits`); sem isto o
     # `./configure` do QEMU falha com "Permission denied" logo na primeira
@@ -811,6 +903,32 @@ def build(
         print("  install-ctl.sh concluiu mas o QEMU instalado não foi encontrado "
               f"em {qemu_binary()}")
         ok = False
+
+    if ok and new_tree:
+        # reims-ctl may require devices added in the QEMU submodule pin. A
+        # successful compile without those models is not a usable runtime.
+        ctl_qemu_source = reims_dir / "crates" / "reims-ctl" / "src" / "qemu.rs"
+        source_text = ctl_qemu_source.read_text(encoding="utf-8", errors="replace") if ctl_qemu_source.is_file() else ""
+        required_devices = {
+            name for name in ("apple-gfx-pci", "apple-gfx-iosurface-pci")
+            if name in source_text
+        }
+        if required_devices:
+            try:
+                probe = subprocess.run(
+                    [str(qemu_binary()), "-device", "help"],
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+                missing_devices = sorted(
+                    name for name in required_devices if name not in probe.stdout
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                missing_devices = sorted(required_devices)
+                print(f"  não foi possível validar os dispositivos do QEMU: {exc}")
+            if missing_devices:
+                print("  QEMU instalado sem os dispositivos exigidos pelo reims-ctl: "
+                      + ", ".join(missing_devices))
+                ok = False
 
     if ok:
         # Só grava o stamp com o build comprovadamente de pé.
