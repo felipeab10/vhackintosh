@@ -17,18 +17,60 @@ from urllib.request import Request, urlopen, HTTPError
 from urllib.parse import urlparse
 
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import (
     Progress,
+    ProgressColumn,
     SpinnerColumn,
     TextColumn,
-    BarColumn,
-    TaskProgressColumn,
-    DownloadColumn,
-    TransferSpeedColumn,
-    TimeRemainingColumn,
 )
+from rich.text import Text
 
 console = Console()
+
+
+class _ProgressPercentColumn(ProgressColumn):
+    """Percentual compacto, com cor estável independente do tema do terminal."""
+
+    def render(self, task) -> Text:
+        percentage = task.percentage
+        if percentage is None:
+            return Text(" --%", style="bold white")
+        return Text(f"{percentage:3.0f}%", style="bold white")
+
+
+class _DownloadSizeColumn(ProgressColumn):
+    """Tamanho transferido no formato compacto usado pelo instalador."""
+
+    def render(self, task) -> Text:
+        downloaded_mb = round(task.completed / 1_000_000)
+        if task.total is None:
+            return Text(f"{downloaded_mb} MB", style="bold white")
+        total_mb = round(task.total / 1_000_000)
+        return Text(f"{downloaded_mb}/{total_mb} MB", style="bold white")
+
+
+class _BarColumn(ProgressColumn):
+    """Barra compacta de uma linha para o progresso do download."""
+
+    def __init__(self, width: int = 28) -> None:
+        super().__init__()
+        self.width = width
+
+    def render(self, task) -> Text:
+        percentage = task.percentage
+        if percentage is None:
+            pulse_width = min(5, self.width)
+            phase = int((task.elapsed or 0) * 2) % (2 * self.width - pulse_width)
+            start = phase if phase <= self.width - pulse_width else 2 * self.width - pulse_width - phase
+            line = Text("░" * start, style="#153247")
+            line.append("█" * pulse_width, style="#12cbd5")
+            line.append("░" * (self.width - start - pulse_width), style="#153247")
+        else:
+            filled = round(self.width * percentage / 100)
+            line = Text("█" * filled, style="#12cbd5")
+            line.append("░" * (self.width - filled), style="#153247")
+        return line
 
 IMAGES_CACHE_DIR = Path(os.path.expanduser("~/.config/vhackintosh/images"))
 
@@ -107,38 +149,48 @@ class MacOSDownloader:
             console.print(f"[bold red]Falha ao obter metadados da Apple:[/bold red] {e}")
             return None
 
-        # 1. Download do BaseSystem.dmg
+        # A operação tem até três etapas: imagem, checksum e conversão local.
+        # A conversão não tem percentual confiável, então ela será exibida com spinner.
         dmg_url = info.get("AU")
         dmg_token = info.get("AT")
         if not dmg_url or not dmg_token:
             console.print("[red]Link de download do BaseSystem.dmg não encontrado na resposta da Apple.[/red]")
             return None
 
+        chunk_url = info.get("CU")
+        chunk_token = info.get("CT")
+        has_chunklist = bool(chunk_url and chunk_token)
+        stage_count = 3 if has_chunklist else 2
+
         console.print(f"[bold green]▶ Baixando BaseSystem.dmg oficial da Apple...[/bold green]")
         success = cls._stream_download(
             url=dmg_url,
             asset_token=dmg_token,
             destination=dmg_path,
-            description=f"BaseSystem.dmg ({meta['name']})",
+            description=f"[1/{stage_count}] macOS {ver_key.capitalize()} installer",
         )
         if not success:
             console.print("[red]Erro durante o download do BaseSystem.dmg.[/red]")
             return None
 
         # 2. Download do BaseSystem.chunklist
-        chunk_url = info.get("CU")
-        chunk_token = info.get("CT")
-        if chunk_url and chunk_token:
+        if has_chunklist:
             cls._stream_download(
                 url=chunk_url,
                 asset_token=chunk_token,
                 destination=chunk_path,
-                description="BaseSystem.chunklist",
+                description=f"[2/{stage_count}] Verificando BaseSystem",
             )
 
         # 3. Conversão de BaseSystem.dmg para BaseSystem.img usando dmg2img
         console.print(f"\n[bold cyan]▶ Convertendo BaseSystem.dmg para formato de disco KVM (.img)...[/bold cyan]")
-        conv_success = cls._convert_dmg_to_img(dmg_path, img_path)
+        conversion_stage = 3 if has_chunklist else 2
+        with Progress(
+            SpinnerColumn(spinner_name="dots"),
+            TextColumn(f"[bold cyan]\\[{conversion_stage}/{stage_count}] Convertendo instalador para imagem KVM[/bold cyan]"),
+            console=console,
+        ):
+            conv_success = cls._convert_dmg_to_img(dmg_path, img_path)
         if not conv_success:
             console.print("[bold red]Falha na conversão do BaseSystem.dmg via dmg2img![/bold red]")
             return None
@@ -214,16 +266,14 @@ class MacOSDownloader:
             total_size = int(resp.headers.get("Content-Length", 0))
 
             with Progress(
-                SpinnerColumn(spinner_name="dots"),
+                SpinnerColumn(spinner_name="dots", style="cyan"),
                 TextColumn("[bold cyan]{task.description}[/bold cyan]"),
-                BarColumn(bar_width=40),
-                TaskProgressColumn(),
-                DownloadColumn(),
-                TransferSpeedColumn(),
-                TimeRemainingColumn(),
+                _BarColumn(width=28),
+                _ProgressPercentColumn(),
+                _DownloadSizeColumn(),
                 console=console,
             ) as progress:
-                task = progress.add_task(description, total=total_size if total_size > 0 else None)
+                task = progress.add_task(escape(description), total=total_size if total_size > 0 else None)
 
                 with open(destination, "wb") as f:
                     while True:
