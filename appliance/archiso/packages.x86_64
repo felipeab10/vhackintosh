@@ -8,6 +8,7 @@ mkinitcpio
 mkinitcpio-archiso
 systemd
 systemd-sysvcompat
+kbd
 sudo
 bash
 zsh

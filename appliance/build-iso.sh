@@ -48,6 +48,8 @@ RELEASE_ASSET_NAME="reims-vgpu-linux-x86_64.tar.gz"
 # `--update-sources`: baixa a release e a extrai por cima de REIMS_SRC, para quem
 # mantém um checkout das fontes em dia sem `git pull` no meio do build.
 REIMS_UPDATE_SRC=0
+REIMS_UTIL_UPDATE=0
+REIMS_UTIL_REF="${REIMS_UTIL_REF:-master}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -71,6 +73,14 @@ while [[ $# -gt 0 ]]; do
             # Atualiza as fontes do reims-vgpu a partir da release do GitHub e sai.
             REIMS_UPDATE_SRC=1
             shift
+            ;;
+        --update-reims-util)
+            REIMS_UTIL_UPDATE=1
+            shift
+            ;;
+        --reims-util-ref)
+            REIMS_UTIL_REF="$2"
+            shift 2
             ;;
         --from-source|--build-source)
             # Força o modo antigo (fontes empacotadas + compilação no appliance).
@@ -98,6 +108,8 @@ while [[ $# -gt 0 ]]; do
             echo "                        Implica --from-source; use --prebuilt depois para voltar."
             echo "  -u, --update-sources  Baixa a release do reims-vgpu e atualiza REIMS_SRC, sem"
             echo "                        construir a ISO. Combine com --release <TAG> para escolher."
+            echo "      --update-reims-util  Compila e atualiza o reims-util oficial, sem construir a ISO."
+            echo "      --reims-util-ref <REF> Branch/tag oficial do reims-util (padrão: master)."
             echo "  --keep-work           Preserva os diretórios temporários em /var/tmp após o build (útil para debug)."
             echo "  -h, --help            Exibe esta mensagem de ajuda"
             exit 0
@@ -114,6 +126,16 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Atualização do utilitário é independente do build da ISO: não exige root ou Archiso.
+if [ "${REIMS_UTIL_UPDATE}" -eq 1 ]; then
+    if [ "${REIMS_UPDATE_SRC}" -eq 1 ]; then
+        echo -e "${RED}Escolha --update-sources ou --update-reims-util por execução.${NC}"
+        exit 2
+    fi
+    REIMS_UTIL_REF="${REIMS_UTIL_REF}" bash "${SCRIPT_DIR}/update-reims-util.sh"
+    exit $?
+fi
 
 # 1.5. `--update-sources`: só atualiza as fontes/artefato do reims-vgpu e sai.
 # Não exige root nem mkarchiso: é download e extração.
@@ -251,13 +273,16 @@ install -m 0755 "${PROJECT_ROOT}/resources/macserial/macserial" "${ARCHISO_PROFI
 install -m 0644 "${PROJECT_ROOT}/resources/macserial/LICENSE.txt" "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/resources/macserial/LICENSE.txt"
 install -m 0644 "${PROJECT_ROOT}/resources/macserial/README.md" "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/resources/macserial/README.md"
 
-# Empacotamento do binário reims-util, usado pelas operações nativas de OpenCore
-# do reims-ctl. Ele não escolhe a EFI inicial do wizard: novas VMs copiam o
-# template versionado derivado do Ultimate-macOS-KVM e injetam nele o SMBIOS.
-# O reims-util não é compilado junto com o reims-vgpu (o `reims-ctl
-# __record-install` o instala de https://github.com/steelbrain/reims-util com
-# `cargo install --git`), então a ISO precisa levá-lo para funcionar offline.
-# Ver appliance/find_reims_util.sh.
+# O comando dentro da ISO pode atualizar o utilitário e regenerar a EFI que o
+# wizard copiará para as próximas VMs, sem substituir o OVMF com a logo.
+mkdir -p "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/appliance"
+install -m 0755 "${SCRIPT_DIR}/update-reims-util.sh" \
+    "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/appliance/update-reims-util.sh"
+install -m 0644 "${SCRIPT_DIR}/build_opencore.py" \
+    "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/appliance/build_opencore.py"
+
+# Empacotamos o executável e usamos a mesma versão para gerar a EFI da ISO.
+# O firmware OVMF permanece o do vHackintosh e mantém a logo embutida.
 if ! REIMS_UTIL_HOST_BIN="$(bash "${SCRIPT_DIR}/find_reims_util.sh")"; then
     echo -e "${RED}✖ reims-util não encontrado neste host de build.${NC}"
     echo -e "  A ISO precisa levá-lo: no primeiro boot o appliance compila o reims-vgpu"
@@ -270,6 +295,30 @@ fi
 echo -e "${BLUE}▶ Empacotando utilitário nativo reims-util (${REIMS_UTIL_HOST_BIN})...${NC}"
 mkdir -p "${ARCHISO_PROFILE}/airootfs/usr/local/bin"
 install -m 0755 "${REIMS_UTIL_HOST_BIN}" "${ARCHISO_PROFILE}/airootfs/usr/local/bin/reims-util"
+cat > "${ARCHISO_PROFILE}/airootfs/usr/local/bin/vhackintosh-update-reims-util" <<'EOF'
+#!/usr/bin/env bash
+exec /opt/vhackintosh/appliance/update-reims-util.sh --refresh-opencore "$@"
+EOF
+chmod 0755 "${ARCHISO_PROFILE}/airootfs/usr/local/bin/vhackintosh-update-reims-util"
+
+REIMS_UTIL_VERSION="$("${REIMS_UTIL_HOST_BIN}" --version | head -n1)"
+REIMS_UTIL_COMMIT="unknown"
+if [ -f "${REIMS_UTIL_HOST_BIN}.commit" ]; then
+    REIMS_UTIL_COMMIT="$(head -n1 "${REIMS_UTIL_HOST_BIN}.commit")"
+fi
+cat > "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/REIMS-UTIL-PROVENANCE.txt" <<EOF
+repository=https://github.com/steelbrain/reims-util
+version=${REIMS_UTIL_VERSION}
+commit=${REIMS_UTIL_COMMIT}
+EOF
+
+# A imagem vai pronta para uso offline: OpenCore, Lilu e os kexts de aceleração
+# ficam no qcow2. --no-ovmf mantém o OVMF vHackintosh, com a logo do projeto.
+echo -e "${BLUE}▶ Gerando OpenCore e kexts de aceleração com reims-util...${NC}"
+python3 "${SCRIPT_DIR}/build_opencore.py" \
+    --reims-util "${REIMS_UTIL_HOST_BIN}" \
+    --output "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/templates/OpenCore.qcow2" \
+    --config-output "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/templates/config.plist"
 
 # 5. Obtenção do reims-vgpu.
 #

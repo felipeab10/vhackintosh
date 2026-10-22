@@ -10,7 +10,7 @@ IDENTITY_KEYS = {"SystemSerialNumber", "BoardSerialNumber", "MLB", "ROM", "Syste
 
 
 class TemplateIntegrityTests(unittest.TestCase):
-    def test_iso_validator_rejects_native_minimal_opencore_size(self):
+    def test_iso_validator_rejects_legacy_template_size(self):
         from appliance import validate_iso
 
         path = ROOT / "templates/OpenCore.qcow2"
@@ -18,7 +18,7 @@ class TemplateIntegrityTests(unittest.TestCase):
             args=[], returncode=0, stdout=json.dumps({"virtual-size": 128 * 1024 * 1024}), stderr=""
         )
         with patch.object(validate_iso, "command", return_value=wrong_size):
-            with self.assertRaisesRegex(RuntimeError, "384 MiB Ultimate-macOS-KVM"):
+            with self.assertRaisesRegex(RuntimeError, "128 MiB reims-util"):
                 validate_iso.validate_opencore_image(path)
 
     def test_canonical_opencore_template_is_384_mib(self):

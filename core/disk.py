@@ -22,10 +22,9 @@ from core.smbios import GenSMBIOS
 console = Console()
 
 VM_STORAGE_BASE = CONFIG_DIR / "vms"
-# O template canônico é a EFI completa baseada no Ultimate-macOS-KVM, versionada
-# neste repositório e preparada com ReimsVgpu para Tahoe 26. Novas VMs partem
-# desta imagem e recebem SMBIOS próprio; não substitua por uma EFI mínima gerada
-# pelo reims-util. Ver templates/README.md para limites de compatibilidade.
+# O build da ISO gera o OpenCore com reims-util e o instala neste diretório.
+# Em checkout de desenvolvimento, o arquivo versionado em templates/ é o
+# fallback. Em ambos os casos, novas VMs recebem SMBIOS próprio.
 DEFAULT_OPENCORE_TEMPLATES = [
     Path("/opt/vhackintosh/templates/OpenCore.qcow2"),
     Path(__file__).resolve().parent.parent / "templates" / "OpenCore.qcow2",
@@ -134,14 +133,13 @@ class DiskProvisioner:
             # no diretório da VM — ver core/reims_ctl.py).
             cls.ensure_ovmf_code(vm_dir)
 
-            # 4. Novas VMs devem partir do template OpenCore versionado, que
-            # preserva os drivers e ajustes do Ultimate-macOS-KVM/Reims. O
-            # reims-util produz uma EFI mínima própria e não é intercambiável
-            # com este template. Injete somente a identidade SMBIOS da VM.
+            # 4. Copie a EFI preparada pelo build (reims-util no appliance) ou
+            # o fallback do checkout de desenvolvimento. Injete somente a
+            # identidade SMBIOS da VM para preservar kexts e ajustes da imagem.
             if new_opencore:
                 template_oc = cls.get_template_opencore_path()
                 if not template_oc:
-                    raise FileNotFoundError("Imagem base OpenCore.qcow2 do template Ultimate-macOS-KVM não encontrada.")
+                    raise FileNotFoundError("Imagem base OpenCore.qcow2 do template não encontrada.")
                 if not shutil.which("guestfish"):
                     opencore_path.unlink(missing_ok=True)
                     raise RuntimeError("guestfish é necessário para provisionar com segurança a EFI OpenCore do template")
@@ -212,9 +210,8 @@ class DiskProvisioner:
         staged_image = Path(staged_name)
         backup_name = None
         try:
-            # Preserve the full template/VM EFI (drivers, resources and kexts).
-            # reims-util can make a minimal replacement image; using it here
-            # silently discarded the Ultimate-macOS-KVM configuration.
+            # Preserve a EFI inteira (drivers, recursos e kexts); alteramos
+            # somente o config.plist para manter a identidade por VM.
             shutil.copy2(original_image, staged_image)
             cls._inject_opencore_config_in_place(staged_image, vm, show_picker)
 

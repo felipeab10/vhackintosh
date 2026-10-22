@@ -315,9 +315,9 @@ class VMTUI:
             else:
                 console.print(centered_banner(console))
 
-            running_vm = self.lock.get_running_vm_info()
-            if running_vm:
-                console.print(i18n.t("tui.main.running_vm", vm=running_vm))
+            running_vms = self.lock.get_running_vm_info()
+            if running_vms:
+                console.print(i18n.t("tui.main.running_vm", vm=running_vms))
 
             if self.system_mode == "live":
                 console.print(i18n.t("tui.main.live_media"))
@@ -345,6 +345,7 @@ class VMTUI:
 
             console.print(Rule(style="#164b66"))
             console.print(i18n.t("tui.menu.title"))
+            console.print(i18n.t("tui.menu.vm_shortcuts"))
 
             # O instalador bare-metal permanece sempre acessível quando presente.
             # Ele é copiado para o sistema definitivo por design, portanto a sua
@@ -1250,9 +1251,29 @@ class VMTUI:
         console.clear()
         console.print(centered_banner(console))
 
-        if not self.lock.acquire(vm.name):
-            console.print(i18n.t("tui.launch.other_vm_running"))
-            console.print(i18n.t("tui.launch.only_one_vm"))
+        if not self.lock.acquire(vm.name, ram_gb=vm.ram_gb, vm_id=vm.id):
+            error = self.lock.last_error or {}
+            if error.get("reason") == "already_running":
+                console.print(i18n.t("tui.launch.vm_already_running", name=vm.name))
+                Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
+                return
+            if "requested_gb" not in error:
+                console.print(i18n.t(
+                    "tui.launch.memory_check_failed",
+                    error=error.get("reason", "erro inesperado"),
+                ))
+                Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
+                return
+            console.print(Panel(
+                i18n.t(
+                    "tui.launch.insufficient_memory",
+                    requested=error.get("requested_gb", vm.ram_gb),
+                    available=error.get("available_gb", 0),
+                    reserve=error.get("host_reserve_gb", 0),
+                    active=", ".join(error.get("active_vms", [])) or "nenhuma",
+                ),
+                border_style="red",
+            ))
             Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
             return
 
