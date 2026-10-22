@@ -17,6 +17,8 @@ from core.config import LOGS_DIR, SMBIOSConfig
 
 # Onde cada chamada ao reims-util é registrada (com stdout/stderr e returncode).
 LOG_FILE = LOGS_DIR / "reims-util-opencore.log"
+OPENCORE_BOOT_ARGS = "keepsyms=1 tlbto_us=0 vti=9"
+OPENCORE_PICKER_TIMEOUT = 45
 
 
 REIMS_UTIL_CANDIDATES = (
@@ -135,6 +137,7 @@ def generate_opencore(
     boot_args: Optional[str] = None,
     verbose_boot: bool = False,
     text_picker: bool = False,
+    show_picker: bool = False,
 ) -> bool:
     """Gera uma imagem OpenCore personalizada utilizando `reims-util opencore`.
 
@@ -146,12 +149,35 @@ def generate_opencore(
         boot_args: Argumentos de boot customizados do kernel macOS.
         verbose_boot: Se True, ativa mensagens detalhadas de inicialização do kernel (-v).
         text_picker: Se True, usa o seletor em modo texto do OpenCore.
+        show_picker: Se True, mantém o seletor OpenCore visível em todos os boots.
 
     Returns:
         True se a imagem foi gerada com sucesso e é válida.
     """
     util_bin = find_reims_util()
     if not util_bin:
+        return False
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # O APV arm64-port é a correção validada para o primeiro desktop no Tahoe.
+    # Binários antigos ainda geravam uma EFI válida, mas sem esses kexts. Não
+    # aceite silenciosamente uma EFI incompleta como se fosse a atual.
+    try:
+        help_result = subprocess.run(
+            [str(util_bin), "opencore", "--help"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if help_result.returncode != 0 or "--no-apv-arm64-port" not in help_result.stdout:
+        with LOG_FILE.open("a", encoding="utf-8") as lf:
+            lf.write(
+                f"\n--- reims-util opencore ({Path(output_path).name}) ---\n"
+                f"Erro: {util_bin} não oferece suporte aos kexts APV arm64-port.\n"
+            )
         return False
 
     dest = Path(output_path).resolve()
@@ -184,8 +210,9 @@ def generate_opencore(
         cmd.append("--verbose-boot")
     if text_picker:
         cmd.append("--text-picker")
+    if show_picker:
+        cmd.append("--show-picker")
 
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
     log_file = LOG_FILE
 
     try:
@@ -208,7 +235,25 @@ def generate_opencore(
         if res.returncode != 0:
             return False
 
-        return dest.is_file() and dest.stat().st_size > 0
+        if not dest.is_file() or dest.stat().st_size == 0:
+            return False
+        qemu_img = shutil.which("qemu-img")
+        if not qemu_img:
+            with log_file.open("a", encoding="utf-8") as lf:
+                lf.write("Erro: qemu-img não encontrado para validar a EFI gerada.\n")
+            return False
+        check = subprocess.run(
+            [qemu_img, "check", str(dest)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+        )
+        if check.returncode:
+            with log_file.open("a", encoding="utf-8") as lf:
+                lf.write(f"Erro: qemu-img check falhou: {check.stderr.strip()}\n")
+            return False
+        return True
     except (OSError, subprocess.SubprocessError) as exc:
         with log_file.open("a", encoding="utf-8") as lf:
             lf.write(f"Exception during reims-util invocation: {exc}\n")

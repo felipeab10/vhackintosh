@@ -18,18 +18,11 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from core.config import VMConfig, CONFIG_DIR
 from core.smbios import GenSMBIOS
+from core import reims_util
 
 console = Console()
 
 VM_STORAGE_BASE = CONFIG_DIR / "vms"
-# O build da ISO gera o OpenCore com reims-util e o instala neste diretório.
-# Em checkout de desenvolvimento, o arquivo versionado em templates/ é o
-# fallback. Em ambos os casos, novas VMs recebem SMBIOS próprio.
-DEFAULT_OPENCORE_TEMPLATES = [
-    Path("/opt/vhackintosh/templates/OpenCore.qcow2"),
-    Path(__file__).resolve().parent.parent / "templates" / "OpenCore.qcow2",
-    Path(os.path.expanduser("~/.config/vhackintosh/templates/OpenCore.qcow2")),
-]
 
 DEFAULT_OVMF_VARS_TEMPLATES = [
     Path("/opt/vhackintosh/templates/OVMF_VARS.fd"),
@@ -58,13 +51,6 @@ class VMDiskBundle:
 
 class DiskProvisioner:
     """Provisiona discos e configura o OpenCore para cada VM criada."""
-
-    @classmethod
-    def get_template_opencore_path(cls) -> Optional[Path]:
-        for candidate in DEFAULT_OPENCORE_TEMPLATES:
-            if candidate.exists() and candidate.stat().st_size > 1024 * 1024:
-                return candidate
-        return None
 
     @classmethod
     def ensure_ovmf_code(cls, dest_dir: Path) -> bool:
@@ -131,25 +117,37 @@ class DiskProvisioner:
                         break
             # E o código do OVMF ao lado (par do VARS; o reims-ctl pede os dois
             # no diretório da VM — ver core/reims_ctl.py).
-            cls.ensure_ovmf_code(vm_dir)
+            if not cls.ensure_ovmf_code(vm_dir):
+                raise FileNotFoundError(
+                    "OVMF_CODE.fd personalizado não encontrado; a logo do vHackintosh não pode ser preservada."
+                )
 
-            # 4. Copie a EFI preparada pelo build (reims-util no appliance) ou
-            # o fallback do checkout de desenvolvimento. Injete somente a
-            # identidade SMBIOS da VM para preservar kexts e ajustes da imagem.
+            # 4. Gere a EFI para esta VM com o reims-util oficial. Isso garante
+            # que VMs criadas pelo checkout e pela ISO recebam os kexts APV
+            # atuais; copiar o fallback versionado do checkout pode omiti-los.
+            # --no-ovmf deixa o OVMF personalizado acima intacto, incluindo a
+            # logo do vHackintosh.
             if new_opencore:
-                template_oc = cls.get_template_opencore_path()
-                if not template_oc:
-                    raise FileNotFoundError("Imagem base OpenCore.qcow2 do template não encontrada.")
-                if not shutil.which("guestfish"):
+                progress.update(
+                    task2,
+                    description=(
+                        "Gerando OpenCore com reims-util oficial, kexts APV e SMBIOS exclusivo..."
+                    ),
+                )
+                generated = reims_util.generate_opencore(
+                    opencore_path,
+                    vm.smbios,
+                    no_ovmf=True,
+                    timeout=reims_util.OPENCORE_PICKER_TIMEOUT,
+                    boot_args=reims_util.OPENCORE_BOOT_ARGS,
+                    show_picker=bool(getattr(vm, "opencore_show_picker", False)),
+                )
+                if not generated:
                     opencore_path.unlink(missing_ok=True)
-                    raise RuntimeError("guestfish é necessário para provisionar com segurança a EFI OpenCore do template")
-                shutil.copyfile(template_oc, opencore_path)
-                try:
-                    progress.update(task2, description="Aplicando SMBIOS exclusivo à EFI OpenCore do template...")
-                    cls._inject_smbios_to_opencore_qcow2(opencore_path, vm)
-                except Exception:
-                    opencore_path.unlink(missing_ok=True)
-                    raise
+                    raise RuntimeError(
+                        "Não foi possível gerar uma EFI com os kexts APV pelo reims-util oficial. "
+                        "Atualize o reims-util no menu do vHackintosh e tente novamente."
+                    )
             progress.update(task2, description="[bold green]✔ OpenCore EFI pronto para boot![/bold green]")
 
         # 5. Link/cópia do instalador se fornecido

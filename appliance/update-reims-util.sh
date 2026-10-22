@@ -83,7 +83,10 @@ trap cleanup EXIT
 echo "Compilando steelbrain/reims-util em ${COMMIT:0:12}..."
 cargo install --locked --git "$REPO_URL" --rev "$COMMIT" --root "${TMP_ROOT}/install" --force
 
-if [[ ! -x "$STAGED_BIN" ]] || ! "$STAGED_BIN" --version >/dev/null 2>&1 || ! "$STAGED_BIN" opencore --help | grep -q -- '--no-ovmf'; then
+if [[ ! -x "$STAGED_BIN" ]] \
+    || ! "$STAGED_BIN" --version >/dev/null 2>&1 \
+    || ! "$STAGED_BIN" opencore --help | grep -q -- '--no-ovmf' \
+    || ! "$STAGED_BIN" opencore --help | grep -q -- '--no-apv-arm64-port'; then
     echo "Erro: o binário compilado não passou na validação." >&2
     exit 1
 fi
