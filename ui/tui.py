@@ -1100,6 +1100,10 @@ class VMTUI:
             selected_gpu=selected_gpu_slot,
             selected_gpu_name=selected_gpu_name,
             smbios=smbios,
+            # O instalador pode reiniciar várias vezes; deixe o picker visível
+            # para o operador escolher Recovery/Installer sem depender de
+            # segurar uma tecla na janela da VM.
+            opencore_show_picker=bool(installer_path),
             created_at=datetime.datetime.now().isoformat(),
         )
 

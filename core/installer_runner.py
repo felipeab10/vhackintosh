@@ -118,6 +118,7 @@ class ABInstallerTest:
             disk_size_gb=disk_size_gb,
             audio_device=audio_device,
             smbios=smbios,
+            opencore_show_picker=True,
         )
 
         bundle = DiskProvisioner.provision(vm, installer_img=installer_img)

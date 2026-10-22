@@ -143,8 +143,10 @@ cd ~/reims-vgpu
 
 Esse passo exige as dependências de compilação documentadas no repositório do
 `reims-vgpu`. O script instala o `reims-ctl`, o QEMU com Reims vGPU e o
-`reims-util`. O último também é necessário no host que constrói a ISO, pois o
-builder o inclui no appliance.
+`reims-util`. O vHackintosh usa o `reims-util` oficial para gerar a EFI de cada
+VM com os kexts APV e o SMBIOS exclusivo. `--no-ovmf` mantém o OVMF
+personalizado do projeto, que contém a logo vHackintosh. O utilitário também é
+necessário no host que constrói a ISO.
 
 Para atualizar o `reims-util` oficial pelo script do vHackintosh, rode antes
 do build da ISO:
@@ -156,9 +158,9 @@ do build da ISO:
 O script resolve o commit atual da branch `master`, compila em uma pasta
 temporária, valida o binário e só então substitui a instalação local. Para
 fixar outra branch ou tag, use `--reims-util-ref <REF>`. O build da ISO usa
-esse binário para gerar o OpenCore com Lilu e os kexts oficiais de aceleração.
-Dentro do appliance, `vhackintosh-update-reims-util` atualiza o utilitário e
-regenera a EFI padrão usada por novas VMs.
+esse binário para gerar e validar a EFI de referência. Dentro do appliance,
+`vhackintosh-update-reims-util` atualiza o utilitário e a EFI de referência;
+novas VMs são geradas diretamente pelo utilitário atualizado.
 
 ### Construir a ISO
 
