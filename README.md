@@ -146,12 +146,29 @@ Esse passo exige as dependências de compilação documentadas no repositório d
 `reims-util`. O último também é necessário no host que constrói a ISO, pois o
 builder o inclui no appliance.
 
+Para atualizar o `reims-util` oficial pelo script do vHackintosh, rode antes
+do build da ISO:
+
+```bash
+./appliance/build-iso.sh --update-reims-util
+```
+
+O script resolve o commit atual da branch `master`, compila em uma pasta
+temporária, valida o binário e só então substitui a instalação local. Para
+fixar outra branch ou tag, use `--reims-util-ref <REF>`. O build da ISO usa
+esse binário para gerar o OpenCore com Lilu e os kexts oficiais de aceleração.
+Dentro do appliance, `vhackintosh-update-reims-util` atualiza o utilitário e
+regenera a EFI padrão usada por novas VMs.
+
 ### Construir a ISO
 
 A construção da ISO usa o **Archiso** e deve ser feita em uma distro Arch. O
 builder precisa de `mkarchiso`, `rsync`, `git`, `curl` (ou `wget`),
 `xorriso`, `unsquashfs`, `qemu-img`, `guestfish`, acesso à rede para baixar a
-release selecionada e do `reims-util` instalado acima.
+release selecionada e do `reims-util` instalado acima. Ele gera a imagem EFI
+com esse utilitário durante o build, sem baixar kexts no primeiro boot da VM.
+O OVMF continua vindo de `templates/OVMF_CODE_4M.fd`, preservando a logo
+vHackintosh embutida no firmware.
 
 ```bash
 cd ~/vhackintosh

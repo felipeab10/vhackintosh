@@ -133,8 +133,26 @@ class ABInstallerTest:
             return
 
         lock = ExclusiveVMLock()
-        if not lock.acquire(vm.name):
-            console.print(i18n.t("installer.error.other_vm_running"))
+        if not lock.acquire(vm.name, ram_gb=vm.ram_gb, vm_id=vm.id):
+            error = lock.last_error or {}
+            if error.get("reason") == "already_running":
+                console.print(i18n.t("installer.error.vm_already_running", name=vm.name))
+                Prompt.ask(i18n.t("installer.prompt.back"))
+                return
+            if "requested_gb" not in error:
+                console.print(i18n.t(
+                    "installer.error.memory_check_failed",
+                    error=error.get("reason", "erro inesperado"),
+                ))
+                Prompt.ask(i18n.t("installer.prompt.back"))
+                return
+            console.print(i18n.t(
+                "installer.error.insufficient_memory",
+                requested=error.get("requested_gb", vm.ram_gb),
+                available=error.get("available_gb", 0),
+                reserve=error.get("host_reserve_gb", 0),
+                active=", ".join(error.get("active_vms", [])) or "nenhuma",
+            ))
             Prompt.ask(i18n.t("installer.prompt.back"))
             return
 

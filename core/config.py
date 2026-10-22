@@ -1,6 +1,6 @@
 """
 vHackintosh — VM Configuration & Data Store
-Gerencia o catálogo de VMs cadastradas, persistência JSON e locks de execução exclusiva.
+Gerencia o catálogo de VMs cadastradas, persistência JSON e reservas de RAM por VM.
 """
 
 from __future__ import annotations
@@ -12,6 +12,9 @@ import logging
 import tempfile
 import copy
 import dataclasses
+import math
+import secrets
+import subprocess
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -20,7 +23,8 @@ logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/vhackintosh"))
 VMS_FILE = CONFIG_DIR / "vms.json"
-LOCK_FILE = Path("/tmp/vhackintosh-vm.lock")
+VM_RESERVATIONS_DIR = Path("/tmp/vhackintosh-vm-reservations")
+VM_RESERVATIONS_LOCK = Path("/tmp/vhackintosh-vm-reservations.lock")
 LOGS_DIR = CONFIG_DIR / "logs"
 
 
@@ -261,44 +265,233 @@ class VMManagerStore:
 
 
 class ExclusiveVMLock:
-    """Garante que apenas uma única VM possa rodar no sistema por vez."""
+    """Reserva memória do host para uma VM sem bloquear outras VMs."""
 
     def __init__(self):
-        self._lock_file = None
+        self._reservation_path: Optional[Path] = None
+        self.last_error: Optional[dict] = None
 
-    def acquire(self, vm_name: str) -> bool:
+    def acquire(self, vm_name: str, ram_gb: int = 8, vm_id: Optional[str] = None) -> bool:
+        """Admite a VM se a memória sustenta todas as reservas ativas.
+
+        O lock global existe apenas durante a decisão/gravação. Cada sessão
+        mantém uma reserva própria enquanto sua VM estiver em execução.
+        """
+        self.last_error = None
         try:
-            self._lock_file = open(LOCK_FILE, "w")
-            fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self._lock_file.write(f"{vm_name}:{os.getpid()}\n")
-            self._lock_file.flush()
-            return True
-        except (IOError, OSError):
+            requested = max(1, int(ram_gb)) * 1024**3
+            VM_RESERVATIONS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with open(VM_RESERVATIONS_LOCK, "a+") as guard:
+                fcntl.flock(guard, fcntl.LOCK_EX)
+                try:
+                    reservations = self._read_reservations()
+                    running, ctl_ok = self._running_reims_vms()
+                    reservations = self._prune_stale(reservations, running, ctl_ok)
+                    vm_key = vm_id or vm_name
+                    if vm_key in running or any(
+                        str(row.get("vm_id") or "") == vm_key for row in reservations
+                    ):
+                        self.last_error = {"reason": "already_running", "active_vms": [
+                            row.get("name", row.get("vm_id", "VM")) for row in reservations
+                        ]}
+                        return False
+
+                    total, available = self._host_memory()
+                    host_reserve = max(1024**3, math.ceil(total * 0.10))
+                    committed = sum(int(row.get("ram_bytes", 0)) for row in reservations)
+                    resident = 0
+                    unknown_allocations = []
+
+                    for name, pid in running.items():
+                        row = next(
+                            (item for item in reservations if str(item.get("vm_id") or "") == name),
+                            None,
+                        )
+                        allocation = (
+                            int(row.get("ram_bytes", 0)) if row
+                            else self._registered_vm_memory(name)
+                        )
+                        if not row:
+                            committed += allocation
+                            if not allocation:
+                                unknown_allocations.append(name)
+                        if allocation:
+                            resident += min(self._process_rss(pid), allocation)
+
+                    usable = max(0, available + resident - committed - host_reserve)
+                    if unknown_allocations:
+                        usable = 0
+                    # Preserva o comportamento histórico para a primeira VM.
+                    # A política de capacidade passa a decidir apenas quando
+                    # já existe uma VM (ou reserva) ocupando o host.
+                    first_vm = not reservations and not running
+                    if not first_vm and requested > usable:
+                        self.last_error = {
+                            "requested_gb": round(requested / 1024**3, 1),
+                            "available_gb": round(usable / 1024**3, 1),
+                            "host_reserve_gb": round(host_reserve / 1024**3, 1),
+                            "active_vms": sorted({
+                                str(row.get("name", row.get("vm_id", "VM"))) for row in reservations
+                            } | set(running) | set(unknown_allocations)),
+                        }
+                        return False
+
+                    token = secrets.token_hex(12)
+                    self._reservation_path = VM_RESERVATIONS_DIR / f"{token}.json"
+                    self._write_reservation(self._reservation_path, {
+                        "token": token,
+                        "name": vm_name,
+                        "vm_id": vm_id or vm_name,
+                        "ram_bytes": requested,
+                        "owner_pid": os.getpid(),
+                    })
+                    return True
+                finally:
+                    fcntl.flock(guard, fcntl.LOCK_UN)
+        except (IOError, OSError, ValueError, TypeError) as exc:
+            logger.exception("Não foi possível reservar RAM para a VM %s", vm_name)
+            self.last_error = {"reason": str(exc)}
             return False
 
-    def release(self) -> None:
-        if self._lock_file:
+    @staticmethod
+    def _read_reservations() -> list[dict]:
+        rows = []
+        for path in VM_RESERVATIONS_DIR.glob("*.json"):
             try:
-                fcntl.flock(self._lock_file, fcntl.LOCK_UN)
-                self._lock_file.close()
-            except Exception:
-                pass
-            if LOCK_FILE.exists():
+                with path.open("r", encoding="utf-8") as fh:
+                    row = json.load(fh)
+                if isinstance(row, dict) and int(row.get("ram_bytes", 0)) > 0:
+                    row["_path"] = str(path)
+                    rows.append(row)
+            except (OSError, ValueError, TypeError):
+                logger.warning("Ignorando reserva de RAM inválida: %s", path)
+        return rows
+
+    @staticmethod
+    def _running_reims_vms() -> tuple[dict, bool]:
+        try:
+            from core import reims_ctl
+
+            binary = reims_ctl.reims_ctl_bin()
+            if not binary:
+                return {}, False
+            proc = subprocess.run(
+                [str(binary), "list", "--json"], capture_output=True,
+                text=True, timeout=10, check=False,
+            )
+            if proc.returncode != 0:
+                return {}, False
+            data = json.loads(proc.stdout or "[]")
+            if isinstance(data, dict):
+                data = data.get("vms", [])
+            if not isinstance(data, list):
+                return {}, False
+            return {
+                str(row["name"]): int(row["pid"])
+                for row in data
+                if isinstance(row, dict) and row.get("state") == "running"
+                and row.get("name") and isinstance(row.get("pid"), int)
+            }, True
+        except (ImportError, OSError, subprocess.SubprocessError, ValueError, TypeError):
+            return {}, False
+
+    @staticmethod
+    def _prune_stale(rows: list[dict], running: dict, ctl_ok: bool) -> list[dict]:
+        active = []
+        for row in rows:
+            owner_alive = ExclusiveVMLock._pid_alive(int(row.get("owner_pid", -1)))
+            vm_id = str(row.get("vm_id") or "")
+            stale = not owner_alive and ctl_ok and vm_id not in running
+            if stale:
                 try:
-                    LOCK_FILE.unlink()
+                    Path(row["_path"]).unlink(missing_ok=True)
                 except OSError:
                     pass
-            self._lock_file = None
+            else:
+                active.append(row)
+        return active
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+
+    @staticmethod
+    def _host_memory() -> tuple[int, int]:
+        with open("/proc/meminfo", "r", encoding="ascii") as fh:
+            values = {
+                parts[0].rstrip(":"): int(parts[1].split()[0]) * 1024
+                for line in fh if len(parts := line.split()) >= 2
+            }
+        total = values["MemTotal"]
+        return total, values.get("MemAvailable", total // 2)
+
+    @staticmethod
+    def _process_rss(pid: int) -> int:
+        try:
+            with open(f"/proc/{pid}/status", "r", encoding="ascii") as fh:
+                for line in fh:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1]) * 1024
+        except (OSError, ValueError, IndexError):
+            pass
+        return 0
+
+    @staticmethod
+    def _registered_vm_memory(vm_id: str) -> int:
+        try:
+            from core import reims_ctl
+
+            row = reims_ctl.vm_record(vm_id)
+            if not row or not row.get("dir"):
+                return 0
+            with (Path(row["dir"]) / "vm.toml").open("rb") as fh:
+                import tomllib
+
+                config = tomllib.load(fh)
+            return int(config.get("memory_mib", 0)) * 1024**2
+        except (ImportError, OSError, ValueError, TypeError):
+            return 0
+
+    @staticmethod
+    def _write_reservation(path: Path, payload: dict) -> None:
+        fd, temp_name = tempfile.mkstemp(prefix=".reservation-", dir=VM_RESERVATIONS_DIR)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(temp_name, path)
+        finally:
+            try:
+                os.unlink(temp_name)
+            except FileNotFoundError:
+                pass
+
+    def release(self) -> None:
+        if self._reservation_path:
+            try:
+                with open(VM_RESERVATIONS_LOCK, "a+") as guard:
+                    fcntl.flock(guard, fcntl.LOCK_EX)
+                    try:
+                        self._reservation_path.unlink(missing_ok=True)
+                    finally:
+                        fcntl.flock(guard, fcntl.LOCK_UN)
+            except OSError:
+                logger.exception("Não foi possível liberar reserva de RAM %s", self._reservation_path)
+            self._reservation_path = None
 
     @staticmethod
     def get_running_vm_info() -> Optional[str]:
-        if not LOCK_FILE.exists():
-            return None
         try:
-            with open(LOCK_FILE, "r") as f:
-                content = f.read().strip()
-                if content:
-                    return content.split(":")[0]
-        except Exception:
-            pass
-        return None
+            names = [row.get("name") for row in ExclusiveVMLock._read_reservations() if row.get("name")]
+            return ", ".join(names) or None
+        except OSError:
+            return None

@@ -1,27 +1,29 @@
 # Templates de boot
 
-A configuração descrita foi testada com macOS Tahoe 26.6.2 no reims-vgpu (KVM + GPU virtual, desktop e Dock completos). O template EFI abaixo é preparado para novas VMs; sua kext, isoladamente, não garante reprodução do runtime. O fluxo appliance copia o `.qcow2` e injeta SMBIOS por VM.
+A configuração descrita foi testada com macOS Tahoe no reims-vgpu (KVM + GPU virtual, desktop e Dock completos). No build da ISO, `appliance/build-iso.sh` substitui a imagem OpenCore de desenvolvimento por uma EFI gerada pelo `reims-util` oficial, com os kexts atuais de ReimsVgpu/APV. A appliance leva essa imagem pronta para que a criação de VMs também funcione offline. A identidade SMBIOS é injetada por VM.
 
 | Arquivo | O que é | Tamanho esperado |
 |---|---|---|
-| `OpenCore.qcow2` | EFI do Ultimate-macOS-KVM com OpenCorePkg 1.0.8 e o `config.plist` abaixo | 384 MiB virtuais (~30 MB no host) |
+| `OpenCore.qcow2` | Fallback de desenvolvimento; a ISO substitui pelo resultado de `reims-util` | 384 MiB virtuais (ISO: 128 MiB) |
 | `OVMF_VARS.fd` | NVRAM do OVMF (par do `OVMF_CODE_4M.fd`) | 540672 bytes |
 | `OVMF_CODE_4M.fd` | Código OVMF x86_64 4M com splash vHackintosh embutido | 3653632 bytes |
 | `vhackintosh-boot-logo.bmp` | Splash 8-bit usado pelo OVMF, em 386×116 px | 46086 bytes |
 | `vhackintosh-boot-logo.png` | Arte original do splash, com transparência | — |
-| `config.plist` | Cópia em texto do dentro do `OpenCore.qcow2`, versionada pra review | — |
+| `config.plist` | Configuração do fallback de desenvolvimento; a ISO grava aqui a configuração gerada pelo utilitário | — |
 
 O splash foi inspirado na identidade visual do [site vHackintosh](https://vhackintosh.proclin.com.br/). O BMP é incorporado em `MdeModulePkg/Logo/Logo.bmp` no OVMF; novas VMs recebem o logo pelo `OVMF_CODE_4M.fd` deste template.
 
 ## Compatibilidade com ReimsVgpu
 
-O template inclui `ReimsVgpu.kext` habilitada para `x86_64` e macOS 26 (Kernel 25.x), construída a partir de `reims-util` commit `b302389`. Lilu foi atualizado para a versão usada pela combinação testada e também limitado a macOS 26; isto é intencional, não um template genérico para versões anteriores/futuras. Serial/MLB estão vazios e UUID/ROM são placeholders neutros; cada VM deve receber identidade SMBIOS própria na criação. `OVMF_VARS.fd` versionado é o modelo limpo, não o NVRAM da VM testada.
+O OpenCore gerado para a ISO inclui Lilu, `ReimsVgpu.kext` e os kexts APV incluídos por padrão no `reims-util`, limitados às versões de kernel do macOS 26. Serial/MLB ficam vazios e UUID/ROM neutros no artefato da ISO; cada VM recebe identidade SMBIOS própria na criação. `OVMF_VARS.fd` versionado é o modelo limpo, não o NVRAM de uma VM.
 
-**Estado de verificação (2026-10-13):** a EFI foi inspecionada e sanitizada em `DataHub`, `Generic`, `PlatformNVRAM` e `SMBIOS`; o `config.plist` versionado tem o mesmo SHA-256 da cópia extraída da imagem. `qemu-img check` não encontrou erros. Isso valida o artefato EFI, não um boot Tahoe nem a GPU acelerada.
+A logo permanece em `OVMF_CODE_4M.fd`: `reims-util opencore --no-ovmf` gera apenas o disco OpenCore, e o vHackintosh continua copiando seu firmware OVMF personalizado para cada VM.
+
+**Fallback de desenvolvimento:** o `OpenCore.qcow2` ainda versionado no repositório é o artefato anterior de 384 MiB, com OpenCore 1.0.8. A appliance não o usa: o build substitui esse arquivo por uma imagem do `reims-util`, confere kexts/identidade neutra e valida o `config.plist` incluído.
 
 A mesma experiência exige o host build específico do `reims-vgpu` (QEMU customizado com Apple-GFX e Vulkan), submódulo QEMU e pin Metal2Vulkan. Uma instalação/rebuild só da branch `master` não garante os mesmos artefatos. Ter a kext no OpenCore, por si só, não prova aceleração; valide desktop, carregamento da kext e `chrome://gpu` na VM.
 
-## A config que funciona (resumo do `config.plist`)
+## Configuração do fallback versionado
 
 - **`Kernel > Emulate > Cpuid1Data`** = `54 06 05 00 …` com máscara `ff ff ff 00`
   — emula Haswell (CPUID 0x050654). O appliance hoje usa
@@ -47,6 +49,6 @@ Terminal, no volume *Data; ver docs/qemu.md, "Metal's error mode").
   sobre o **OpenCorePkg** (BSD-3-Clause, `OCLP-Resources` via PatcherAuxTools).
 - **SMBIOS**: os seriais de cada VM são gerados localmente pelo `GenSMBIOS`
   (MacSerial) na criação — nada de seriais versionados aqui.
-- `config.plist` aqui é o estado salvo da imagem; ao mudar o `.qcow2`,
-  re-extrair (`7z e OpenCore.qcow2 0.primary.img` → `EFI/OC/config.plist`) e
-  commitar junto.
+- Para a imagem da ISO, o `config.plist` é extraído do EFI recém-gerado e
+  empacotado junto dela; a configuração acima descreve apenas o fallback
+  versionado do checkout.

@@ -33,6 +33,7 @@ file_permissions=(
   # que foi exatamente o que a 1.1.0 mostrou em 16/10. Toda entrada nova em
   # /usr/local/bin precisa da sua linha aqui.
   ["/usr/local/bin/reims-util"]="0:0:755"
+  ["/usr/local/bin/vhackintosh-update-reims-util"]="0:0:755"
   # Atalho para o QEMU pré-compilado da release (instalado por build-iso.sh no
   # modo padrão). Mesmo problema do reims-util: sem esta linha o `install` de
   # 0755 é desfeito pelo `cp -af --no-preserve=...mode` do mkarchiso e o atalho
@@ -40,8 +41,10 @@ file_permissions=(
   ["/usr/local/bin/reims-vgpu-qemu"]="0:0:755"
   ["/etc/sysctl.d/90-reims-vgpu.conf"]="0:0:644"
   ["/etc/vhackintosh/sway.conf"]="0:0:644"
+  ["/etc/systemd/system/getty@.service.d/autologin.conf"]="0:0:644"
   ["/opt/vhackintosh/bin/"]="0:0:755"
   ["/opt/vhackintosh/bin/vhackintosh"]="0:0:755"
+  ["/opt/vhackintosh/appliance/update-reims-util.sh"]="0:0:755"
   ["/opt/vhackintosh/resources/macserial/macserial"]="0:0:755"
   ["/opt/vhackintosh/themes/grub/install.sh"]="0:0:755"
   # O mkarchiso copia o airootfs com `cp -af --no-preserve=ownership,mode` e só

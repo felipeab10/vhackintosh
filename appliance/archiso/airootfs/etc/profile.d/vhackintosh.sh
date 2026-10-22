@@ -1,5 +1,5 @@
 # ==============================================================================
-# vHackintosh Appliance - Autostart TUI on tty1 & Pre-flight Compatibility
+# vHackintosh Appliance - Autostart TUI on local VTs & Pre-flight Compatibility
 # ==============================================================================
 
 # Garante que /usr/local/bin e npm global estejam no PATH
@@ -447,6 +447,21 @@ if [ "$(tty)" = "/dev/tty1" ]; then
 
     # Executa o gerenciador Kiosk do vHackintosh
     if command -v vhackintosh >/dev/null 2>&1; then
+        export VHACKINTOSH_AUTOSTARTED=1
         vhackintosh
     fi
 fi
+
+# Em outras sessões de console local, abre o mesmo gerenciador sem repetir o
+# preflight de boot da tty1. Assim Ctrl+Alt+F2 permite gerenciar a VM pelo
+# terminal Linux enquanto o Sway/QEMU seguem ativos na tty1.
+VHACK_CURRENT_TTY="$(tty 2>/dev/null || true)"
+case "$VHACK_CURRENT_TTY" in
+    /dev/tty[2-9]|/dev/tty[1-5][0-9]|/dev/tty6[0-3])
+        clear
+        if command -v vhackintosh >/dev/null 2>&1; then
+            export VHACKINTOSH_AUTOSTARTED=1
+            vhackintosh
+        fi
+        ;;
+esac
