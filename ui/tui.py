@@ -1683,8 +1683,16 @@ class VMTUI:
         with Progress(
             SpinnerColumn(spinner_name="dots"),
             TextColumn("[bold cyan]{task.description}[/bold cyan]"),
-            BarColumn(bar_width=36),
-            TextColumn("[bold green]{task.percentage:>3.0f}%[/bold green]"),
+            BarColumn(
+                bar_width=28,
+                style="#153247",
+                complete_style="#12cbd5",
+                finished_style="#12cbd5",
+                pulse_style="#12cbd5",
+                complete_char="█",
+                finished_char="█",
+            ),
+            TextColumn("[bold white]{task.percentage:>3.0f}%[/bold white]"),
             TimeElapsedColumn(),
             console=console,
         ) as progress:
@@ -1765,8 +1773,16 @@ class VMTUI:
         with Progress(
             SpinnerColumn(spinner_name="dots"),
             TextColumn("[bold cyan]{task.description}[/bold cyan]"),
-            BarColumn(bar_width=36),
-            TextColumn("[bold green]{task.percentage:>3.0f}%[/bold green]"),
+            BarColumn(
+                bar_width=28,
+                style="#153247",
+                complete_style="#12cbd5",
+                finished_style="#12cbd5",
+                pulse_style="#12cbd5",
+                complete_char="█",
+                finished_char="█",
+            ),
+            TextColumn("[bold white]{task.percentage:>3.0f}%[/bold white]"),
             TimeElapsedColumn(),
             console=console,
         ) as progress:
