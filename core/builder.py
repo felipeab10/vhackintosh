@@ -74,36 +74,3 @@ class SilentBuilder:
                 else:
                     progress.update(task, description=f"[bold red]Falha ao compilar {name}![/bold red]")
                     return False
-
-    @classmethod
-    def build_reims_vgpu(cls, reims_repo_path: str | Path) -> bool:
-        """Compila o reims-vgpu e a ROM UEFI GOP silenciosamente."""
-        repo = Path(reims_repo_path)
-        if not repo.exists():
-            return False
-
-        build_script = repo / "scripts" / "qemu-build" / "qemu-build.sh"
-        if not build_script.exists():
-            return False
-
-        console.print(f"[bold green]▶ Preparando ambiente de aceleração gráfica reims-vgpu...[/bold green]")
-        
-        # 1. Compila ROM UEFI GOP se necessário
-        rom_script = repo / "crates" / "reims-vgpu-efi" / "build.sh"
-        if rom_script.exists():
-            cls.build_component(
-                name="UEFI GOP ROM (reims-vgpu)",
-                cmd=["bash", str(rom_script)],
-                cwd=repo / "crates" / "reims-vgpu-efi",
-                log_filename="build-rom.log",
-                expected_time_sec=10.0,
-            )
-
-        # 2. Compila QEMU + reims-vgpu staticlib
-        return cls.build_component(
-            name="reims-vgpu & QEMU Core",
-            cmd=[str(build_script), "--target", "x86_64", "--backend", "vulkan"],
-            cwd=repo,
-            log_filename="build-qemu-reims.log",
-            expected_time_sec=45.0,
-        )

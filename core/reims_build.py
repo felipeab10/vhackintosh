@@ -1,20 +1,4 @@
-"""
-vHackintosh — Build sob demanda do reims-vgpu a partir do fork
-
-A ISO passa a levar as **fontes** do reims-vgpu (crates + vendor/qemu + deps
-vendorizadas), e o appliance compila na máquina do usuário em vez de carregar um
-binário que envelhece em silêncio. O objetivo é o binário em uso **sempre
-corresponder** ao fonte:
-
-* se nunca foi compilado  → compila (barra de progresso);
-* se já foi compilado e o fonte mudou → recompila;
-* se já foi compilado e nada mudou → **não** recompila.
-
-A decisão é tomada por um *stamp* de conteúdo (hash do fonte), não por data: a
-ISO não leva o `.git` do reims-vgpu (732 MB) e o do `vendor/qemu` é um gitfile
-apontando para fora. O hash dos arquivos é mais confiável que data e não depende
-de metadados VCS.
-"""
+"""Precompiled reims-vgpu release discovery and installation for the appliance."""
 
 from __future__ import annotations
 
@@ -224,39 +208,18 @@ def qemu_binary() -> Path:
 
 def is_valid_reims_tree(cand: Path) -> bool:
     """
-    Este diretório serve como a árvore do reims-vgpu?
-
-    Duas formas válidas, e as duas PRECISAM valer aqui:
-
-      1. **Fontes**, que é o caso de um checkout: tem `scripts/install-ctl.sh`
-         ou o antigo `scripts/qemu-build/qemu-build.sh`.
-      2. **Pré-compilada**, que é o caso do payload que a própria ISO instala em
-         `/opt/reims-vgpu`: tem `.release` + `bin/reims-ctl` + o QEMU do bundle.
-
-    A segunda estava de fora, e o resultado foi medido numa ISO real: a VM
-    recusava o lançamento com "sem diretório do reims-vgpu" enquanto o menu
-    "Atualizar reims-vgpu" dizia, na mesma sessão, que a v1.2.0 estava
-    instalada — porque o menu caía em `DEFAULT_REIMS_DIR` e o lançamento não.
-    Exigir um script de COMPILAÇÃO para reconhecer uma instalação BINÁRIA é
-    pedir à release uma coisa que ela não tem e não deve ter.
-
-    A checagem é deliberadamente frouxa sobre qual binário veio: quem valida a
-    integridade do payload é `core.reims_release` (`_verify_tree`), não aqui.
-    Este predicado só responde "existe algo instalado neste caminho?".
+    Return true only for a tagged release bundle with QEMU and reims-ctl.
     """
-    if (cand / INSTALL_CTL_REL).is_file() or (cand / QEMU_BUILD_LEGACY_REL).is_file():
-        return True
-
-    tem_motor = any((cand / rel).is_file() for rel in PREBUILT_REIMS_CTL_RELS)
-    return bool(tem_motor and prebuilt_qemu(cand) is not None)
+    has_controller = any((cand / rel).is_file() for rel in PREBUILT_REIMS_CTL_RELS)
+    return bool(prebuilt_release(cand) and has_controller)
 
 
 def find_reims_dir(explicit: Optional[str | Path] = None) -> Optional[Path]:
-    """Devolve a árvore do reims-vgpu — de fontes ou pré-compilada."""
+    """Find a precompiled release bundle, honoring explicit paths first."""
     candidates: list[Path] = []
     if explicit:
         candidates.append(Path(explicit).expanduser())
-    env = os.environ.get("REIMS_SRC") or os.environ.get("REIMS_VGPU_DIR")
+    env = os.environ.get("REIMS_VGPU_DIR")
     if env:
         candidates.append(Path(env).expanduser())
     candidates.extend(Path(p).expanduser() for p in REIMS_SEARCH_PATHS)
@@ -268,7 +231,7 @@ def find_reims_dir(explicit: Optional[str | Path] = None) -> Optional[Path]:
 
 
 def has_sources(reims_dir: Path) -> bool:
-    """A árvore precisa das fontes para poder compilar (não só do binário)."""
+    """Legacy diagnostic helper; source trees are not accepted by the appliance."""
     return (
         (reims_dir / "Cargo.toml").exists()
         and (reims_dir / "crates").is_dir()
@@ -725,260 +688,20 @@ def build(
     on_done: Optional[Callable[[str, bool], None]] = None,
     progress: Optional[Callable[[float], None]] = None,
 ) -> bool:
-    """Compila reims-vgpu + QEMU (Vulkan). Devolve True em sucesso.
-
-    ``on_start(nome, segundos_estimados)`` é chamado antes de cada etapa para a
-    TUI montar a barra; ``progress(0..100)`` recebe o avanço estimado.
-    """
-    # Modo pré-compilado: a ISO já trouxe o QEMU/reims-vgpu compilado de uma
-    # release do GitHub. Não há `scripts/install-ctl.sh` para rodar nem nada a
-    # compilar; reinstalar o binário é o trabalho todo.
+    """Install an existing release bundle; local compilation is disabled."""
+    del clean, progress
     release = prebuilt_release(reims_dir)
-    if release is not None:
-        print(f"  reims-vgpu pré-compilado detectado (release {release}); "
-              "nada a compilar.")
-        ok = install_prebuilt(reims_dir)
-        if on_start is not None:
-            on_start("Instalando reims-vgpu pré-compilado", 0.0)
-        if on_done is not None:
-            on_done("Instalando reims-vgpu pré-compilado", ok)
-        return ok
-
-    # A árvore nova compila tudo pelo install-ctl.sh (biblioteca + ROM + QEMU +
-    # reims-ctl, prefixo FHS em ~/.local/share); a antiga usa o qemu-build.sh.
-    new_tree = (reims_dir / INSTALL_CTL_REL).is_file()
-    if new_tree:
-        script = reims_dir / INSTALL_CTL_REL
-        cmd = ["bash", str(script), "--yes"]
-    else:
-        script = reims_dir / QEMU_BUILD_LEGACY_REL
-        cmd = ["bash", str(script), "--target", "x86_64", "--backend", "vulkan"]
-    if not script.exists():
-        raise BuildError(f"script de build ausente: {script}")
-
-    if clean:
-        # `install-ctl.sh` checks and installs missing OS packages before
-        # building. Remove only this project's generated Rust/QEMU outputs so
-        # a requested rebuild cannot reuse a stale Meson/Ninja configuration.
-        if new_tree:
-            qemu_source = reims_dir / "vendor" / "qemu"
-            pinned = subprocess.run(
-                ["git", "-C", str(reims_dir), "ls-tree", "HEAD", "vendor/qemu"],
-                capture_output=True, text=True, check=False,
-            ).stdout.split()
-            actual = subprocess.run(
-                ["git", "-C", str(qemu_source), "rev-parse", "HEAD"],
-                capture_output=True, text=True, check=False,
-            )
-            expected_commit = pinned[2] if len(pinned) >= 3 and pinned[1] == "commit" else ""
-            actual_commit = actual.stdout.strip()
-            if expected_commit and actual.returncode == 0 and actual_commit != expected_commit:
-                # `ensure_executable_bits` can leave generated chmod-only
-                # changes in the vendored QEMU tree. Those are safe to replace;
-                # any content edit or untracked file means this is user work,
-                # so stop before touching it.
-                diff = subprocess.run(
-                    ["git", "-C", str(qemu_source), "diff", "HEAD", "--raw", "--no-abbrev"],
-                    capture_output=True, text=True, check=False,
-                )
-                status = subprocess.run(
-                    ["git", "-C", str(qemu_source), "status", "--porcelain", "--untracked-files=all"],
-                    capture_output=True, text=True, check=False,
-                )
-                numstat = subprocess.run(
-                    ["git", "-C", str(qemu_source), "diff", "HEAD", "--numstat"],
-                    capture_output=True, text=True, check=False,
-                )
-                raw_rows = [line for line in diff.stdout.splitlines() if line.strip()]
-                status_rows = [line for line in status.stdout.splitlines() if line.strip()]
-                numstat_rows = [line.split("\t", 2) for line in numstat.stdout.splitlines() if line.strip()]
-                mode_only = (
-                    diff.returncode == 0
-                    and numstat.returncode == 0
-                    and bool(raw_rows)
-                    and len(raw_rows) == len(status_rows)
-                    and all(
-                        len(line.split()) >= 4
-                        and line.split()[0].startswith(":")
-                        and line.split()[0][1:] != line.split()[1]
-                        and line.split()[4].startswith("M")
-                        for line in raw_rows
-                    )
-                    and all(line[:2] == " M" for line in status_rows)
-                    and all(
-                        len(row) >= 2 and row[0] == "0" and row[1] == "0"
-                        for row in numstat_rows
-                    )
-                    and len(raw_rows) == len(numstat_rows)
-                )
-                has_untracked = any(line.startswith("??") for line in status.stdout.splitlines())
-                if not mode_only or has_untracked:
-                    raise BuildError(
-                        "vendor/qemu não está no commit exigido e contém alterações locais "
-                        "de conteúdo; preserve-as e alinhe o submódulo manualmente antes do rebuild"
-                    )
-                aligned = subprocess.run(
-                    ["git", "-C", str(qemu_source), "checkout", "--force", "--detach", expected_commit],
-                    capture_output=True, text=True, check=False,
-                )
-                if aligned.returncode != 0:
-                    raise BuildError(
-                        f"não foi possível alinhar vendor/qemu ao pin {expected_commit}: "
-                        f"{aligned.stderr.strip()}"
-                    )
-
-            target = Path(os.environ.get("CARGO_TARGET_DIR") or reims_dir / "target")
-            if not target.is_absolute():
-                target = reims_dir / target
-            cache_home = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-            if not cache_home.is_absolute():
-                cache_home = Path.home() / ".cache"
-            for generated in (
-                target,
-                cache_home / "reims-ctl" / "qemu-build-linux-x86_64",
-                # install-ctl.sh compiles reims-ctl in a separate shared Cargo
-                # target directory. Leaving it intact lets a different
-                # checkout's motor survive while QEMU is rebuilt from this
-                # branch, producing incompatible device arguments.
-                cache_home / "reims-ctl" / "ctl-target",
-            ):
-                if generated.exists():
-                    shutil.rmtree(generated)
-        elif (reims_dir / "vendor" / "qemu" / "build").exists():
-            shutil.rmtree(reims_dir / "vendor" / "qemu" / "build")
-
-    # A ISO entrega a árvore em 0644 (ver `ensure_executable_bits`); sem isto o
-    # `./configure` do QEMU falha com "Permission denied" logo na primeira
-    # etapa. Restauramos antes de qualquer coisa.
-    ensure_executable_bits(reims_dir, log=lambda msg: print(f"  {msg}"))
-
-    # A ISO leva o cache git (metal2vulkan) porque `cargo vendor` não cobre
-    # dependências git. Restaurá-lo aqui é o que permite o build offline.
-    seed_cargo_git_cache(
-        appliance_build_environment(), log=lambda msg: print(f"  {msg}")
-    )
-
-    # Só a árvore antiga builda in-tree: o build/ que a ISO envia (só com o
-    # binário) precisa do marker do próprio QEMU, senão o configure aborta.
-    # Ver `prepare_build_dir`.
-    if not new_tree:
-        prepare_build_dir(reims_dir, log=lambda msg: print(f"  {msg}"))
-
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # 1. ROM UEFI GOP, quando houver script próprio (só a árvore antiga; a nova
-    # compila a ReimsVgpu.rom dentro do próprio xtask dist).
-    rom = reims_dir / "crates" / "reims-vgpu-efi" / "build.sh"
-    if rom.exists():
-        ok = _run_stage(
-            name="ROM UEFI GOP",
-            cmd=["bash", str(rom)],
-            cwd=rom.parent,
-            log_name="build-rom.log",
-            expected=15.0,
-            on_start=on_start,
-            progress=progress,
+    if release is None:
+        raise BuildError(
+            "local reims-vgpu builds are disabled; install a precompiled fork release"
         )
-        if on_done:
-            on_done("ROM UEFI GOP", ok)
-        if not ok:
-            return False
-
-    # 2. Biblioteca + QEMU (+ reims-ctl na árvore nova).
-    ok = _run_stage(
-        name="reims-vgpu & QEMU (Vulkan)",
-        cmd=cmd,
-        cwd=reims_dir,
-        log_name="build-qemu-reims.log",
-        expected=900.0,
-        on_start=on_start,
-        progress=progress,
-    )
-    if on_done:
-        on_done("reims-vgpu & QEMU (Vulkan)", ok)
-
-    if ok and new_tree and not qemu_binary().exists():
-        # O install-ctl.sh saiu 0 mas o prefixo não recebeu o QEMU: tratar como
-        # falha para o estado "binário presente" nunca mentir.
-        print("  install-ctl.sh concluiu mas o QEMU instalado não foi encontrado "
-              f"em {qemu_binary()}")
-        ok = False
-
-    if ok and new_tree:
-        # reims-ctl may require devices added in the QEMU submodule pin. A
-        # successful compile without those models is not a usable runtime.
-        ctl_qemu_source = reims_dir / "crates" / "reims-ctl" / "src" / "qemu.rs"
-        source_text = ctl_qemu_source.read_text(encoding="utf-8", errors="replace") if ctl_qemu_source.is_file() else ""
-        required_devices = {
-            name for name in ("apple-gfx-pci", "apple-gfx-iosurface-pci")
-            if name in source_text
-        }
-        if required_devices:
-            try:
-                probe = subprocess.run(
-                    [str(qemu_binary()), "-device", "help"],
-                    capture_output=True, text=True, timeout=30, check=False,
-                )
-                missing_devices = sorted(
-                    name for name in required_devices if name not in probe.stdout
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                missing_devices = sorted(required_devices)
-                print(f"  não foi possível validar os dispositivos do QEMU: {exc}")
-            if missing_devices:
-                print("  QEMU instalado sem os dispositivos exigidos pelo reims-ctl: "
-                      + ", ".join(missing_devices))
-                ok = False
-
-    if ok:
-        # Só grava o stamp com o build comprovadamente de pé.
-        write_stamp(reims_dir, source_fingerprint(reims_dir))
+    stage = "Instalando reims-vgpu pré-compilado"
+    if on_start is not None:
+        on_start(stage, 0.0)
+    ok = install_prebuilt(reims_dir)
+    if on_done is not None:
+        on_done(stage, ok)
     return ok
-
-
-# ---------------------------------------------------------------------------
-# Política de rede do Cargo
-# ---------------------------------------------------------------------------
-#
-# O appliance promete compilar offline, e `cargo vendor` só cobre o **registry**
-# do crates.io. O `metal2vulkan` não vem do crates.io: é dependência **git**
-# (`Cargo.toml` do fork, `git = "https://github.com/steelbrain/metal2vulkan"`,
-# `rev = "29d3ebb…"`), e `vendor/cargo/` não o contém.
-#
-# Por isso a heurística antiga — "existe `vendor/cargo/` ⟹ `--offline`" —
-# garantia a falha em vez de evitá-la:
-#
-#   error: failed to get `metal2vulkan` as a dependency of package
-#          `reims-vgpu-vulkan v0.1.0`
-#     Caused by: unable to update https://github.com/steelbrain/metal2vulkan?rev=29d3ebb…
-#     Caused by: can't checkout from 'https://github.com/steelbrain/metal2vulkan':
-#                you are in the offline mode (--offline)
-#
-# O cargokit sempre teve de baixar esse commit uma vez; o que a ISO pode fazer é
-# levar a **cópia já em cache** (`~/.cargo/git/db` + `checkouts`) junto com o
-# fonte, para que o primeiro boot não precise de rede. Enquanto essa cópia não
-# estiver no payload, forçar `--offline` transforma "precisa de rede" em "nunca
-# compila". A decisão correta é:
-#
-#   * `REIMS_CARGO_OFFLINE=1`  → offline forçado (o usuário pediu; útil para
-#                                provar que o payload offline está completo);
-#   * `REIMS_CARGO_OFFLINE=0`  → rede liberada (build de desenvolvimento);
-#   * automático → offline **só** quando o cache git do próprio CARGO_HOME já
-#                  tem o repositório que as deps git exigem; senão online.
-#
-# O automático é o que destrava o build: sem o cache a única saída honesta é
-# rede, e o cargokit já a usa quando precisa.
-
-# Repositórios git exigidos pelo `Cargo.toml` do fork. O cargo guarda o cache
-# em `$CARGO_HOME/git/db/<nome>-<hash>`; o hash vem da URL normalizada, então
-# casamos pelo prefixo do nome em vez de fixar o sufixo.
-_REQUIRED_GIT_DEPS = ("metal2vulkan",)
-
-# Teto do download inicial (só para tornar o modo online visível no log).
-_GIT_CACHE_ENV_HINT = (
-    "Dica: a ISO precisa levar o cache git do Cargo (~/.cargo/git/db) para "
-    "compilar offline no primeiro boot."
-)
 
 
 def _looks_like_bare_repo(path: Path) -> bool:

@@ -132,42 +132,28 @@ mas não substitui esse requisito para usar Reims vGPU.
 
 ### Preparar o motor reims-vgpu
 
-O vHackintosh usa o motor e o `reims-ctl` do fork em um repositório separado.
-Clone-o com os submódulos e compile/instale os componentes uma vez:
+O appliance recebe o QEMU, a ROM e o `reims-ctl` a partir de uma release
+pré-compilada do fork `felipeab10/reims-vgpu`. O build da ISO não clona nem
+compila esse projeto; basta publicar o asset
+`reims-vgpu-linux-x86_64.tar.gz` na release escolhida. O `reims-util` oficial
+continua necessário no host que gera a ISO para preparar o OpenCore.
 
-```bash
-git clone --recurse-submodules https://github.com/felipeab10/reims-vgpu.git ~/reims-vgpu
-cd ~/reims-vgpu
-./scripts/install-ctl.sh --yes
-```
-
-Esse passo exige as dependências de compilação documentadas no repositório do
-`reims-vgpu`. O script instala o `reims-ctl`, o QEMU com Reims vGPU e o
-`reims-util`. O vHackintosh usa o `reims-util` oficial para gerar a EFI de cada
-VM com os kexts APV e o SMBIOS exclusivo. `--no-ovmf` mantém o OVMF
-personalizado do projeto, que contém a logo vHackintosh. O utilitário também é
-necessário no host que constrói a ISO.
-
-Para atualizar o `reims-util` oficial pelo script do vHackintosh, rode antes
-do build da ISO:
+Para atualizar o `reims-util` oficial no host antes do build, rode:
 
 ```bash
 ./appliance/build-iso.sh --update-reims-util
 ```
 
-O script resolve o commit atual da branch `master`, compila em uma pasta
-temporária, valida o binário e só então substitui a instalação local. Para
-fixar outra branch ou tag, use `--reims-util-ref <REF>`. O build da ISO usa
-esse binário para gerar e validar a EFI de referência. Dentro do appliance,
-`vhackintosh-update-reims-util` atualiza o utilitário e a EFI de referência;
-novas VMs são geradas diretamente pelo utilitário atualizado.
+Esse comando compila o utilitário no host, valida o binário e atualiza a
+instalação local. Também é possível escolher outra branch ou tag com
+`--reims-util-ref <REF>`. Essa etapa não compila o reims-vgpu.
 
 ### Construir a ISO
 
 A construção da ISO usa o **Archiso** e deve ser feita em uma distro Arch. O
 builder precisa de `mkarchiso`, `rsync`, `git`, `curl` (ou `wget`),
 `xorriso`, `unsquashfs`, `qemu-img`, `guestfish`, acesso à rede para baixar a
-release selecionada e do `reims-util` instalado acima. Ele gera a imagem EFI
+release selecionada e do `reims-util` instalado no host. Ele gera a imagem EFI
 com esse utilitário durante o build, sem baixar kexts no primeiro boot da VM.
 O OVMF continua vindo de `templates/OVMF_CODE_4M.fd`, preservando a logo
 vHackintosh embutida no firmware.
@@ -184,15 +170,6 @@ O builder usa por padrão a última release pré-compilada do `reims-vgpu`, mont
 e valida a ISO e grava um checksum `.sha256` junto dela. O diretório de saída
 precisa ser novo a cada build. Para fixar uma release, troque `latest` pela tag,
 por exemplo `--release v1.1.0`.
-
-Para empacotar as fontes locais do fork e fazer a compilação no primeiro boot do
-appliance, use `--from-source` e indique o checkout:
-
-```bash
-ISO_OUT="$PWD/appliance/out-fontes-$(date +%Y%m%d-%H%M%S)"
-sudo env OUTPUT_DIR="$ISO_OUT" ./appliance/build-iso.sh \
-  --from-source --source "$HOME/reims-vgpu"
-```
 
 ### Testar a ISO sem instalar no host
 
@@ -236,10 +213,6 @@ linha do kernel no GRUB para um boot de teste. No uso em um Linux já iniciado,
 o equivalente é `VHACK_SKIP_VULKAN_CHECK=true`; esse bypass é temporário e não
 torna a GPU compatível. Não use essas opções para avaliar suporte Vulkan real.
 
-`--build-test` é outro teste, independente e headless: inicializa a ISO e
-verifica se o build do `reims-vgpu` termina, imprimindo
-`VHACK_BUILD_TEST_RESULT=PASS|FAIL`. Ele não testa a criação de uma VM macOS.
-
 ### Criar uma VM macOS
 
 1. Inicialize o appliance (pela ISO em modo de teste ou depois de instalá-lo no
@@ -273,33 +246,10 @@ inicia uma VM cadastrada pelo nome.
   ./bin/vhackintosh-lang pt   # ou: en
   ```
   Idioma inválido é recusado e a lista de suportados é exibida.
-- **Build do `reims-vgpu`**: o padrão da ISO é empacotar uma release
-  pré-compilada, sem compilação no primeiro boot. No modo `--from-source`, a
-  árvore e os caches do Cargo podem permitir build offline; se faltar cache,
-  o build usa a rede e informa o que está ausente. `REIMS_CARGO_OFFLINE=1`
-  força offline; `=0` libera a rede.
-- **reims-vgpu pré-compilado (padrão)**: compilar o QEMU do fork dentro da VM
-  levava horas (e a ISO é live, sem garantia de rede), então o padrão voltou a
-  ser **empacotar o binário já compilado**, vindo de uma release do GitHub. A
-  ISO nasce pronta para lançar a VM; nada é compilado no primeiro boot.
-  A forma recomendada de gerar a ISO está em
-  [Construir a ISO](#construir-a-iso); o parâmetro `--release` escolhe a tag.
-  O modo fontes continua existindo e é **opt-in**: use
-  `--from-source --source "$HOME/reims-vgpu"` e um diretório de saída novo.
-  Em ambos os casos a ISO leva o `vendor/qemu/pc-bios` (ROMs: pxe, vgabios,
-  edk2) — sem elas o QEMU pré-compilado não sobe.
-- **Atualizar o reims-vgpu de dentro do appliance**: com a árvore pré-compilada,
-  o lançamento da VM oferece procurar uma release nova e trocá-la sem
-  recompilar. Fora da TUI, o mesmo caminho pelo script:
-  ```bash
-  ./appliance/build-iso.sh --update-sources --source "$HOME/reims-vgpu" \
-      --release latest
-  ```
-  Ele baixa o `reims-vgpu-linux-x86_64.tar.gz`, extrai sobre
-  `/opt/reims-vgpu` e grava `.release` com a tag instalada. Nada é apagado: o
-  que já existe é preservado, então o modo fontes continua funcionando depois.
-  O arquivo só é trocado **depois** de validado — release sem o binário do QEMU
-  é recusada com a árvore intacta.
+- **reims-vgpu pré-compilado**: a ISO instala o motor de uma release publicada
+  no fork `felipeab10/reims-vgpu`. Não há compilação local ou no primeiro boot;
+  atualizações do motor são distribuídas por novas releases. O parâmetro
+  `--release` escolhe a versão durante a geração da ISO.
 - **Hotkeys de notebook**: teclas XF86 de brilho e volume/mute funcionam na
   sessão do appliance (listener evdev próprio, independente de compositor).
   Em desktop sem brilho, as teclas são inofensivas.

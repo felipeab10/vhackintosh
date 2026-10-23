@@ -12,11 +12,6 @@ import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
-# O perfil define (e o build-iso.sh já confere) os nomes de pacote que o
-# install-ctl.sh exige; aqui provamos que os ARQUIVOS estão dentro da imagem.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from check_build_deps import missing_markers, parse_pacman_packages  # noqa: E402
-
 EXPECTED_OPENCORE_VIRTUAL_SIZE = 128 * 1024 * 1024
 
 
@@ -36,110 +31,52 @@ def validate_opencore_image(path: Path) -> None:
 
 
 class Provenance(NamedTuple):
-    """De onde veio o reims-vgpu empacotado, já conferido.
-
-    `prebuilt` distingue os dois contratos: no modo pré-compilado `head` é a
-    RELEASE (ex.: `v1.1.1`) e `qemu` é o ativo do pacote; no modo fontes são os
-    commits do reims-vgpu e do submódulo do QEMU.
-    """
+    """Release pré-compilada do fork empacotada e conferida."""
 
     head: str
     qemu: str
-    branch: str | None
-    dirty_allowed: bool
-    prebuilt: bool
+    branch: str | None = None
+    dirty_allowed: bool = False
+    prebuilt: bool = True
 
 
-def confere_provenance(rootfs: Path, source: Path) -> Provenance:
-    """Confere a provenance do reims-vgpu empacotado e devolve o que declarar.
-
-    São DOIS contratos, e a ISO se declara num deles pelo `mode`:
-
-    - `mode=prebuilt`: o rootfs não tem fonte nenhuma; tem o QEMU e a ROM de uma
-      release publicada. Valida-se o que esse modo promete — a release anunciada
-      é a empacotada e o QEMU/ROM estão dentro do rootfs, no mesmo prefixo.
-    - qualquer outra coisa (`mode=source` ou ausente): o rootfs carrega as
-      fontes de um commit exato, então a provenance tem de continuar batendo com
-      o HEAD do repositório validado.
-
-    O modo prebuilt não tem `commit`/`qemu` na provenance. Exigir essas chaves
-    dele fazia o default `"HEAD"` virar `None != <sha do HEAD vivo>`, que é
-    sempre verdadeiro: toda ISO pré-compilada era reprovada no fim da build,
-    com uma mensagem que apontava para "commits" que nunca existiram no pacote.
-    """
-    provenance = (rootfs / "opt/reims-vgpu/SOURCE-PROVENANCE.txt").read_text().splitlines()
+def confere_provenance(rootfs: Path) -> Provenance:
+    """Exige uma release do fork e confere o QEMU e a ROM empacotados."""
+    provenance_path = rootfs / "opt/reims-vgpu/SOURCE-PROVENANCE.txt"
+    provenance = provenance_path.read_text(encoding="utf-8").splitlines()
     provenance_data = dict(line.split("=", 1) for line in provenance if "=" in line)
-    if provenance_data.get("mode") == "prebuilt":
-        release = provenance_data.get("release")
-        if not release:
-            raise RuntimeError(
-                "prebuilt ReimsVgpu provenance has no release: " + repr(provenance_data)
-            )
-        if provenance_data.get("repo") != "felipeab10/reims-vgpu":
-            raise RuntimeError(
-                "prebuilt ReimsVgpu provenance points at an unexpected repository: "
-                f"{provenance_data.get('repo')!r}"
-            )
-        # O QEMU tem de estar DENTRO do rootfs, na forma que o appliance
-        # instala. Sem ele a ISO não sobe VM alguma.
-        qemu_in_iso = rootfs / "usr/local/lib/reims-vgpu-qemu/bin/qemu-system-x86_64"
-        if not qemu_in_iso.is_file():
-            raise RuntimeError(
-                "prebuilt ISO has no packaged QEMU at "
-                "usr/local/lib/reims-vgpu-qemu/bin/qemu-system-x86_64"
-            )
-        # E a ROM do vGPU AO LADO dele (mesmo prefixo), com o nome que o
-        # binário pede pelo `romfile`.
-        rom_in_iso = qemu_in_iso.parent.parent / "share/qemu/ReimsVgpu.rom"
-        if not rom_in_iso.is_file():
-            raise RuntimeError(
-                "prebuilt ISO has no packaged ReimsVgpu.rom next to the QEMU"
-            )
-        # Se o `build-iso.sh` registrou a release de origem do pacote, ela tem
-        # de ser a mesma que a provenance anuncia: um pacote de v1.1.1 com
-        # provenance dizendo v1.0.0 é erro de empacotamento.
-        origem = rootfs / "opt/reims-vgpu/.release"
-        if origem.is_file():
-            registrado = origem.read_text(encoding="utf-8").strip()
-            if registrado and registrado != release:
-                raise RuntimeError(
-                    "packaged ReimsVgpu release does not match provenance: "
-                    f"pacote={registrado!r} provenance={release!r}"
-                )
-        return Provenance(
-            head=release,
-            qemu=provenance_data.get("asset", "prebuilt"),
-            branch=None,
-            dirty_allowed=False,
-            prebuilt=True,
+    release = provenance_data.get("release")
+    if provenance_data.get("mode") != "prebuilt" or not release:
+        raise RuntimeError("ISO must contain a tagged prebuilt ReimsVgpu release")
+    if provenance_data.get("repo") != "felipeab10/reims-vgpu":
+        raise RuntimeError(
+            "prebuilt ReimsVgpu provenance points at an unexpected repository: "
+            f"{provenance_data.get('repo')!r}"
         )
-    expected_head = provenance_data.get("commit", "HEAD")
-    expected_qemu = provenance_data.get("qemu", "HEAD")
-    current_head = command("git", "-C", str(source), "rev-parse", expected_head).stdout.strip()
-    current_qemu = command("git", "-C", str(source / "vendor/qemu"), "rev-parse", expected_qemu).stdout.strip()
-    if provenance_data.get("commit") != current_head or provenance_data.get("qemu") != current_qemu:
-        raise RuntimeError("packaged ReimsVgpu provenance does not match validated source commits")
-    return Provenance(
-        head=current_head,
-        qemu=current_qemu,
-        branch=provenance_data.get("branch"),
-        dirty_allowed=provenance_data.get("dirty_allowed") == "1",
-        prebuilt=False,
-    )
+    qemu = rootfs / "usr/local/lib/reims-vgpu-qemu/bin/qemu-system-x86_64"
+    if not qemu.is_file():
+        raise RuntimeError("prebuilt ISO has no packaged QEMU executable")
+    rom = qemu.parent.parent / "share/qemu/ReimsVgpu.rom"
+    if not rom.is_file():
+        raise RuntimeError("prebuilt ISO has no packaged ReimsVgpu.rom next to the QEMU")
+    registered_release = rootfs / "opt/reims-vgpu/.release"
+    if registered_release.is_file():
+        value = registered_release.read_text(encoding="utf-8").strip()
+        if value and value != release:
+            raise RuntimeError(
+                f"packaged release {value!r} does not match provenance {release!r}"
+            )
+    return Provenance(head=release, qemu=provenance_data.get("asset", "prebuilt"))
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: validate_iso.py ISO REIMS_SOURCE", file=sys.stderr)
+    if len(sys.argv) != 2:
+        print("usage: validate_iso.py ISO", file=sys.stderr)
         return 2
-    iso, source = Path(sys.argv[1]), Path(sys.argv[2])
-    if not iso.is_file() or not source.is_dir():
-        print("ISO or source directory missing", file=sys.stderr)
+    iso = Path(sys.argv[1])
+    if not iso.is_file():
+        print("ISO file missing", file=sys.stderr)
         return 1
-    for required in ("Cargo.toml", "Cargo.lock", "crates", "vendor/qemu/meson.build", "scripts/install-ctl.sh"):
-        if not (source / required).exists():
-            print(f"Missing required ReimsVgpu input: {required}", file=sys.stderr)
-            return 1
     try:
         for tool in ("xorriso", "unsquashfs", "qemu-img", "guestfish"):
             if not shutil.which(tool):
@@ -166,7 +103,6 @@ def main() -> int:
             for required_path in (
                 "opt/vhackintosh/core/smbios.py",
                 "opt/vhackintosh/core/reims_util.py",
-                "opt/vhackintosh/appliance/update-reims-util.sh",
                 "opt/vhackintosh/appliance/build_opencore.py",
                 "opt/vhackintosh/resources/macserial/macserial",
                 "opt/vhackintosh/resources/macserial/LICENSE.txt",
@@ -179,20 +115,6 @@ def main() -> int:
             ):
                 if not (rootfs / required_path).is_file():
                     raise RuntimeError(f"ISO payload missing required file: {required_path}")
-            # O appliance compila o reims-vgpu na máquina do usuário, e é uma
-            # imagem live: sem /var/lib/pacman/sync o `pacman -S` do
-            # install-ctl.sh não instala nada em runtime. Logo, todo pacote que o
-            # próprio script empacotado exige por nome tem de estar DENTRO do
-            # squashfs (não basta estar declarado no perfil).
-            packaged_ctl = rootfs / "opt/reims-vgpu/scripts/install-ctl.sh"
-            if packaged_ctl.is_file():
-                required_pkgs = parse_pacman_packages(packaged_ctl.read_text(encoding="utf-8"))
-                absent = missing_markers(rootfs, required_pkgs)
-                if absent:
-                    detail = ", ".join(f"{name} ({marker})" for name, marker in absent)
-                    raise RuntimeError(
-                        "ISO rootfs cannot build reims-vgpu offline, missing package markers: " + detail
-                    )
             payload = rootfs / "opt/vhackintosh/templates"
             embedded = payload / "config.plist"
             if not embedded.is_file():
@@ -218,11 +140,6 @@ def main() -> int:
                     'modos listados em file_permissions: falta ["/usr/local/bin/reims-util"]'
                     '="0:0:755" em appliance/archiso/profiledef.sh)'
                 )
-            updater = rootfs / "usr/local/bin/vhackintosh-update-reims-util"
-            if not updater.is_file() or not updater.stat().st_mode & 0o111:
-                raise RuntimeError("ISO is missing the executable reims-util updater")
-            if not (rootfs / "opt/vhackintosh/appliance/update-reims-util.sh").stat().st_mode & 0o111:
-                raise RuntimeError("packaged reims-util updater is not executable")
             try:
                 util_version = command(str(reims_util), "--version").stdout.strip()
             except subprocess.CalledProcessError as exc:
@@ -277,30 +194,20 @@ def main() -> int:
                     if key not in ("SystemUUID", "ROM") and value:
                         raise RuntimeError("non-empty serial field in ISO OpenCore config")
             opencore = payload / "OpenCore.qcow2"
-            # Provenance conferida por uma função própria: o ramo prebuilt e o
-            # ramo fontes têm contratos diferentes, e a checagem vivia no meio
-            # deste `main()` (onde só dava para testá-la por `assertIn` no
-            # texto, que foi como o bug do modo pré-compilado passou).
-            proveniencia = confere_provenance(rootfs, source)
+            proveniencia = confere_provenance(rootfs)
             current_head = proveniencia.head
             current_qemu = proveniencia.qemu
-            cargo_lock_file = rootfs / "opt/reims-vgpu/Cargo.lock"
-            if not cargo_lock_file.exists():
-                cargo_lock_file = source / "Cargo.lock"
             manifest = {
                 "iso_sha256": hashlib.sha256(iso.read_bytes()).hexdigest(),
-                "reims_git_head": current_head,
-                "reims_git_branch": proveniencia.branch,
-                "source_dirty_allowed": proveniencia.dirty_allowed,
-                "qemu_gitlink": current_qemu,
-                "cargo_lock_sha256": hashlib.sha256(cargo_lock_file.read_bytes()).hexdigest(),
+                "reims_release": current_head,
+                "reims_asset": current_qemu,
                 "airootfs_sfs_sha256": hashlib.sha256(squashfs.read_bytes()).hexdigest(),
                 "opencore_sha256": hashlib.sha256(opencore.read_bytes()).hexdigest(),
                 "config_sha256": hashlib.sha256(embedded.read_bytes()).hexdigest(),
                 "macserial_sha256": hashlib.sha256(macserial.read_bytes()).hexdigest(),
                 "reims_util_sha256": hashlib.sha256(reims_util.read_bytes()).hexdigest(),
                 "ovmf_vars_sha256": ovmf_vars_hash,
-                "checks": ["squashfs-extracted", "opencore-qcow2", "plist-neutral", "source-complete", "macserial-pinned", "reims-util-packaged", "ovmf-vars-match", "reims-build-deps"],
+                "checks": ["squashfs-extracted", "opencore-qcow2", "plist-neutral", "macserial-pinned", "reims-util-packaged", "ovmf-vars-match", "reims-release-packaged"],
             }
         # Atomic metadata publication only after all checks complete.
         target = iso.with_suffix(iso.suffix + ".manifest.json")

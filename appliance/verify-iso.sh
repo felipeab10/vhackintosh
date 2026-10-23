@@ -28,13 +28,7 @@ FULLSCREEN_FLAG="-full-screen"
 EXTRA_ARGS=()
 ISO_FILE=""
 HEADLESS=0
-BUILD_TEST=0
 VMWARE_SVGA_TEST=0
-# Diretório temporário do kernel/initrd extraídos no modo --build-test.
-# Declarado aqui (e não só dentro do if) para o trap de limpeza poder consultá-lo
-# com `set -u` mesmo quando o modo não é usado.
-KERNEL_TMP=""
-BUILD_TEST_TIMEOUT="${BUILD_TEST_TIMEOUT:-21600}"   # 6 h de teto para o build
 
 usage() {
     echo "uso: $(basename "$0") [ISO] [opções] [args extras do QEMU...]"
@@ -43,36 +37,12 @@ usage() {
     echo "  --window, -w    inicia em janela em vez de tela cheia"
     echo "  --headless      sem display: '-display none' + serial para arquivo de log"
     echo "  --no-window     apelido de --headless"
-    echo "  --build-test    boota a ISO, roda o build do reims-vgpu DENTRO do guest e"
-    echo "                  imprime PASS/FAIL. Implica --headless."
-    echo "                  (exige uma ISO que já contenha o hook; ver AVISO abaixo)"
-    echo "  --vmware-svga   inicia a ISO via OVMF/GRUB; VMs usam VMware SVGA sem Vulkan"
-    echo "                  marcadores via SMBIOS; Esc abre o menu de boot"
-    echo "                  (não testa reims-vgpu)"
-    echo "  --timeout <s>   teto de segundos do --build-test (padrão: ${BUILD_TEST_TIMEOUT})"
+    echo "  --vmware-svga   inicia com vídeo VMware SVGA, sem validar Reims Vulkan"
     echo "  args extras     repassados literalmente ao qemu-system-x86_64"
     echo
-    echo "Ambiente:"
-    echo "  VHACK_QEMU      binário do QEMU (padrão: qemu-system-x86_64)"
-    echo "  VHACK_TEST_SSD  disco de teste (padrão: /var/tmp/vhackintosh-test-ssd.qcow2)"
-    echo "  VHACK_SERIAL_DIR diretório do log serial (padrão: /var/tmp)"
-    echo "  VHACK_OVMF      caminho do firmware OVMF (sobrepõe a autodetecção)"
-    echo
-    echo "Nota sobre o --build-test: ele boota o KERNEL DO PRÓPRIO ISO via"
-    echo "  '-kernel/-initrd' extraídos do arquivo, porque o QEMU só aceita"
-    echo "  '-append' junto de '-kernel' (com ISO/firmware ele aborta com"
-    echo "  \"-append only allowed with -kernel option\"). O '-cdrom' continua"
-    echo "  presente para o archiso encontrar a própria mídia."
-    echo
-    echo "Exemplos:"
-    echo "  $(basename "$0")                                  # kiosk em tela cheia"
-    echo "  $(basename "$0") --window                         # janela"
-    echo "  $(basename "$0") --headless                       # sem display, log em arquivo"
-    echo "  $(basename "$0") --build-test                     # build automatizado PASS/FAIL"
-    echo "  $(basename "$0") --vmware-svga                    # teste interativo sem Vulkan"
+    echo "Ambiente: VHACK_QEMU, VHACK_TEST_SSD, VHACK_SERIAL_DIR e VHACK_OVMF"
 }
 
-# O parsing aceita `--timeout <s>` e `--timeout=<s>`; por isso não é um `for arg`.
 while [ "$#" -gt 0 ]; do
     arg="$1"
     case "$arg" in
@@ -82,23 +52,8 @@ while [ "$#" -gt 0 ]; do
         --headless|--no-window)
             HEADLESS=1
             ;;
-        --build-test)
-            BUILD_TEST=1
-            HEADLESS=1
-            ;;
         --vmware-svga)
             VMWARE_SVGA_TEST=1
-            ;;
-        --timeout)
-            if [ "$#" -lt 2 ]; then
-                echo -e "${RED}Erro: --timeout exige um valor em segundos.${NC}" >&2
-                exit 2
-            fi
-            BUILD_TEST_TIMEOUT="$2"
-            shift
-            ;;
-        --timeout=*)
-            BUILD_TEST_TIMEOUT="${arg#--timeout=}"
             ;;
         -h|--help)
             usage
@@ -114,11 +69,6 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
-
-if ! [[ "${BUILD_TEST_TIMEOUT}" =~ ^[0-9]+$ ]] || [ "${BUILD_TEST_TIMEOUT}" -le 0 ]; then
-    echo -e "${RED}Erro: --timeout deve ser um inteiro positivo de segundos (recebido: ${BUILD_TEST_TIMEOUT}).${NC}" >&2
-    exit 2
-fi
 
 if [ -z "${ISO_FILE}" ]; then
     ISO_FILE="$(ls -t "${OUTPUT_DIR}"/*.iso "${SCRIPT_DIR}"/out-*/*.iso 2>/dev/null | head -n 1 || true)"
@@ -329,158 +279,12 @@ if [ -n "${OVMF_BIOS}" ]; then
     QEMU_ARGS+=(-bios "${OVMF_BIOS}")
 fi
 
-# ==============================================================================
-# 5. --build-test: boot direto para injetar hook de cmdline + veredito
-# ==============================================================================
-# COMO FUNCIONA (e por que assim):
-#   Passando `-append` ao QEMU (que define o cmdline do kernel, SUBSTITUINDO o
-#   do grub), injetamos `vhack_build_test=1` — lido dentro do guest por
-#   /etc/profile.d/vhackintosh.sh, que então chama
-#   /usr/local/bin/verify-build-in-guest.sh e desliga a máquina. O veredito sai
-#   no serial (ver `console=` abaixo) e este script o extrai do log.
-#
-#   POR QUE `-append` E NÃO EDITAR O grub.cfg: o grub.cfg é compartilhado pelo
-#   boot normal de kiosk. Adicionar `console=ttyS0` lá mudaria (e poluiria) a
-#   experiência normal para beneficiar só o teste. Pelo `-append` o efeito fica
-#   confinado à execução do --build-test.
-#
-#   TRÊS PEÇAS SÃO NECESSÁRIAS — as três já morderam:
-#     1. `console=tty0 console=ttyS0,115200` no cmdline, senão kernel e init
-#        escrevem só na VGA e o arquivo de serial fica com as 2 linhas do OVMF;
-#     2. reenviar `archisosearchuuid`/`archisobasedir`, porque o `-append`
-#        SUBSTITUI o cmdline inteiro e sem eles o archiso não acha a mídia;
-#     3. o script do guest espelhar o log em /dev/ttyS0 (feito lá), pois o host
-#        não enxerga o stdout do guest.
-#
-#   IMPORTANTE — LIMITE HONESTO DESTE RECURSO: o hook só existe em ISOs
-#   construídas DEPOIS que ele foi adicionado ao perfil. Uma ISO antiga bootará
-#   normalmente, ignorará a flag e ficará parada na TUI até o timeout. Por isso o
-#   timeout é reportado como INDETERMINADO, com essa causa listada primeiro, em
-#   vez de fingir um FAIL.
-#
-#   `install_dir` e o UUID são lidos da própria ISO (grub.cfg embutido) /
-#   profiledef.sh, para não codificar valores que mudam a cada build.
-
 if [ "${VMWARE_SVGA_TEST}" -eq 1 ]; then
-    # Passa o modo de teste via SMBIOS Type 11 (OEM strings). Isso preserva
-    # OVMF/GRUB e o menu de boot do firmware; -kernel/-append os ignorariam.
+    # O sistema convidado lê estes marcadores SMBIOS para permitir o boot
+    # de teste sem exigir Vulkan da GPU física do host.
     QEMU_ARGS+=(-smbios type=11,value=vhack_skip_vulkan=true,value=vhack_graphics=vmware-svga)
     echo -e "${BLUE}▶ Modo VMware SVGA ativado via SMBIOS (boot normal por ISO/OVMF).${NC}"
-    echo -e "${YELLOW}  O menu de boot continua disponível com Esc; este modo não valida aceleração Reims vGPU.${NC}"
-fi
-
-if [ "${BUILD_TEST}" -eq 1 ]; then
-    # Descobre o UUID do archiso a partir do grub.cfg da própria ISO.
-    ARCHISO_UUID=""
-    GRUB_TMP="$(mktemp)" || GRUB_TMP=""
-    if [ -n "${GRUB_TMP}" ]; then
-        if command -v bsdtar >/dev/null 2>&1; then
-            bsdtar -xOf "${ISO_FILE}" boot/grub/grub.cfg > "${GRUB_TMP}" 2>/dev/null || true
-        fi
-        if [ ! -s "${GRUB_TMP}" ] && command -v isoinfo >/dev/null 2>&1; then
-            isoinfo -i "${ISO_FILE}" -x '/BOOT/GRUB/GRUB.CFG;1' > "${GRUB_TMP}" 2>/dev/null || true
-        fi
-        if [ -s "${GRUB_TMP}" ]; then
-            ARCHISO_UUID="$(sed -n 's/.*archisosearchuuid=\([^ ]*\).*/\1/p' "${GRUB_TMP}" | head -n 1)"
-        fi
-        rm -f "${GRUB_TMP}"
-    fi
-
-    INSTALL_DIR="arch"
-    if [ -f "${SCRIPT_DIR}/archiso/profiledef.sh" ]; then
-        id_line="$(sed -n 's/^install_dir="\(.*\)"/\1/p' "${SCRIPT_DIR}/archiso/profiledef.sh")"
-        if [ -n "${id_line}" ]; then
-            INSTALL_DIR="${id_line}"
-        fi
-    fi
-
-    # `console=` é o que FAZ o veredito chegar: sem ele o kernel/init escrevem
-    # só na tela VGA (o perfil usa `terminal_output gfxterm` no GRUB e não tem
-    # `console=` nenhum), então o arquivo de serial do QEMU recebe apenas as 2
-    # linhas do OVMF e o --build-test dá TIMEOUT para sempre.
-    #
-    # Escolha: `console=tty0 console=ttyS0,115200` — tty0 PRIMEIRO de propósito.
-    # O kernel manda o console interativo (/dev/console) para o ÚLTIMO
-    # `console=` da linha. Com tty0 por último, o kiosk normal continua na tela
-    # e o serial vira só um espelho de log; é o getty em tty1 que serve a TUI,
-    # então nada da experiência de kiosk depende disso. Invertendo a ordem, o
-    # /dev/console iria para o serial e a ISO bootada "normalmente" ficaria sem
-    # saída na tela — exatamente a regressão que queremos evitar.
-    #
-    # Vai na variável reenviada (não no grub.cfg) para não afetar o boot normal:
-    # o grub.cfg é compartilhado por kiosk e build-test.
-    APPEND_ARGS="archisobasedir=${INSTALL_DIR}"
-    if [ -n "${ARCHISO_UUID}" ]; then
-        APPEND_ARGS="${APPEND_ARGS} archisosearchuuid=${ARCHISO_UUID}"
-    else
-        echo -e "${YELLOW}Aviso: não consegui extrair archisosearchuuid do grub.cfg da ISO.${NC}" >&2
-        echo -e "${YELLOW}       Bootando sem ele; se a ISO não montar a mídia, o veredito será FAIL.${NC}" >&2
-    fi
-    APPEND_ARGS="${APPEND_ARGS} cow_spacesize=10G"
-    if [ "${BUILD_TEST}" -eq 1 ]; then
-        APPEND_ARGS="${APPEND_ARGS} console=tty0 console=ttyS0,115200 vhack_build_test=1"
-    fi
-
-    # --------------------------------------------------------------------------
-    # SOBRE `-append`: ele NÃO funciona com boot por ISO/firmware.
-    # O QEMU aborta com:
-    #   qemu-system-x86_64: -append only allowed with -kernel option
-    # e o processo morre ANTES de qualquer boot — o que aparecia como
-    # "TIMEOUT imediato" e nos fez culpar o hook do guest por várias rodadas.
-    # Medido nesta máquina (QEMU 11.1.2): o erro ocorre com `-bios OVMF` e
-    # também sem ele, ou seja, `-append` exige mesmo `-kernel`.
-    #
-    # Por isso bootamos DIRETO o kernel do próprio ISO (`-kernel`/`-initrd`
-    # extraídos do arquivo) + `-cdrom` para o archiso achar a mídia. Assim o
-    # `-append` é aceito e o cmdline chega ao kernel. É a única via que entrega
-    # `vhack_build_test=1` ao guest sem tocar no grub.cfg.
-    #
-    # Custo honesto: o menu do GRUB é pulado (bootamos o kernel do mesmo jeito
-    # que a entrada "vHackintosh OS Appliance" faria). O que validamos continua
-    # sendo o kernel real + initramfs real + airootfs real da ISO.
-    # --------------------------------------------------------------------------
-    KERNEL_IMG=""
-    INITRD_IMG=""
-    # Caminho interno do archiso: <install_dir>/boot/x86_64/{vmlinuz-linux,initramfs-linux.img}
-    # Descobrimos a arch do próprio ISO em vez de assumir x86_64.
-    BOOT_ARCH="$(bsdtar -tf "${ISO_FILE}" 2>/dev/null \
-        | sed -n "s|^${INSTALL_DIR}/boot/\([^/]*\)/vmlinuz-linux$|\1|p" | head -n 1)"
-    [ -z "${BOOT_ARCH}" ] && BOOT_ARCH="x86_64"
-
-    KERNEL_TMP="$(mktemp -d)" || KERNEL_TMP=""
-    if [ -n "${KERNEL_TMP}" ]; then
-        if bsdtar -xf "${ISO_FILE}" -C "${KERNEL_TMP}" \
-               "${INSTALL_DIR}/boot/${BOOT_ARCH}/vmlinuz-linux" \
-               "${INSTALL_DIR}/boot/${BOOT_ARCH}/initramfs-linux.img" 2>/dev/null; then
-            KERNEL_IMG="${KERNEL_TMP}/${INSTALL_DIR}/boot/${BOOT_ARCH}/vmlinuz-linux"
-            INITRD_IMG="${KERNEL_TMP}/${INSTALL_DIR}/boot/${BOOT_ARCH}/initramfs-linux.img"
-            [ -s "${KERNEL_IMG}" ] || KERNEL_IMG=""
-            [ -s "${INITRD_IMG}" ] || INITRD_IMG=""
-        fi
-    fi
-
-    if [ -n "${KERNEL_IMG}" ] && [ -n "${INITRD_IMG}" ]; then
-        QEMU_ARGS+=(-kernel "${KERNEL_IMG}" -initrd "${INITRD_IMG}")
-        QEMU_ARGS+=(-append "${APPEND_ARGS}")
-        BUILD_TEST_BOOT_MODE="kernel-direto"
-        echo -e "${BLUE}▶ Teste automatizado de build ativado (boot direto do kernel do ISO).${NC}"
-        echo -e "  • kernel:  ${GREEN}${KERNEL_IMG}${NC}"
-        echo -e "  • initrd:  ${GREEN}${INITRD_IMG}${NC}"
-    else
-        # Sem extrair o kernel não há como injetar o cmdline: `-append` com ISO
-        # seria rejeitado pelo QEMU. Falhamos ALTO em vez de rodar um teste que
-        # nunca poderia dar veredito (e reportar TIMEOUT como se fosse do build).
-        KEEP_KERNEL_TMP="${KERNEL_TMP}"
-        KERNEL_TMP=""
-        echo -e "${RED}Erro: não consegui extrair vmlinuz/initramfs de ${ISO_FILE}.${NC}" >&2
-        echo -e "${RED}       Sem eles o QEMU recusaria '-append' e o teste não teria como${NC}" >&2
-        echo -e "${RED}       injetar parâmetros de teste. Verifique se 'bsdtar' está instalado.${NC}" >&2
-        [ -n "${KEEP_KERNEL_TMP}" ] && rm -rf "${KEEP_KERNEL_TMP}"
-        exit 2
-    fi
-
-    echo -e "  • cmdline injetado: ${GREEN}${APPEND_ARGS}${NC}"
-    echo -e "  • timeout: ${GREEN}${BUILD_TEST_TIMEOUT}s${NC}"
+    echo -e "${YELLOW}  Este modo ignora a validação de Vulkan para teste em VM.${NC}"
 fi
 
 if [ -n "${SERIAL_LOG}" ]; then
@@ -507,133 +311,4 @@ echo
 # 6. Execução
 # ==============================================================================
 
-if [ "${BUILD_TEST}" -eq 0 ]; then
-    if [ "${BUILD_TEST}" -eq 0 ] && [ -n "${KERNEL_TMP}" ] && [ -d "${KERNEL_TMP}" ]; then
-        # --vmware-svga usa SMBIOS e não extrai kernel/initrd. Limpa apenas
-        # arquivos temporários deixados por um eventual caminho de teste.
-        # Mantém QEMU interativo e remove os ~200 MB temporários ao sair.
-        set +e
-        "${QEMU_BIN}" "${QEMU_ARGS[@]}" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
-        QEMU_STATUS=$?
-        set -e
-        rm -rf "${KERNEL_TMP}"
-        exit "${QEMU_STATUS}"
-    fi
-    exec "${QEMU_BIN}" "${QEMU_ARGS[@]}" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
-fi
-
-# --- Execução em modo build-test ------------------------------------------
-"${QEMU_BIN}" "${QEMU_ARGS[@]}" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" &
-QEMU_PID=$!
-
-cleanup_qemu() {
-    if kill -0 "${QEMU_PID}" 2>/dev/null; then
-        kill "${QEMU_PID}" 2>/dev/null || true
-        wait "${QEMU_PID}" 2>/dev/null || true
-    fi
-    # Remove o diretório do kernel extraído: são ~212 MB (initramfs de ~195 MB)
-    # por execução. Sem isto o /var/tmp do usuário enche silenciosamente.
-    if [ -n "${KERNEL_TMP:-}" ] && [ -d "${KERNEL_TMP}" ]; then
-        rm -rf "${KERNEL_TMP}" 2>/dev/null || true
-    fi
-}
-trap cleanup_qemu EXIT INT TERM
-
-echo -e "${CYAN}▶ QEMU rodando (pid ${QEMU_PID}). Aguardando o veredito no serial...${NC}"
-
-VERDICT=""
-# Marca se o QEMU morreu quase instantaneamente: sinal de erro de linha de
-# comando (ex.: '-accel tcg' mal formado), não de boot lento/falho.
-QEMU_EARLY_EXIT=0
-QEMU_START_TS=$(date +%s)
-DEADLINE=$(( QEMU_START_TS + BUILD_TEST_TIMEOUT ))
-while kill -0 "${QEMU_PID}" 2>/dev/null; do
-    if [ -n "${SERIAL_LOG}" ] && [ -f "${SERIAL_LOG}" ]; then
-        if grep -q 'VHACK_BUILD_TEST_RESULT=PASS' "${SERIAL_LOG}" 2>/dev/null; then
-            VERDICT="PASS"; break
-        fi
-        if grep -q 'VHACK_BUILD_TEST_RESULT=FAIL' "${SERIAL_LOG}" 2>/dev/null; then
-            VERDICT="FAIL"; break
-        fi
-    fi
-    if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
-        VERDICT="TIMEOUT"; break
-    fi
-    sleep 5
-done
-
-# Se saiu em menos de 20s sem veredito, nenhuma VM real chegou a bootar.
-if [ -z "${VERDICT}" ] && [ $(( $(date +%s) - QEMU_START_TS )) -lt 20 ]; then
-    QEMU_EARLY_EXIT=1
-fi
-
-# Se o QEMU morreu sozinho antes do veredito, ainda vale reler o log.
-if [ -z "${VERDICT}" ] && [ -n "${SERIAL_LOG}" ] && [ -f "${SERIAL_LOG}" ]; then
-    if grep -q 'VHACK_BUILD_TEST_RESULT=PASS' "${SERIAL_LOG}" 2>/dev/null; then
-        VERDICT="PASS"
-    elif grep -q 'VHACK_BUILD_TEST_RESULT=FAIL' "${SERIAL_LOG}" 2>/dev/null; then
-        VERDICT="FAIL"
-    fi
-fi
-
-cleanup_qemu
-trap - EXIT INT TERM
-
-echo
-echo -e "${CYAN}===================================================================${NC}"
-case "${VERDICT}" in
-    PASS)
-        echo -e "${GREEN}  RESULTADO: PASS — o reims-vgpu compilou dentro da ISO.${NC}"
-        ;;
-    FAIL)
-        echo -e "${RED}  RESULTADO: FAIL — o build falhou dentro do guest.${NC}"
-        ;;
-    *)
-        echo -e "${YELLOW}  RESULTADO: TIMEOUT/INDETERMINADO (${BUILD_TEST_TIMEOUT}s sem veredito).${NC}"
-        # Diagnóstico barato e decisivo: se o serial não tem NENHUMA saída do
-        # kernel, o problema é o console, não o build. Isso separa "a ISO é
-        # antiga/sem hook" de "o cmdline não chegou ao serial", que exigem
-        # correções diferentes.
-        SERIAL_IS_EMPTY=1
-        if [ -n "${SERIAL_LOG}" ] && [ -f "${SERIAL_LOG}" ]; then
-            if grep -qiE 'Linux version|systemd|archiso|Welcome|BdsDxe' "${SERIAL_LOG}" 2>/dev/null; then
-                SERIAL_IS_EMPTY=0
-            fi
-        fi
-        # Distinção que já custou rodadas inteiras: se o QEMU nem chegou a rodar
-        # (argumento inválido, binário ausente), NÃO é problema de console nem de
-        # build. Sem isto o usuário ia caçar 'console=ttyS0' enquanto o QEMU
-        # abortava na partida — exatamente o que aconteceu com '-accel tcg'.
-        if [ "${QEMU_EARLY_EXIT}" -eq 1 ]; then
-            echo -e "${RED}  Diagnóstico: o QEMU MORREU IMEDIATAMENTE — a VM nunca iniciou.${NC}"
-            echo -e "    Isto NÃO é falha de build nem de console: é erro de argumento/ambiente."
-            echo -e "    Veja a mensagem do QEMU impressa logo acima."
-        elif [ "${SERIAL_IS_EMPTY}" -eq 1 ]; then
-            echo -e "${YELLOW}  Diagnóstico: o serial não tem saída de kernel/guest nenhuma.${NC}"
-            echo -e "    Isso indica que o console NÃO chegou ao ttyS0 — não que o build falhou."
-            echo -e "    Confirme que a ISO foi reconstruída e que 'console=ttyS0' está no"
-            echo -e "    cmdline injetado (impresso acima na linha 'cmdline injetado')."
-        else
-            echo -e "${YELLOW}  Diagnóstico: o guest produziu saída, então o console funciona.${NC}"
-            echo -e "    Isso indica que o hook não rodou até o fim — build longo ou hook ausente."
-        fi
-        echo -e "${YELLOW}  Causas prováveis:${NC}"
-        echo -e "    • A ISO é ANTIGA e não contém o hook (rebuilde com build-iso.sh)."
-        echo -e "      Nesse caso ela boota normal e fica parada na TUI até o timeout."
-        echo -e "    • O build é longo demais em TCG — aumente com --timeout <s>."
-        echo -e "    • A ISO não conseguiu montar a própria mídia (archisosearchuuid)."
-        echo -e "    • O console não chegou ao serial (ver diagnóstico acima)."
-        ;;
-esac
-if [ -n "${SERIAL_LOG}" ]; then
-    echo -e "  Log serial: ${GREEN}${SERIAL_LOG}${NC}"
-    echo -e "  Últimas linhas:"
-    tail -n 20 "${SERIAL_LOG}" 2>/dev/null | sed 's/^/    /' || true
-fi
-echo -e "${CYAN}===================================================================${NC}"
-
-case "${VERDICT}" in
-    PASS) exit 0 ;;
-    FAIL) exit 1 ;;
-    *)    exit 2 ;;
-esac
+exec "${QEMU_BIN}" "${QEMU_ARGS[@]}" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
