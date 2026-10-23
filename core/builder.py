@@ -44,8 +44,6 @@ class SilentBuilder:
                     complete_style="#12cbd5",
                     finished_style="#12cbd5",
                     pulse_style="#12cbd5",
-                    complete_char="█",
-                    finished_char="█",
                 ),
                 TextColumn("[bold white]{task.percentage:>3.0f}%[/bold white]"),
                 TimeElapsedColumn(),
