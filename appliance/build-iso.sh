@@ -28,7 +28,7 @@ RED='\033[0;31m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# Conferências do pacote pré-compilado (aviso do motor ausente). Fica num
+# Conferências do pacote pré-compilado (motor obrigatório). Fica num
 # arquivo à parte para ser exercitada sem root/rede, ao contrário do build.
 # Depois das cores: a função usa GREEN/YELLOW/NC.
 # shellcheck source=lib/bundle_checks.sh
@@ -302,7 +302,10 @@ fi
 rm -f "${REIMS_TMP_TAR}"
 printf '%s\n' "${REIMS_RELEASE}" > "${REIMS_DEST}/.release"
 echo -e "${GREEN}✓ reims-vgpu pré-compilado extraído (${REIMS_RELEASE}).${NC}"
-checa_motor_do_pacote "${REIMS_DEST}" "${REIMS_RELEASE}" || true
+if ! checa_motor_do_pacote "${REIMS_DEST}" "${REIMS_RELEASE}"; then
+    echo -e "${RED}Erro: a ISO não pode ser gerada sem o reims-ctl da release.${NC}"
+    exit 1
+fi
 
 # A release publica o QEMU no layout do prefixo instalado; aceitamos também o
 # layout plano para manter compatibilidade com bundles anteriores.

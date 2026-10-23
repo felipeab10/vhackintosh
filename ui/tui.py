@@ -1602,11 +1602,15 @@ class VMTUI:
         state = evaluate_reims_release(explicit=reims_dir)
         if state.reims_dir is None:
             return False
-        if not (state.binary_path and state.binary_path.exists()):
-            with console.status(i18n.t("tui.release.installing")):
-                if not install_prebuilt(state.reims_dir):
-                    return False
-            state = evaluate_reims_release(explicit=str(state.reims_dir))
+        # O QEMU pode já existir dentro de /opt/reims-vgpu na ISO. Isso não
+        # significa que o bundle já foi instalado no prefixo de runtime:
+        # install_prebuilt também copia o reims-ctl para ~/.cargo/bin, que é o
+        # executável efetivamente usado para iniciar a VM. A função é
+        # idempotente, então chamá-la sempre cobre ambos sem recópias inúteis.
+        with console.status(i18n.t("tui.release.installing")):
+            if not install_prebuilt(state.reims_dir):
+                return False
+        state = evaluate_reims_release(explicit=str(state.reims_dir))
         return bool(state.binary_path and state.binary_path.exists())
 
     def _menu_reims_release(self) -> None:
