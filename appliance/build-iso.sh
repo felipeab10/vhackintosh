@@ -2,7 +2,7 @@
 # ==============================================================================
 # vHackintosh Appliance - Automated ISO Generator
 # Constrói a imagem ISO bootável (Live Kiosk) do vHackintosh OS
-# com suporte a reims-vgpu (Vulkan) e Harnesses de IA (Claude, Codex, OpenCode).
+# com suporte ao reims-vgpu (Vulkan) e instaladores de macOS.
 # ==============================================================================
 
 set -euo pipefail
@@ -294,7 +294,9 @@ if ! "${_DL[@]}"; then
     echo -e "Confira o asset ${RELEASE_ASSET_NAME} em ${CYAN}https://github.com/${REIMS_REPO}/releases${NC}"
     exit 1
 fi
-if ! tar -xzf "${REIMS_TMP_TAR}" -C "${REIMS_DEST}"; then
+# O appliance usa os templates OVMF x86_64 próprios em /opt/vhackintosh; os
+# firmwares x86_64, AArch64 e RISC-V do bundle são redundantes nesta ISO.
+if ! tar -xzf "${REIMS_TMP_TAR}" -C "${REIMS_DEST}" --exclude='*/vm/ovmf/*'; then
     rm -f "${REIMS_TMP_TAR}"
     echo -e "${RED}Erro: o tarball da release ${REIMS_RELEASE} está corrompido.${NC}"
     exit 1
@@ -307,8 +309,9 @@ if ! checa_motor_do_pacote "${REIMS_DEST}" "${REIMS_RELEASE}"; then
     exit 1
 fi
 
-# A release publica o QEMU no layout do prefixo instalado; aceitamos também o
-# layout plano para manter compatibilidade com bundles anteriores.
+# Confirma o QEMU e a ROM dentro do bundle que `core.reims_build` instala no
+# primeiro boot. A cópia em /usr/local/lib era redundante: o launcher usa
+# ~/.local/share/reims-ctl/qemu/current, preenchido por install_prebuilt().
 REIMS_QEMU_BIN=""
 for candidato in \
     "${REIMS_DEST}/vendor/qemu/build/bin/qemu-system-x86_64" \
@@ -326,36 +329,10 @@ if [ -z "${REIMS_ROM}" ]; then
     echo -e "${RED}Erro: a release ${REIMS_RELEASE} não trouxe ReimsVgpu.rom.${NC}"
     exit 1
 fi
-REIMS_QEMU_PREFIX="${ARCHISO_PROFILE}/airootfs/usr/local/lib/reims-vgpu-qemu"
-mkdir -p "${REIMS_QEMU_PREFIX}/bin" "${REIMS_QEMU_PREFIX}/share/qemu"
-install -m 0755 "${REIMS_QEMU_BIN}" "${REIMS_QEMU_PREFIX}/bin/qemu-system-x86_64"
-install -m 0644 "${REIMS_ROM}" "${REIMS_QEMU_PREFIX}/share/qemu/ReimsVgpu.rom"
-REIMS_QEMU_SHORTCUT="${ARCHISO_PROFILE}/airootfs/usr/local/bin/reims-vgpu-qemu"
-mkdir -p "$(dirname "${REIMS_QEMU_SHORTCUT}")"
-cat > "${REIMS_QEMU_SHORTCUT}" <<'VHACK_QEMU_SHORTCUT'
-#!/bin/sh
-exec /usr/local/lib/reims-vgpu-qemu/bin/qemu-system-x86_64 "$@"
-VHACK_QEMU_SHORTCUT
-chmod 0755 "${REIMS_QEMU_SHORTCUT}"
-for origem in \
-    "${REIMS_DEST}/vendor/qemu/build/share/qemu" \
-    "${REIMS_DEST}/vendor/qemu/pc-bios"
-do
-    [ -d "${origem}" ] || continue
-    cp -a "${origem}/." "${REIMS_QEMU_PREFIX}/share/qemu/" 2>/dev/null || true
-done
-if [ ! -f "${REIMS_QEMU_PREFIX}/share/qemu/bios-256k.bin" ]; then
-    echo -e "${RED}Erro: a release ${REIMS_RELEASE} não trouxe share/qemu/bios-256k.bin.${NC}"
-    echo -e "${RED}  Sem ele o QEMU não inicia. Publique o asset completo no fork.${NC}"
+if [ ! -f "${REIMS_DEST}/vendor/qemu/pc-bios/bios-256k.bin" ]; then
+    echo -e "${RED}Erro: a release ${REIMS_RELEASE} não trouxe vendor/qemu/pc-bios/bios-256k.bin.${NC}"
+    echo -e "${RED}  Sem este firmware o QEMU pode não iniciar; publique o asset completo no fork.${NC}"
     exit 1
-fi
-if [ -z "$(ls -A "${REIMS_DEST}/vm/ovmf" 2>/dev/null)" ]; then
-    echo -e "${YELLOW}Aviso: a release veio sem vm/ovmf; será usado o OVMF do sistema.${NC}"
-else
-    OVMF_BIN="$(find "${REIMS_DEST}/vm/ovmf" -maxdepth 1 -name '*.fd' -type f -print -quit)"
-    if [ -n "${OVMF_BIN}" ]; then
-        echo -e "${GREEN}  ✓ OVMF: $(basename "${OVMF_BIN}")${NC}"
-    fi
 fi
 printf '%s\n' \
     "mode=prebuilt" \

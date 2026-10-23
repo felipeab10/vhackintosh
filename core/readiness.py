@@ -280,7 +280,7 @@ class SystemReadinessChecker:
                 name="Conexão com a Internet",
                 passed=True,
                 status_text="Online",
-                details="Conectividade externa ativa para download do macOS e Harnesses CLI.",
+                details="Conectividade externa ativa para download dos instaladores do macOS.",
                 is_critical=False
             )
         else:
@@ -289,7 +289,7 @@ class SystemReadinessChecker:
                 name="Conexão com a Internet",
                 passed=False,
                 status_text="OFFLINE",
-                details="Sem conexão com a Internet. O download de instaladores oficiais e AI Harnesses ficará indisponível.",
+                details="Sem conexão com a Internet. O download dos instaladores oficiais ficará indisponível.",
                 remediation="Conecte um cabo Ethernet ou configure o Wi-Fi via 'nmtui' no terminal.",
                 is_critical=False
             )

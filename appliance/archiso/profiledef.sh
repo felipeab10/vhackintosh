@@ -17,7 +17,6 @@ file_permissions=(
   ["/etc/shadow"]="0:0:400"
   ["/root"]="0:0:750"
   ["/usr/local/bin/vhackintosh"]="0:0:755"
-  ["/usr/local/bin/setup-harness-tools.sh"]="0:0:755"
   ["/usr/local/bin/vhackintosh-install"]="0:0:755"
   ["/usr/local/bin/vhackintosh-mode"]="0:0:755"
   ["/usr/local/bin/dmg2img"]="0:0:755"
@@ -29,11 +28,6 @@ file_permissions=(
   # que foi exatamente o que a 1.1.0 mostrou em 16/10. Toda entrada nova em
   # /usr/local/bin precisa da sua linha aqui.
   ["/usr/local/bin/reims-util"]="0:0:755"
-  # Atalho para o QEMU pré-compilado da release, instalado por build-iso.sh.
-  # Sem esta linha o `install` de
-  # 0755 é desfeito pelo `cp -af --no-preserve=...mode` do mkarchiso e o atalho
-  # chega na ISO como 0644, sem poder ser executado.
-  ["/usr/local/bin/reims-vgpu-qemu"]="0:0:755"
   ["/etc/sysctl.d/90-reims-vgpu.conf"]="0:0:644"
   ["/etc/vhackintosh/sway.conf"]="0:0:644"
   ["/etc/systemd/system/getty@.service.d/autologin.conf"]="0:0:644"

@@ -1739,10 +1739,6 @@ class VMTUI:
         console.print(i18n.t("tui.iso.feature.graphics"))
         console.print(i18n.t("tui.iso.feature.audio"))
         console.print(i18n.t("tui.iso.feature.autologin"))
-        console.print(i18n.t("tui.iso.feature.ai"))
-        console.print("      - [cyan]claude[/cyan]   (@anthropic-ai/claude-code)")
-        console.print("      - [cyan]codex[/cyan]    (@openai/codex)")
-        console.print("      - [cyan]opencode[/cyan] (opencode-cli)")
         console.print(i18n.t("tui.iso.feature.grub"))
 
         builder_script = Path(__file__).resolve().parent.parent / "appliance" / "build-iso.sh"
@@ -1753,10 +1749,9 @@ class VMTUI:
 
         console.print(i18n.t("tui.iso.build_script", path=builder_script))
         console.print(i18n.t("tui.iso.opt.instructions"))
-        console.print(i18n.t("tui.iso.opt.harnesses"))
         console.print(i18n.t("tui.vm.actions.back"))
 
-        choice = Prompt.ask(i18n.t("tui.menu.prompt_choice"), choices=["1", "2", "0"], default="0")
+        choice = Prompt.ask(i18n.t("tui.menu.prompt_choice"), choices=["1", "0"], default="0")
         if choice == "1":
             console.print(i18n.t("tui.iso.build_options"))
             console.print(i18n.t("tui.iso.option.a"))
@@ -1767,8 +1762,3 @@ class VMTUI:
             console.print(i18n.t("tui.iso.option.c"))
             console.print(i18n.t("tui.iso.cmd.c", script=builder_script))
             Prompt.ask(i18n.t("tui.prompt.enter_continue"))
-        elif choice == "2":
-            setup_script = Path(__file__).resolve().parent.parent / "appliance" / "archiso" / "airootfs" / "usr" / "local" / "bin" / "setup-harness-tools.sh"
-            if setup_script.exists():
-                subprocess.run(["bash", str(setup_script)])
-            Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))

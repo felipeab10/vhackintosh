@@ -2116,80 +2116,17 @@ class QemuPrefixLayoutTests(unittest.TestCase):
     BUILD_ISO = RAIZ / "appliance" / "build-iso.sh"
     RELEASE_SH = RAIZ / ".." / "reims-vgpu" / "scripts" / "release.sh"
 
-    def test_build_iso_keeps_bin_and_roms_as_siblings(self):
-        """Verifica a RELAÇÃO entre os caminhos, não o formato das strings.
-
-        Checar só que o script contém `"${REIMS_QEMU_PREFIX}/bin"` passava mesmo
-        com o prefixo aninhado errado (foi verificado por mutação), porque a
-        string continuava presente. O que importa é que o diretório do binário e
-        o diretório das ROMs compartilhem o mesmo pai — é isso que o QEMU exige.
-        """
+    def test_build_iso_keeps_the_runtime_bundle_and_skips_duplicate_install(self):
+        """O bundle de release é a única cópia do QEMU durante a montagem."""
         if not self.BUILD_ISO.is_file():
             self.skipTest("build-iso.sh ausente")
         texto = self.BUILD_ISO.read_text(encoding="utf-8")
-
-        # Extrai TODAS as atribuições de REIMS_QEMU_PREFIX e usa a última (a
-        # eficaz), aceitando o valor literal usado no script.
-        valores = re.findall(r'REIMS_QEMU_PREFIX="([^"]+)"', texto)
-        self.assertTrue(valores, "não achei REIMS_QEMU_PREFIX no build-iso.sh")
-        prefixo = valores[-1]
-
-        # O binário tem de ir para <prefixo>/bin/ e as ROMs para
-        # <prefixo>/share/qemu/ — irmãos sob o MESMO prefixo.
-        self.assertIn(f'"${{REIMS_QEMU_PREFIX}}/bin"', texto)
-        self.assertIn(f'"${{REIMS_QEMU_PREFIX}}/share/qemu"', texto)
-        self.assertIn('"${REIMS_QEMU_PREFIX}/bin/qemu-system-x86_64"', texto)
-
-        # E o prefixo não pode separar os dois: o pai de `bin` tem de ser o pai
-        # de `share`, ou seja, nada entre o prefixo e os dois diretórios.
-        self.assertNotIn(
-            "/share/reims-vgpu-qemu", prefixo,
-            f"prefixo aninhado: o binário em {prefixo}/bin/ procuraria as ROMs "
-            f"em {prefixo}/share/qemu/, que é o lugar certo — mas o prefixo não "
-            "pode ser reaproveitado sob share/, senão vira "
-            "share/reims-vgpu-qemu/bin/ e share/reims-vgpu-qemu/share/qemu/, "
-            "que ainda são irmãos. O erro real é o binário ficar FORA do prefixo.",
-        )
-
-        # A armadilha de fato: instalar o binário direto em usr/local/bin
-        # enquanto as ROMs vão para um prefixo separado.
-        self.assertNotIn(
-            'install -m 0755 "${REIMS_QEMU_BIN}" "${ARCHISO_PROFILE}/airootfs/usr/local/bin/',
-            texto,
-            "o binário não pode ir para usr/local/bin enquanto as ROMs ficam "
-            "sob outro prefixo: o QEMU procuraria usr/local/share/qemu/",
-        )
-
-    def test_the_prefix_the_script_builds_is_actually_self_consistent(self):
-        """Reproduz em disco o layout que o script monta e confere a relação.
-
-        Lê o prefixo do próprio script, monta a árvore de diretórios e verifica
-        que o dirname do binário tem ../share/qemu — que é onde o QEMU procura.
-        """
-        if not self.BUILD_ISO.is_file():
-            self.skipTest("build-iso.sh ausente")
-        texto = self.BUILD_ISO.read_text(encoding="utf-8")
-        prefixo = re.findall(r'REIMS_QEMU_PREFIX="([^"]+)"', texto)[-1]
-
-        with tempfile.TemporaryDirectory() as tmp:
-            # O prefixo é absoluto e começa com ${ARCHISO_PROFILE}; reproduz a
-            # parte relativa a partir do airootfs.
-            rel = prefixo.split("airootfs/", 1)[-1]
-            raiz = Path(tmp)
-            binario = raiz / rel / "bin" / "qemu-system-x86_64"
-            rom = raiz / rel / "share" / "qemu" / "ReimsVgpu.rom"
-            binario.parent.mkdir(parents=True, exist_ok=True)
-            rom.parent.mkdir(parents=True, exist_ok=True)
-            binario.write_bytes(b"bin")
-            rom.write_bytes(b"rom")
-
-            # A regra do QEMU, medida com o binário real.
-            esperado = binario.parent.parent / "share" / "qemu" / "ReimsVgpu.rom"
-            self.assertEqual(
-                esperado.resolve(), rom.resolve(),
-                f"o QEMU procuraria a ROM em {esperado}, mas o script a põe em "
-                f"{rom}",
-            )
+        self.assertIn('"${REIMS_DEST}/vendor/qemu/build/bin/qemu-system-x86_64"', texto)
+        self.assertIn("install_prebuilt()", texto)
+        self.assertIn("--exclude='*/vm/ovmf/*'", texto)
+        self.assertNotIn("REIMS_QEMU_PREFIX=", texto)
+        self.assertNotIn("REIMS_QEMU_SHORTCUT=", texto)
+        self.assertNotIn("/usr/local/lib/reims-vgpu-qemu", texto)
 
     def test_release_sh_packages_the_same_sibling_layout(self):
         if not self.RELEASE_SH.is_file():
@@ -2228,183 +2165,36 @@ class QemuPrefixLayoutTests(unittest.TestCase):
         if not self.BUILD_ISO.is_file():
             self.skipTest("build-iso.sh ausente")
         texto = self.BUILD_ISO.read_text(encoding="utf-8")
-        self.assertIn("bios-256k.bin", texto)
-        # O bloco do pc-bios tem de sair com erro, não com aviso amarelo.
-        i = texto.index("não trouxe share/qemu/bios-256k.bin")
+        self.assertIn('"${REIMS_DEST}/vendor/qemu/pc-bios/bios-256k.bin"', texto)
+        # O preflight confere no bundle de origem; o runtime instala essas ROMs
+        # junto com o QEMU no diretório usado por reims-ctl.
+        i = texto.index("não trouxe vendor/qemu/pc-bios/bios-256k.bin")
         trecho = texto[max(0, i - 260):i + 400]
         self.assertIn("exit 1", trecho, "pc-bios ausente deveria abortar o build")
         self.assertNotIn("YELLOW", trecho, "pc-bios ausente não é aviso amarelo")
 
-    def test_the_path_shortcut_is_a_regular_file_not_a_broken_symlink(self):
-        """O atalho no PATH tem de ser ARQUIVO COMUM — symlink quebrado mata a build.
-
-        Isto era `ln -sf` para o caminho absoluto de dentro do guest
-        (`/usr/local/lib/reims-vgpu-qemu/bin/qemu-system-x86_64`). No host esse
-        destino não existe, então o link nascia QUEBRADO, e o mkarchiso — que
-        resolve links ao reaplicar `file_permissions` — abortava:
-
-            ERROR: Failed to set permissions on '.../reims-vgpu-qemu'. Outside of valid path.
-
-        Foi assim que a primeira build pré-compilada morreu (18/10) e a ISO não
-        saiu. O `|| true` que acompanhava o `ln -sf` escondia o problema até lá.
-
-        O teste EXECUTA o trecho que cria o atalho em vez de procurar `ln -sf`
-        no texto: o que importa não é a forma da string, é o TIPO do arquivo que
-        sobra em disco. Um `ln -sf` reintroduzido falha aqui.
-        """
+    def test_build_does_not_duplicate_qemu_outside_the_release_bundle(self):
+        """O ISO guarda o bundle; install_prebuilt instala o QEMU no primeiro uso."""
         if not self.BUILD_ISO.is_file():
             self.skipTest("build-iso.sh ausente")
         texto = self.BUILD_ISO.read_text(encoding="utf-8")
-        linhas = texto.splitlines()
-        i = next(
-            n for n, l in enumerate(linhas)
-            if l.strip().startswith("REIMS_QEMU_SHORTCUT=")
+        self.assertIn('"${REIMS_DEST}/vendor/qemu/build/bin/qemu-system-x86_64"', texto)
+        self.assertNotIn('REIMS_QEMU_PREFIX=', texto)
+        self.assertNotIn('REIMS_QEMU_SHORTCUT=', texto)
+        self.assertNotIn('/usr/local/lib/reims-vgpu-qemu', texto)
+        self.assertIn("install_prebuilt()", texto)
+
+    def test_profiledef_does_not_require_local_reims_sources(self):
+        """A ISO usa uma release pré-compilada, sem depender de fontes locais."""
+        profile = self.RAIZ / "appliance" / "archiso" / "profiledef.sh"
+        if not profile.is_file():
+            self.skipTest("profiledef.sh ausente")
+        text = profile.read_text(encoding="utf-8")
+        self.assertNotRegex(
+            text,
+            r'^\s*\["/opt/reims-vgpu/(?:scripts|crates)/',
+            "a ISO não pode exigir uma árvore de fontes do Reims",
         )
-        fim = next(
-            n for n, l in enumerate(linhas)
-            if n > i and l.strip().startswith('chmod 0755 "${REIMS_QEMU_SHORTCUT}"')
-        )
-        bloco = "\n".join(linhas[i : fim + 1])
-        # Precondição do recorte: sem o heredoc ele mediria outra coisa e passaria.
-        self.assertIn("exec ", bloco, "o atalho precisa executar o binário do prefixo")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            raiz = Path(tmp)
-            script = raiz / "t.sh"
-            script.write_text(
-                "#!/usr/bin/env bash\n"
-                "set -euo pipefail\n"
-                # Todas as variáveis que o recorte usa, definidas fora dele.
-                f'ARCHISO_PROFILE="{raiz / "perfil"}"\n'
-                f"{bloco}\n",
-                encoding="utf-8",
-            )
-            saida = subprocess.run(
-                ["bash", str(script)], capture_output=True, text=True, check=False
-            )
-            self.assertEqual(saida.returncode, 0, saida.stderr)
-
-            atalho = (
-                raiz / "perfil" / "airootfs" / "usr" / "local" / "bin"
-                / "reims-vgpu-qemu"
-            )
-            self.assertTrue(
-                atalho.exists(), f"o atalho não foi criado. stdout={saida.stdout!r}"
-            )
-            # A asserção que pega o bug: symlink quebrado dá is_file() False —
-            # exatamente a condição que o mkarchiso reprovava.
-            self.assertFalse(
-                atalho.is_symlink(),
-                "o atalho precisa ser arquivo comum: o mkarchiso resolve symlinks "
-                "ao aplicar file_permissions e aborta com 'Outside of valid path'",
-            )
-            self.assertTrue(atalho.is_file(), "o atalho não é um arquivo comum")
-            self.assertTrue(
-                os.access(atalho, os.X_OK), "o atalho precisa ser executável"
-            )
-
-            # RELAÇÃO, não formato: o exec tem de apontar para o binário DENTRO do
-            # prefixo que o próprio script monta — senão o QEMU não acha
-            # share/qemu/ ao lado dele, que é a regra medida com o binário real.
-            prefixo = re.findall(r'REIMS_QEMU_PREFIX="([^"]+)"', texto)[-1]
-            rel = prefixo.split("airootfs/", 1)[-1]
-            self.assertIn(
-                f"{rel}/bin/qemu-system-x86_64",
-                atalho.read_text(encoding="utf-8"),
-                "o exec precisa apontar para o binário dentro do prefixo",
-            )
-
-            # Controle negativo: prova que `is_file()` distingue o bug de verdade,
-            # em vez de ser uma asserção que passa por acidente.
-            quebrado = raiz / "symlink-quebrado"
-            quebrado.symlink_to(
-                "/usr/local/lib/reims-vgpu-qemu/bin/qemu-system-x86_64"
-            )
-            self.assertTrue(quebrado.is_symlink())
-            self.assertFalse(
-                quebrado.is_file(),
-                "controle negativo falhou: um symlink quebrado DEVERIA dar "
-                "is_file() False — é essa a condição que o mkarchiso reprovava",
-            )
-
-    def test_prebuilt_mode_drops_only_the_source_tree_permission_entries(self):
-        """Em modo pré-compilado só `scripts/` e `crates/` saem do perfil isolado.
-
-        Sem árvore de fontes essas duas pastas não existem, e o mkarchiso
-        reclamava a cada build:
-            WARNING: Cannot change permissions of '.../opt/reims-vgpu/scripts/'.
-        O aviso não derruba a build, mas mente — sugere payload faltando. As
-        outras duas entradas (`vendor/qemu/` e `vm/`) existem de verdade no
-        tarball e NÃO podem sair.
-
-        Um teste que só olhasse o texto do build-iso.sh passaria com o `sed`
-        apontando para o profiledef VERSIONADO — e aí o modo `--from-source`
-        perderia as permissões de que depende (sem elas o `./configure` do QEMU
-        morre com "Permission denied"). Por isso o `sed` REAL é executado.
-        """
-        perfil_src = self.RAIZ / "appliance" / "archiso" / "profiledef.sh"
-        if not (self.BUILD_ISO.is_file() and perfil_src.is_file()):
-            self.skipTest("build-iso.sh ou profiledef.sh ausente")
-        padrao = r'^[ \t]*\["(/opt/reims-vgpu/[^"]*)"\]'
-        original = perfil_src.read_text(encoding="utf-8")
-        self.assertEqual(
-            re.findall(padrao, original, re.M),
-            [
-                "/opt/reims-vgpu/vendor/qemu/",
-                "/opt/reims-vgpu/scripts/",
-                "/opt/reims-vgpu/crates/",
-                "/opt/reims-vgpu/vm/",
-            ],
-            "o profiledef VERSIONADO tem de manter as quatro: é dele que o modo "
-            "--from-source tira as permissões",
-        )
-
-        linhas = self.BUILD_ISO.read_text(encoding="utf-8").splitlines()
-        i = next(
-            n for n, l in enumerate(linhas)
-            if "sed -i -e" in l and '"/opt/reims-vgpu/scripts/"' in l
-        )
-        fim = next(
-            n for n, l in enumerate(linhas)
-            if n >= i and "${ARCHISO_PROFILE}/profiledef.sh" in l
-        )
-        comando = "\n".join(linhas[i : fim + 1])
-
-        with tempfile.TemporaryDirectory() as tmp:
-            raiz = Path(tmp)
-            copia = raiz / "profiledef.sh"
-            copia.write_text(original, encoding="utf-8")
-            script = raiz / "s.sh"
-            script.write_text(
-                "#!/usr/bin/env bash\nset -euo pipefail\n"
-                + comando.replace("${ARCHISO_PROFILE}", str(raiz))
-                + "\n",
-                encoding="utf-8",
-            )
-            saida = subprocess.run(
-                ["bash", str(script)], capture_output=True, text=True, check=False
-            )
-            self.assertEqual(saida.returncode, 0, saida.stderr)
-
-            depois = copia.read_text(encoding="utf-8")
-            self.assertEqual(
-                re.findall(padrao, depois, re.M),
-                ["/opt/reims-vgpu/vendor/qemu/", "/opt/reims-vgpu/vm/"],
-                "só as duas que não existem em modo pré-compilado podem sair",
-            )
-            # O resto do arquivo sai intacto: exatamente duas linhas removidas,
-            # nem uma a mais (um `sed` guloso levaria o array todo).
-            self.assertEqual(
-                len(original.splitlines()) - len(depois.splitlines()), 2,
-                "o sed removeu mais do que as duas entradas esperadas",
-            )
-            check = subprocess.run(
-                ["bash", "-n", str(copia)], capture_output=True, text=True,
-                check=False,
-            )
-            self.assertEqual(
-                check.returncode, 0, f"profiledef ficou inválido: {check.stderr}"
-            )
 
 
 class BuildIsoFlagSemanticsTests(unittest.TestCase):

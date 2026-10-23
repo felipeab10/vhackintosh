@@ -145,10 +145,7 @@ alsa-lib
 dbus
 systemd-libs
 
-# Runtimes e CLI Tools para Harnesses de IA (Claude Code, OpenCode, Codex)
-nodejs
-npm
-pnpm
+# Ferramentas gerais de linha de comando
 ripgrep
 fd
 bat
