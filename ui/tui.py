@@ -25,13 +25,7 @@ from rich.text import Text
 
 from core.config import VMConfig, VMManagerStore, ExclusiveVMLock, CONFIG_DIR
 from core import i18n
-from core.reims_build import (
-    evaluate as evaluate_reims_build,
-    build as build_reims_vgpu,
-    ensure_executable_bits,
-    find_reims_dir,
-    install_prebuilt,
-)
+from core.reims_build import evaluate as evaluate_reims_release, find_reims_dir, install_prebuilt
 from core import reims_ctl
 from core.hardware import HardwareAdvisor
 from core.gpu import GPUChecker
@@ -75,9 +69,9 @@ def decide_reimsctl(
     essencial passava sem ninguém perceber.
 
     Três condições, cada uma legítima:
-      1. o `reims-ctl` instalado (install-ctl.sh) — sem ele não há quem suba
+      1. o `reims-ctl` instalado junto da release — sem ele não há quem suba
          a VM nem registre o QMP;
-      2. o QEMU do reims-vgpu compilado (`qemu/current`) — sem o motor
+      2. o QEMU do reims-vgpu instalado (`qemu/current`) — sem o motor
          acelerado o convidado não sobe (o appliance não tem motor de reserva);
       3. o layout da VM (macos.qcow2 + OpenCore.qcow2 + OVMF_VARS.fd, vindos
          de `custom_dir`) mais o OVMF_CODE.fd, que é copiado do template aqui.
@@ -89,11 +83,11 @@ def decide_reimsctl(
     if not reims_dir:
         return False, "sem diretório do reims-vgpu"
     if not reims_ctl.reims_ctl_bin():
-        return False, "reims-ctl não instalado (compile o reims-vgpu: scripts/install-ctl.sh)"
+        return False, "reims-ctl não encontrado; instale uma release do reims-vgpu"
     from core.reims_build import qemu_binary
 
     if not qemu_binary().exists():
-        return False, f"QEMU do reims-vgpu não compilado (esperado em {qemu_binary()})"
+        return False, f"QEMU do reims-vgpu não instalado (esperado em {qemu_binary()})"
 
     if not (
         custom_dir
@@ -365,7 +359,6 @@ class VMTUI:
             console.print(i18n.t("tui.menu.diagnostics"))
             console.print(i18n.t("tui.menu.update_upstream"))
             console.print(i18n.t("tui.menu.reims_release"))
-            console.print(i18n.t("tui.menu.reims_rebuild"))
             console.print(i18n.t("tui.menu.download_images"))
             console.print(i18n.t("tui.menu.restart"))
             console.print(i18n.t("tui.menu.build_iso"))
@@ -373,7 +366,7 @@ class VMTUI:
             console.print(i18n.t("tui.menu.smbios_diagnostics"))
             console.print(i18n.t("tui.menu.exit"))
 
-            choices = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "a", "B", "b"]
+            choices = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "a"]
             if installer_available:
                 choices.extend(["I", "i"])
 
@@ -404,8 +397,6 @@ class VMTUI:
                 self._update_upstream()
             elif choice in ("A", "a"):
                 self._menu_reims_release()
-            elif choice in ("B", "b"):
-                self._menu_reims_rebuild()
             elif choice == "9":
                 self._view_smbios_diagnostics(vms)
             elif choice == "5":
@@ -1291,8 +1282,7 @@ class VMTUI:
             # Verificação prévia de hardware (Vulkan 1.2+):
             # O Reims vGPU é estritamente obrigatório e exige aceleração física Vulkan.
             # Se o host estiver em ambiente emulado (ex: QEMU aninhado sem passthrough)
-            # ou em GPU legada sem Vulkan, interrompemos IMEDIATAMENTE antes de pedir
-            # compilação ou gastar tempo do usuário.
+            # ou em GPU legada sem Vulkan, interrompemos antes de iniciar a VM.
             # ------------------------------------------------------------------
             vulkan_ok, vulkan_msg = GPUChecker.check_vulkan_host_readiness()
             if not vulkan_ok:
@@ -1304,10 +1294,8 @@ class VMTUI:
                     Prompt.ask(i18n.t("tui.prompt.enter_return"))
                 return
 
-            # Compila o reims-vgpu quando a árvore trouxer fontes e o binário
-            # estiver ausente ou defasado. É aqui que um patch novo deixa de
-            # ficar invisível para a VM.
-            if reims_dir and not self._ensure_reims_built(reims_dir):
+            # Garante que o binário da release esteja instalado antes de iniciar a VM.
+            if reims_dir and not self._ensure_reims_release(reims_dir):
                 console.print(i18n.t("tui.launch.no_qemu"))
                 Prompt.ask(i18n.t("tui.prompt.enter_continue"))
                 return
@@ -1609,225 +1597,28 @@ class VMTUI:
                 return cand
         return None
 
-    def _ensure_reims_built(self, reims_dir: Optional[str]) -> bool:
-        """Garante que o binário do reims-vgpu corresponda ao fonte.
-
-        A ISO leva as **fontes** do reims-vgpu, então aqui é onde o appliance as
-        compila. Sem isso o QEMU em uso poderia ser um binário antigo sem que
-        nada avisasse — foi exatamente o que aconteceu com o patch do
-        `wait_idle`, que ficou em `vendor/qemu/build/` enquanto o teste usava
-        `/usr/bin/qemu-system-x86_64`.
-
-        Devolve True se pode seguir (nada a fazer ou build concluído). Devolve
-        False **apenas** quando não há binário algum para lançar a VM — recusar
-        compilar com um binário existente continua sendo um caminho válido.
-        """
-        state = evaluate_reims_build(explicit=reims_dir)
+    def _ensure_reims_release(self, reims_dir: Optional[str]) -> bool:
+        """Instala e valida o binário da release; o appliance não compila fontes."""
+        state = evaluate_reims_release(explicit=reims_dir)
         if state.reims_dir is None:
             return False
-
-        def binary_present() -> bool:
-            # `evaluate` já resolve o binário em uso: o instalado pelo
-            # install-ctl.sh (qemu/current) ou, na árvore antiga, o in-tree.
-            return bool(state.binary_path and state.binary_path.exists())
-
-        # Os bits de execução são restaurados aqui, e não só dentro de `build()`:
-        # o `vm/boot-x86.sh` exige `[ -x ]` em
-        # `crates/reims-vgpu-efi/scripts/.../reims-vgpu-efi-rom.sh` e morre com
-        # "EFI ROM builder not executable" — inclusive no caminho em que o build
-        # é pulado (stamp atualizado) ou recusado. Custo medido: 0,15 s, e 0 na
-        # segunda vez, porque só toca no que está errado.
-        try:
-            ensure_executable_bits(state.reims_dir)
-        except Exception:  # noqa: BLE001 — melhor tentar lançar do que abortar
-            pass
-
-        if not state.sources_present:
-            # Árvore só com binário (ISO de release): nada a compilar, mas o
-            # binário empacotado ainda **não** está onde a VM o executa. O
-            # prefixo do runtime (`qemu/current`, que o `reims_ctl` procura) é
-            # populado aqui, na primeira vez que se lança uma VM; a partir daí é
-            # idempotente e não recopia a árvore. Trocar de compilação é o item
-            # "A" do menu, que usa esta mesma função.
+        if not (state.binary_path and state.binary_path.exists()):
             with console.status(i18n.t("tui.release.installing")):
-                pronto = install_prebuilt(state.reims_dir)
-            if not pronto:
-                return False
-            # O `state` acima foi avaliado ANTES da instalação: sem reavaliar, a
-            # VM seria recusada — ou pior, lançada com o binário de antes — mesmo
-            # com a compilação já no lugar.
-            state = evaluate_reims_build(explicit=reims_dir)
-            return binary_present()
-
-        if not state.needs_build:
-            return True
-
-        console.print()
-        console.print(Panel(
-            i18n.t("tui.build.needs_build", reason=state.reason),
-            border_style="yellow",
-        ))
-        if not Confirm.ask(i18n.t("tui.build.confirm_now"), default=True):
-            if binary_present():
-                console.print(i18n.t("tui.build.refused_existing"))
-                return True
-            console.print(i18n.t("tui.build.refused_no_binary"))
-            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
-            return False
-
-        from rich.progress import (
-            Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn,
-        )
-
-        result = {"ok": False}
-        with Progress(
-            SpinnerColumn(spinner_name="dots"),
-            TextColumn("[bold cyan]{task.description}[/bold cyan]"),
-            BarColumn(
-                bar_width=28,
-                style="#153247",
-                complete_style="#12cbd5",
-                finished_style="#12cbd5",
-                pulse_style="#12cbd5",
-            ),
-            TextColumn("[bold white]{task.percentage:>3.0f}%[/bold white]"),
-            TimeElapsedColumn(),
-            console=console,
-        ) as progress:
-            task = progress.add_task(i18n.t("tui.build.preparing"), total=100)
-            current = {"name": ""}
-
-            def on_start(name: str, _expected: float) -> None:
-                current["name"] = name
-                progress.update(task, description=i18n.t("tui.build.compiling", name=name))
-
-            def on_progress(pct: float) -> None:
-                progress.update(task, completed=pct)
-
-            def on_done(name: str, ok: bool) -> None:
-                if not ok:
-                    progress.update(
-                        task,
-                        description=i18n.t("tui.build.failed_task", name=name),
-                    )
-
-            try:
-                result["ok"] = build_reims_vgpu(
-                    state.reims_dir,
-                    on_start=on_start,
-                    on_done=on_done,
-                    progress=on_progress,
-                )
-            except Exception as exc:  # noqa: BLE001 — a TUI não pode morrer aqui
-                progress.update(task, description=i18n.t("tui.build.error", error=exc))
-
-            if result["ok"]:
-                progress.update(task, completed=100.0, description=i18n.t("tui.build.done"))
-
-        if not result["ok"]:
-            from core.reims_build import tail_log
-            console.print(i18n.t("tui.build.failed"))
-            for log_name in ("build-qemu-reims.log", "build-rom.log"):
-                snippet = tail_log(log_name, lines=12)
-                if snippet:
-                    console.print(i18n.t("tui.build.log_header", name=log_name))
-                    console.print(snippet)
-            console.print(i18n.t("tui.build.logs_path"))
-            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
-            # O configure do QEMU apaga o build/ antes de reconfigurar, então uma
-            # falha pode ter levado o binário anterior junto. Se não sobrou
-            # nenhum, não há o que lançar — e dizer o contrário seria mentira.
-            if not binary_present():
-                console.print(i18n.t("tui.build.previous_lost"))
-                return False
-            console.print(i18n.t("tui.build.using_previous"))
-            return True
-
-        console.print(i18n.t("tui.build.success"))
-        return True
-
-    def _menu_reims_rebuild(self) -> None:
-        """Faz um build limpo do fonte e deixa install-ctl instalar deps ausentes."""
-        reims_dir = find_reims_dir()
-        state = evaluate_reims_build(explicit=reims_dir)
-        if state.reims_dir is None or not state.sources_present:
-            console.print(i18n.t("tui.rebuild.no_sources"))
-            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
-            return
-
-        console.clear()
-        console.print(centered_banner(console))
-        console.print(i18n.t("tui.rebuild.title", path=state.reims_dir))
-        console.print(i18n.t("tui.rebuild.description"))
-        if not Confirm.ask(i18n.t("tui.rebuild.confirm"), default=False):
-            console.print(i18n.t("tui.rebuild.cancelled"))
-            return
-
-        from rich.progress import (
-            Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn,
-        )
-
-        result = {"ok": False}
-        with Progress(
-            SpinnerColumn(spinner_name="dots"),
-            TextColumn("[bold cyan]{task.description}[/bold cyan]"),
-            BarColumn(
-                bar_width=28,
-                style="#153247",
-                complete_style="#12cbd5",
-                finished_style="#12cbd5",
-                pulse_style="#12cbd5",
-            ),
-            TextColumn("[bold white]{task.percentage:>3.0f}%[/bold white]"),
-            TimeElapsedColumn(),
-            console=console,
-        ) as progress:
-            task = progress.add_task(i18n.t("tui.build.preparing"), total=100)
-
-            def on_start(name: str, _expected: float) -> None:
-                progress.update(task, description=i18n.t("tui.build.compiling", name=name))
-
-            def on_done(name: str, ok: bool) -> None:
-                if not ok:
-                    progress.update(task, description=i18n.t("tui.build.failed_task", name=name))
-
-            try:
-                result["ok"] = build_reims_vgpu(
-                    state.reims_dir,
-                    clean=True,
-                    on_start=on_start,
-                    on_done=on_done,
-                    progress=lambda pct: progress.update(task, completed=pct),
-                )
-            except Exception as exc:  # noqa: BLE001 — reporta erro sem encerrar a TUI
-                progress.update(task, description=i18n.t("tui.build.error", error=exc))
-
-        if result["ok"]:
-            console.print(i18n.t("tui.rebuild.success"))
-        else:
-            from core.reims_build import tail_log
-            console.print(i18n.t("tui.build.failed"))
-            snippet = tail_log("build-qemu-reims.log", lines=20)
-            if snippet:
-                console.print(i18n.t("tui.build.log_header", name="build-qemu-reims.log"))
-                console.print(snippet)
-            console.print(i18n.t("tui.build.logs_path"))
-        Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+                if not install_prebuilt(state.reims_dir):
+                    return False
+            state = evaluate_reims_release(explicit=str(state.reims_dir))
+        return bool(state.binary_path and state.binary_path.exists())
 
     def _menu_reims_release(self) -> None:
         """Item "A": troca o reims-vgpu por uma release mais nova do fork.
 
         É o caminho pré-compilado: a ISO nasce com o binário de uma release e
-        aqui ele é substituído por um mais novo **sem recompilar nada**. O
-        "atualizar as fontes e recompilar" continua no item 4, para quem tem as
-        fontes.
+        aqui ele é substituído por um mais novo, sempre a partir de uma release.
 
         O download cai no diretório do reims-vgpu e, em seguida, `install_prebuilt`
         copia a árvore para o prefixo que a VM executa
         (`$XDG_DATA_HOME/reims-ctl/qemu/<tag>` + o symlink `current`), junto com o
-        motor `reims-ctl` do bundle. **Esse segundo passo é o que faz o download
-        virar a compilação do próximo lançamento** — sem ele a release era baixada
-        e a VM continuava na compilação antiga.
+        motor `reims-ctl` do bundle; a VM passa a usar a release instalada.
 
         Nada aqui é fatal: falha de rede, API do GitHub fora do ar ou release sem
         o asset apenas avisam.
@@ -1848,9 +1639,9 @@ class VMTUI:
             )
             return
 
-        # `find_reims_dir` já reconhece tanto o checkout de fontes quanto o
-        # payload pré-compilado que a ISO instala em /opt/reims-vgpu, então o
-        # fallback aqui só cobre o caso legítimo de "ainda não existe nada" —
+        # `find_reims_dir` reconhece o payload pré-compilado que a ISO instala
+        # em /opt/reims-vgpu. O fallback só cobre o caso legítimo de "ainda
+        # não existe nada" —
         # e é para lá que a instalação grava. Ele NÃO pode ser a única coisa
         # que faz o menu enxergar uma instalação: enquanto era, o menu dizia
         # "instalado: v1.2.0" e o lançamento da VM dizia "sem diretório do
@@ -1869,7 +1660,7 @@ class VMTUI:
             if not ok:
                 # Atualizar o binário não adianta se o host não tem Vulkan
                 # utilizável — mas o aviso não impede a troca: o motivo de estar
-                # aqui pode ser justamente testar uma compilação mais nova.
+                # aqui pode ser justamente testar uma release mais nova.
                 console.print(f"[yellow]{message}[/yellow]")
 
             console.print()

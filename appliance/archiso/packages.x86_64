@@ -1,9 +1,7 @@
 # Base & Kernel
 base
-base-devel
 linux
 linux-firmware
-linux-headers
 mkinitcpio
 mkinitcpio-archiso
 systemd
@@ -106,67 +104,16 @@ python-setuptools
 # Listener evdev das teclas XF86 (brilho/volume) — grupo 4/D4.
 python-evdev
 
-# Toolchain de build do reims-vgpu (Vulkan) — a ISO leva as FONTES do fork e o
-# appliance compila na máquina do usuário, uma vez, com stamp de conteúdo. Isso
-# evita o caso do binário defasado em uso sem ninguém notar. Custo medido de um
-# build frio completo (98 crates Rust + 1950 objetos C do QEMU): ~4,5 min, com
-# Rust e C compilando em paralelo.
-#
-# O `rust` do Arch já traz `cargo`. O QEMU não baixa meson/ninja: ele usa os do
-# sistema (verificado no configure). As crates NÃO são baixadas, e sim lidas de
-# `vendor/cargo` (deps vendorizadas, `cargo vendor --versioned-dirs`), então o
-# build funciona offline — o appliance pode não ter internet no primeiro boot.
-rust
-meson
-ninja
-glib2
-pixman
-zlib
-pkgconf
-clang
-gcc
-make
-
-# LLVM tools (`llvm-dis`) — exigido em RUNTIME, não só no build.
+# LLVM tools (`llvm-dis`) e `spirv-val` continuam exigidos em RUNTIME pelo
+# shader translator do reims-vgpu; mantemos as ferramentas sem os compiladores.
 # O metal2vulkan executa `llvm-dis` para desmontar o AIR da Apple a cada shader
 # ainda não cacheado, e o `vm/boot-x86.sh:require_shader_toolchain` aborta o
-# boot se ele não estiver no PATH ("llvm-dis not found in PATH"). O `clang` traz
-# o `llvm-libs` (a libLLVM.so já estava na ISO), mas NÃO traz os binários do
-# pacote `llvm` — sem esta linha o rail morre antes de abrir a janela.
-# Custo: 28 MiB de download / 138 MiB instalados.
+# boot se ele não estiver no PATH ("llvm-dis not found in PATH").
 llvm
-# `spirv-val`(daqui) também é exigido pelo require_shader_toolchain. Já era
-# trazido de forma implícita; declarado agora para não depender de sorte.
 spirv-tools
-
-# Dependências que o `scripts/install-ctl.sh` do fork confere POR NOME antes de
-# compilar (`pacman_pkgs`), e que a ISO precisa levar prontas.
-#
-# Sintoma real (ISO 1.1.0, 16/10): o script chamou
-#   sudo pacman -S --needed --noconfirm cmake libxss libdecor
-# e o pacman respondeu
-#   warning: database file for 'core' does not exist (use '-Sy' to download)
-#   error: target not found: cmake
-# porque o appliance é uma imagem **live** do archiso, que não leva
-# /var/lib/pacman/sync/*.db — e o primeiro boot pode não ter rede. Nada é
-# instalável em runtime: ou o pacote já está na imagem, ou o build morre.
-#
-# Várias destas entram sozinhas, como dependência transitiva de
-# sway/qemu-desktop/gtk3; declarar explicitamente tira o build da sorte de um
-# pai continuar puxando a biblioteca. `appliance/check_build_deps.py` falha o
-# build da ISO se o fork pedir um nome ausente desta lista, e o
-# `validate_iso.py` confere os arquivos dentro do squashfs.
-#
-# Build nativo (o `cargo xtask dist` compila SDL3 do zero; o QEMU usa meson):
-cmake
-lld
-flex
-bison
-bzip2
-dtc
+# Bibliotecas de runtime exigidas pelo QEMU pré-compilado da release:
 libslirp
-#
-# Janela e áudio do QEMU/reims-vgpu:
+bzip2
 gtk3
 libx11
 libxext
@@ -182,10 +129,11 @@ libxfixes
 libepoxy
 libpng
 libjpeg-turbo
+pixman
+zlib
 zstd
 ncurses
-# Protetor de tela X e decoração client-side do Wayland: o build do SDL3 procura
-# as duas (libXss e libdecor) e reprova sem elas.
+# Bibliotecas de runtime do QEMU/SDL.
 libxss
 libxtst
 libxkbcommon

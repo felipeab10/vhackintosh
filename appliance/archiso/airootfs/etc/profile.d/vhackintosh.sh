@@ -132,58 +132,6 @@ vhack_vulkan_check_skipped() {
     return 1
 }
 
-# ------------------------------------------------------------------------------
-# Hook de verificação automatizada (headless) — acionado por cmdline do kernel.
-#
-# `appliance/verify-iso.sh --build-test` injeta `vhack_build_test=1` via
-# `-append`, o que permite bootar a MESMA ISO já construída e rodar o build do
-# reims-vgpu sem reescrever o perfil archiso nem o TUI. Sem isso seria preciso
-# editar este profile (que é do usuário) ou o TUI (arriscado).
-#
-# Fica ANTES do gate de Vulkan de propósito: aquele gate entra em loop infinito
-# pedindo Enter, e num guest sem Vulkan 1.2+ a automação nunca chegaria ao
-# build. Aqui o gate é pulado porque compilar não exige GPU — o veredito que
-# interessa é sobre a compilação.
-#
-# Só na tty1, onde o appliance de fato roda, para não repetir em cada console.
-#
-# As mensagens daqui vão para o tty1 (tela) E para /dev/ttyS0 (serial) quando o
-# device existir: o host roda headless e só enxerga o serial, então sem isso um
-# erro ANTES do verify-build-in-guest.sh rodar (ex.: script ausente na ISO)
-# apareceria como TIMEOUT mudo, sem nenhuma pista.
-if [ "$(tty)" = "/dev/tty1" ] && grep -qE '(^| )vhack_build_test=1( |$)' /proc/cmdline 2>/dev/null; then
-    vhack_hook_echo() {
-        echo -e "$1"
-        [ -w /dev/ttyS0 ] && printf '%s\n' "$1" >> /dev/ttyS0 2>/dev/null || true
-    }
-    if [ -x /usr/local/bin/verify-build-in-guest.sh ]; then
-        vhack_hook_echo "\033[1;36m▶ vhack_build_test=1 detectado no cmdline — rodando verificação headless do build...\033[0m"
-        # Repassa o ÚNICO bypass de Vulkan que existe (core/gpu.py). Sem isso o
-        # `vhackintosh check-vulkan` de dentro do script falharia num guest sem
-        # GPU 1.2+, o que é ruído: compilar não exige GPU.
-        VHACK_SKIP_VULKAN_CHECK=1 /usr/local/bin/verify-build-in-guest.sh
-        __vhack_build_rc=$?
-        echo
-        if [ "$__vhack_build_rc" -eq 0 ]; then
-            vhack_hook_echo "\033[1;32m▶ Verificação concluída: PASS (rc=0). Desligando o guest.\033[0m"
-        else
-            vhack_hook_echo "\033[1;31m▶ Verificação concluída: FAIL (rc=${__vhack_build_rc}). Desligando o guest.\033[0m"
-        fi
-        # Desliga para o host saber que terminou, mesmo em modo headless onde
-        # ninguém lê a tela. O veredito já foi para o serial/log.
-        sync 2>/dev/null || true
-        if command -v systemctl >/dev/null 2>&1; then
-            systemctl poweroff -i || poweroff
-        else
-            poweroff
-        fi
-        # Se o poweroff não funcionar, não deixa o profile seguir para o TUI.
-        exit "$__vhack_build_rc"
-    else
-        vhack_hook_echo "\033[1;31m▶ vhack_build_test=1 no cmdline, mas /usr/local/bin/verify-build-in-guest.sh não existe/não é executável.\033[0m"
-    fi
-fi
-
 if [ "$(tty)" = "/dev/tty1" ]; then
     # Inicia subsistema de áudio PipeWire para a sessão de usuário
     if command -v systemctl >/dev/null 2>&1; then
@@ -243,12 +191,8 @@ if [ "$(tty)" = "/dev/tty1" ]; then
 
     # 4. Checagem Rigorosa de Hardware do Host (Vulkan 1.2+ para Reims vGPU)
     #
-    # O escape `VHACK_SKIP_VULKAN_CHECK=1` é o MESMO de `core/gpu.py`. Ele era
-    # respeitado só no caminho `vhack_build_test=1` (logo acima): o boot normal
-    # ignorava a variável e desligava a máquina na cara do usuário, sem oferecer
-    # saída. Como o `check-vulkan` já sai 0 quando ela está ligada, basta não
-    # bloquear nesse caso — a checagem NÃO é reimplementada aqui, para não criar
-    # uma segunda política que divirja da de `core/gpu.py`.
+    # O escape `VHACK_SKIP_VULKAN_CHECK=1` é o mesmo de `core/gpu.py` e permite
+    # pular temporariamente a barreira em uma sessão de diagnóstico.
     echo -e "\033[1;36mVerificando aceleração de vídeo do host (Vulkan 1.2+)...\033[0m"
     VULKAN_OUTPUT=""
     VULKAN_OK=1
