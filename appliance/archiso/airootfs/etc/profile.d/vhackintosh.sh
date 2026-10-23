@@ -2,7 +2,7 @@
 # vHackintosh Appliance - Autostart TUI on local VTs & Pre-flight Compatibility
 # ==============================================================================
 
-# Garante que /usr/local/bin e npm global estejam no PATH
+# Garante que os utilitários locais estejam no PATH
 export PATH="/usr/local/bin:${PATH}"
 
 # ------------------------------------------------------------------------------
@@ -346,8 +346,8 @@ if [ "$(tty)" = "/dev/tty1" ]; then
                 echo -e "\033[1;36m======================================================================\033[0m\n"
 
                 echo -e "  \033[1;33m● Status de Conexão: SEM INTERNET\033[0m"
-                echo -e "    Os downloads do macOS (Apple Recovery) e dos AI Harnesses"
-                echo -e "    ficarão indisponíveis até que uma rede seja configurada.\n"
+                echo -e "    Os downloads do macOS (Apple Recovery) ficarão indisponíveis"
+                echo -e "    até que uma rede seja configurada.\n"
 
                 echo -e "Escolha uma opção:\n"
                 echo -e "  \033[1;34m[1]\033[0m \033[1;37mConfigurar Conexão Wi-Fi / Rede (nmtui)\033[0m\n"

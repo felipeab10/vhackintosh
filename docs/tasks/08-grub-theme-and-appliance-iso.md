@@ -1,5 +1,9 @@
 # Tarefa T08: GRUB Theme & Appliance ISO Builder
 
+> Nota de manutenção (2026-10-23): os Harnesses CLI e Node.js/npm/pnpm foram
+> removidos da ISO para reduzir seu tamanho. O script `setup-harness-tools.sh`
+> não faz mais parte do Appliance.
+
 ## Objetivo
 Criar um tema customizado do GRUB com a identidade visual do vHackintosh e scripts para empacotar a imagem do Linux Appliance bootável com auto-login configurado, aceleração Vulkan para o reims-vgpu e Harnesses CLI de IA integrados.
 

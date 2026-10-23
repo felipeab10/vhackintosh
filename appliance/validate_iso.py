@@ -53,12 +53,23 @@ def confere_provenance(rootfs: Path) -> Provenance:
             "prebuilt ReimsVgpu provenance points at an unexpected repository: "
             f"{provenance_data.get('repo')!r}"
         )
-    qemu = rootfs / "usr/local/lib/reims-vgpu-qemu/bin/qemu-system-x86_64"
-    if not qemu.is_file():
-        raise RuntimeError("prebuilt ISO has no packaged QEMU executable")
-    rom = qemu.parent.parent / "share/qemu/ReimsVgpu.rom"
-    if not rom.is_file():
-        raise RuntimeError("prebuilt ISO has no packaged ReimsVgpu.rom next to the QEMU")
+    bundle = rootfs / "opt/reims-vgpu"
+    qemu_candidates = (
+        bundle / "vendor/qemu/build/bin/qemu-system-x86_64",
+        bundle / "vendor/qemu/build/qemu-system-x86_64",
+    )
+    if not any(path.is_file() for path in qemu_candidates):
+        raise RuntimeError("prebuilt ISO has no QEMU executable in the Reims release bundle")
+    rom_candidates = (
+        bundle / "vendor/qemu/build/share/qemu/ReimsVgpu.rom",
+        bundle / "vendor/qemu/pc-bios/ReimsVgpu.rom",
+        bundle / "vendor/qemu/build/ReimsVgpu.rom",
+    )
+    if not any(path.is_file() for path in rom_candidates):
+        raise RuntimeError("prebuilt ISO has no ReimsVgpu.rom in the release bundle")
+    ctl_candidates = (bundle / "bin/reims-ctl", bundle / "reims-ctl")
+    if not any(path.is_file() for path in ctl_candidates):
+        raise RuntimeError("prebuilt ISO has no reims-ctl in the release bundle")
     registered_release = rootfs / "opt/reims-vgpu/.release"
     if registered_release.is_file():
         value = registered_release.read_text(encoding="utf-8").strip()
@@ -207,7 +218,7 @@ def main() -> int:
                 "macserial_sha256": hashlib.sha256(macserial.read_bytes()).hexdigest(),
                 "reims_util_sha256": hashlib.sha256(reims_util.read_bytes()).hexdigest(),
                 "ovmf_vars_sha256": ovmf_vars_hash,
-                "checks": ["squashfs-extracted", "opencore-qcow2", "plist-neutral", "macserial-pinned", "reims-util-packaged", "ovmf-vars-match", "reims-release-packaged"],
+                "checks": ["squashfs-extracted", "opencore-qcow2", "plist-neutral", "macserial-pinned", "reims-util-packaged", "ovmf-vars-match", "reims-release-packaged", "reims-ctl-packaged"],
             }
         # Atomic metadata publication only after all checks complete.
         target = iso.with_suffix(iso.suffix + ".manifest.json")
