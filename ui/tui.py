@@ -30,7 +30,7 @@ from core import reims_ctl
 from core.hardware import HardwareAdvisor
 from core.gpu import GPUChecker
 from core.readiness import SystemReadinessChecker
-from core.mode import detect_system_mode, has_installer_binary
+from core.mode import detect_system_mode, has_installer_binary, is_live_media
 from core.install_phase import (
     InstallPhase,
     InstallEvidence,
@@ -1614,10 +1614,11 @@ class VMTUI:
         return bool(state.binary_path and state.binary_path.exists())
 
     def _menu_reims_release(self) -> None:
-        """Item "A": troca o reims-vgpu por uma release mais nova do fork.
+        """Item "A": seleciona qualquer release estável disponível do fork.
 
         É o caminho pré-compilado: a ISO nasce com o binário de uma release e
-        aqui ele é substituído por um mais novo, sempre a partir de uma release.
+        aqui o usuário pode escolher uma versão nova ou voltar para uma anterior.
+        Os diretórios de QEMU por tag são mantidos, e só o link atual muda.
 
         O download cai no diretório do reims-vgpu e, em seguida, `install_prebuilt`
         copia a árvore para o prefixo que a VM executa
@@ -1633,7 +1634,7 @@ class VMTUI:
                 REIMS_REPO,
                 ReleaseError,
                 current_release,
-                latest_release,
+                list_releases,
                 update_from_release,
                 vulkan_runtime_ok,
             )
@@ -1676,31 +1677,56 @@ class VMTUI:
 
             try:
                 with console.status(i18n.t("tui.release.checking")):
-                    newest = latest_release()
+                    releases = list_releases()
             except ReleaseError as exc:
                 console.print(i18n.t("tui.release.check_failed", error=str(exc)))
                 return
 
-            if newest is None:
+            if not releases:
                 console.print(i18n.t("tui.release.none"))
                 return
-            if newest.tag == installed:
+
+            console.print()
+            for number, release in enumerate(releases, 1):
+                current_marker = (
+                    f" [green]{i18n.t('tui.release.current_marker')}[/green]"
+                    if release.tag == installed else ""
+                )
+                published = release.published_at[:10] if release.published_at else ""
+                size = f"{release.size_mb:.1f} MB" if release.asset_size else ""
+                metadata = " · ".join(part for part in (published, size) if part)
+                suffix = f" [dim]({metadata})[/dim]" if metadata else ""
+                console.print(
+                    f" [bold cyan]{number}[/bold cyan] - [bold]{release.tag}[/bold]"
+                    f"{suffix}{current_marker}"
+                )
+            choices = [str(i) for i in range(0, len(releases) + 1)]
+            selected_number = Prompt.ask(
+                i18n.t("tui.release.select_prompt"),
+                choices=choices,
+                default="0",
+            )
+            if selected_number == "0":
+                console.print(i18n.t("tui.release.skipped"))
+                return
+            selected = releases[int(selected_number) - 1]
+            if selected.tag == installed:
                 console.print(i18n.t("tui.release.up_to_date", tag=installed))
                 return
 
             console.print(Panel(
-                i18n.t("tui.release.available", installed=installed, tag=newest.tag),
+                i18n.t("tui.release.available", installed=installed, tag=selected.tag),
                 border_style="cyan",
             ))
             if not Confirm.ask(
-                i18n.t("tui.release.confirm_update", tag=newest.tag), default=True
+                i18n.t("tui.release.confirm_update", tag=selected.tag), default=True
             ):
                 console.print(i18n.t("tui.release.declined"))
                 return
 
             try:
-                with console.status(i18n.t("tui.release.downloading", tag=newest.tag)):
-                    result = update_from_release(reims_dir=reims_dir, tag=newest.tag)
+                with console.status(i18n.t("tui.release.downloading", tag=selected.tag)):
+                    result = update_from_release(reims_dir=reims_dir, tag=selected.tag)
             except ReleaseError as exc:
                 console.print(i18n.t("tui.release.update_failed", error=str(exc)))
                 return
@@ -1712,7 +1738,7 @@ class VMTUI:
                 console.print(i18n.t("tui.release.up_to_date", tag=installed))
                 return
 
-            console.print(i18n.t("tui.release.updated", tag=newest.tag))
+            console.print(i18n.t("tui.release.updated", tag=selected.tag))
 
             # Levar a árvore baixada para o prefixo que a VM executa, com o motor.
             with console.status(i18n.t("tui.release.installing")):
@@ -1721,9 +1747,10 @@ class VMTUI:
                 console.print(i18n.t("tui.release.install_failed"))
                 return
 
-            console.print(i18n.t("tui.release.installed_ok", tag=newest.tag))
+            console.print(i18n.t("tui.release.installed_ok", tag=selected.tag))
             console.print(i18n.t("tui.release.restart_hint"))
-            console.print(i18n.t("tui.release.session_only"))
+            if is_live_media():
+                console.print(i18n.t("tui.release.session_only"))
         finally:
             # Pausa no estilo da casa: o laço principal limpa a tela na volta.
             Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))

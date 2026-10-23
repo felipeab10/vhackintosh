@@ -1,12 +1,12 @@
-"""Atualização do reims-vgpu a partir das releases do GitHub.
+"""Troca de versão do reims-vgpu a partir das releases do GitHub.
 
 O appliance nasce com o reims-vgpu **pré-compilado** dentro da ISO (ver
 `appliance/build-iso.sh`), obtido de uma release do repositório
 https://github.com/felipeab10/reims-vgpu/releases. Compilar o fork do QEMU dentro
 da VM custava horas e exigia rede/ferramentas no live.
 
-Este módulo dá a outra metade: trocar o binário empacotado por outro de uma
-release mais nova, sem recompilar e sem reconstruir a ISO.
+Este módulo dá a outra metade: trocar o binário empacotado por qualquer release
+disponível, sem recompilar e sem reconstruir a ISO.
 
 Portabilidade (medida no binário real da release v1.0.1): é um ELF x86-64
 genérico, sem `-march=native`, sem caminhos do host de build, e carrega o Vulkan
@@ -233,56 +233,63 @@ def list_releases(*, include_prerelease: bool = False) -> list[Release]:
     if not (_has_curl() or _has_wget()):
         raise ReleaseError("nem curl nem wget estão disponíveis para consultar as releases")
 
-    if _has_curl():
-        cmd = ["curl", "-fsSL", "-H", "Accept: application/vnd.github+json", RELEASES_API]
-    else:
-        cmd = ["wget", "-qO-", "--header=Accept: application/vnd.github+json", RELEASES_API]
-
-    try:
-        proc = _run(cmd, timeout=_TIMEOUT_API)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ReleaseError(f"não foi possível consultar as releases: {exc}") from exc
-
-    if proc.returncode != 0:
-        raise ReleaseError(
-            "a API do GitHub não respondeu "
-            f"(rc={proc.returncode}); tente informar a tag explicitamente"
-        )
-
-    try:
-        data = json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        raise ReleaseError(f"resposta inesperada da API do GitHub: {exc}") from exc
-
-    if not isinstance(data, list):
-        raise ReleaseError("resposta inesperada da API do GitHub: esperava uma lista")
-
     out: list[Release] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        if item.get("draft"):
-            continue
-        if item.get("prerelease") and not include_prerelease:
-            continue
-        assets = item.get("assets") or []
-        asset = next(
-            (a for a in assets if isinstance(a, dict) and a.get("name") == RELEASE_ASSET),
-            None,
-        )
-        if asset is None:
-            # Release sem o tarball do appliance não serve.
-            continue
-        out.append(
-            Release(
-                tag=str(item.get("tag_name") or ""),
-                name=str(item.get("name") or item.get("tag_name") or ""),
-                published_at=str(item.get("published_at") or ""),
-                asset_url=str(asset.get("browser_download_url") or ""),
-                asset_size=int(asset.get("size") or 0),
-                prerelease=bool(item.get("prerelease")),
+    page = 1
+    while True:
+        url = f"{RELEASES_API}?per_page=100&page={page}"
+        if _has_curl():
+            cmd = ["curl", "-fsSL", "-H", "Accept: application/vnd.github+json", url]
+        else:
+            cmd = ["wget", "-qO-", "--header=Accept: application/vnd.github+json", url]
+
+        try:
+            proc = _run(cmd, timeout=_TIMEOUT_API)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ReleaseError(f"não foi possível consultar as releases: {exc}") from exc
+
+        if proc.returncode != 0:
+            raise ReleaseError(
+                "a API do GitHub não respondeu "
+                f"(rc={proc.returncode}); tente informar a tag explicitamente"
             )
-        )
+
+        try:
+            data = json.loads(proc.stdout or "[]")
+        except json.JSONDecodeError as exc:
+            raise ReleaseError(f"resposta inesperada da API do GitHub: {exc}") from exc
+
+        if not isinstance(data, list):
+            raise ReleaseError("resposta inesperada da API do GitHub: esperava uma lista")
+
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            if item.get("draft"):
+                continue
+            if item.get("prerelease") and not include_prerelease:
+                continue
+            assets = item.get("assets") or []
+            asset = next(
+                (a for a in assets if isinstance(a, dict) and a.get("name") == RELEASE_ASSET),
+                None,
+            )
+            if asset is None:
+                # Release sem o tarball do appliance não serve.
+                continue
+            out.append(
+                Release(
+                    tag=str(item.get("tag_name") or ""),
+                    name=str(item.get("name") or item.get("tag_name") or ""),
+                    published_at=str(item.get("published_at") or ""),
+                    asset_url=str(asset.get("browser_download_url") or ""),
+                    asset_size=int(asset.get("size") or 0),
+                    prerelease=bool(item.get("prerelease")),
+                )
+            )
+
+        if len(data) < 100:
+            break
+        page += 1
     return out
 
 
@@ -404,7 +411,7 @@ def update_from_release(
     log: Optional[Callable[[str], None]] = None,
     force: bool = False,
 ) -> UpdateResult:
-    """Troca o reims-vgpu empacotado pelo de uma release do GitHub.
+    """Troca o reims-vgpu empacotado pelo de uma release específica do GitHub.
 
     Monta tudo num diretório temporário e só então move para o lugar: uma falha
     no meio do caminho deixa o appliance exatamente como estava. Se a tag pedida

@@ -781,6 +781,28 @@ class PrebuiltMotorInstallTests(unittest.TestCase):
             self.assertTrue(reims_build.install_prebuilt(self.reims))
         self.assertTrue((self.home / ".cargo" / "bin" / "reims-ctl").is_file())
 
+    def test_switching_release_updates_the_matching_reims_ctl_too(self):
+        """Rollback deve trocar o controlador junto com a versão do QEMU."""
+        ctl = self._com_motor()
+        ctl_dest = self.home / ".cargo" / "bin" / "reims-ctl"
+        with patch.object(reims_build, "qemu_data_dir", lambda: self.data), patch.dict(
+            os.environ, {"HOME": str(self.home)}
+        ):
+            self.assertTrue(reims_build.install_prebuilt(self.reims))
+            self.assertEqual(ctl_dest.read_bytes(), ctl.read_bytes())
+            qemu_v101 = self.data / "qemu" / "v1.0.1" / "bin" / "qemu-system-x86_64"
+            self.assertTrue(qemu_v101.is_file())
+
+            (self.reims / ".release").write_text("v1.0.0\n", encoding="utf-8")
+            ctl.write_text("#!/bin/sh\necho motor anterior\n", encoding="utf-8")
+            self.assertTrue(reims_build.install_prebuilt(self.reims))
+
+        self.assertEqual(ctl_dest.read_bytes(), ctl.read_bytes())
+        self.assertEqual(os.readlink(self.data / "qemu" / "current"), "v1.0.0")
+        self.assertTrue(qemu_v101.is_file(), "a versão anterior precisa continuar instalada")
+        qemu_v100 = self.data / "qemu" / "v1.0.0" / "bin" / "qemu-system-x86_64"
+        self.assertTrue(qemu_v100.is_file())
+
     def test_a_bundle_without_the_motor_is_warned_about(self):
         """Sem motor no bundle: instala o QEMU, mas avisa em vez de ficar quieto."""
         from contextlib import redirect_stdout
@@ -1409,6 +1431,42 @@ class ListReleasesTests(unittest.TestCase):
         with patch.object(reims_release, "_run", return_value=fake):
             with self.assertRaises(reims_release.ReleaseError):
                 reims_release.list_releases()
+
+    def test_requests_up_to_one_hundred_releases_for_rollback_choices(self):
+        import json
+        import subprocess
+
+        fake = subprocess.CompletedProcess(
+            args=["curl"], returncode=0, stdout=json.dumps([]), stderr=""
+        )
+        with patch.object(reims_release, "_run", return_value=fake) as run:
+            reims_release.list_releases()
+        self.assertIn("per_page=100&page=1", run.call_args.args[0][-1])
+
+    def test_release_list_follows_additional_api_pages(self):
+        import json
+        import subprocess
+
+        first_page = [
+            {
+                "tag_name": f"v{index}",
+                "assets": [{"name": reims_release.RELEASE_ASSET, "size": 1}],
+            }
+            for index in range(100)
+        ]
+        second_page = [{
+            "tag_name": "v-older",
+            "assets": [{"name": reims_release.RELEASE_ASSET, "size": 1}],
+        }]
+        responses = [
+            subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(data), stderr="")
+            for data in (first_page, second_page)
+        ]
+        with patch.object(reims_release, "_run", side_effect=responses) as run:
+            releases = reims_release.list_releases()
+        self.assertEqual(len(releases), 101)
+        self.assertEqual(releases[-1].tag, "v-older")
+        self.assertIn("page=2", run.call_args_list[1].args[0][-1])
 
     def test_malformed_json_raises_release_error(self):
         import subprocess
@@ -2649,18 +2707,27 @@ class ReleaseUpdateInTuiTests(unittest.TestCase):
 
         self.inst.console.status = lambda *a, **_k: contextlib.nullcontext()
 
-    def _rodar(self, *, latest, update=None, respostas=(True, True), instala=True):
+    def _rodar(
+        self, *, latest, update=None, respostas=(True, True), instala=True,
+        releases=None, escolha=1, live=False,
+    ):
         """Executa o item de menu com as releases dubladas e devolve o texto."""
         import io
         from contextlib import redirect_stdout
         from unittest.mock import patch
+
+        def fake_list(**kwargs):
+            if releases is not None:
+                return releases
+            release = latest(**kwargs)
+            return [release] if release is not None else []
 
         class FakeRR:
             ReleaseError = reims_release.ReleaseError
             DEFAULT_REIMS_DIR = self.reims
             REIMS_REPO = "felipeab10/reims-vgpu"
             current_release = staticmethod(lambda _d: "v1.0.1")
-            latest_release = staticmethod(latest)
+            list_releases = staticmethod(fake_list)
             update_from_release = staticmethod(
                 update
                 if update is not None
@@ -2688,7 +2755,9 @@ class ReleaseUpdateInTuiTests(unittest.TestCase):
         ), patch.object(
             self.tui.Confirm, "ask", side_effect=proxima
         ), patch.object(
-            self.tui.Prompt, "ask", return_value=""
+            self.tui.Prompt, "ask", return_value=str(escolha)
+        ), patch.object(
+            self.tui, "is_live_media", return_value=live
         ), redirect_stdout(buf):
             self.inst._menu_reims_release()
         return buf.getvalue()
@@ -2705,7 +2774,27 @@ class ReleaseUpdateInTuiTests(unittest.TestCase):
             ),
         )
         self.assertIn("v2.0.0", out)
-        self.assertIn("atualizado", out)
+        self.assertIn("alterada", out)
+
+    def test_an_older_release_can_be_selected_for_rollback(self):
+        received = []
+
+        def update(**kwargs):
+            received.append(kwargs["tag"])
+            return reims_release.UpdateResult(
+                ok=True, changed=True, tag=kwargs["tag"], message="ok"
+            )
+
+        out = self._rodar(
+            latest=lambda **_k: self._rel("v2.0.0"),
+            releases=[self._rel("v2.0.0"), self._rel("v1.0.0")],
+            escolha=2,
+            update=update,
+        )
+        self.assertEqual(received, ["v1.0.0"])
+        self.assertEqual(self.instalacoes, [self.reims])
+        self.assertIn("v1.0.0", out)
+        self.assertIn("v2.0.0", out)
 
     def test_the_downloaded_release_is_installed_into_the_vm_prefix(self):
         """Baixar não basta: a árvore tem de ir para o prefixo que a VM executa.
@@ -2729,6 +2818,26 @@ class ReleaseUpdateInTuiTests(unittest.TestCase):
         self.assertIn("pronto para a VM", out)
         self.assertIn("próxima vez", out)
 
+    def test_installed_system_does_not_claim_the_update_is_temporary(self):
+        out = self._rodar(
+            latest=lambda **_k: self._rel("v2.0.0"),
+            update=lambda **_k: reims_release.UpdateResult(
+                ok=True, changed=True, tag="v2.0.0", message="ok"
+            ),
+            live=False,
+        )
+        self.assertNotIn("Vale para esta sessão", out)
+
+    def test_live_iso_warns_that_the_update_will_not_persist(self):
+        out = self._rodar(
+            latest=lambda **_k: self._rel("v2.0.0"),
+            update=lambda **_k: reims_release.UpdateResult(
+                ok=True, changed=True, tag="v2.0.0", message="ok"
+            ),
+            live=True,
+        )
+        self.assertIn("Vale para esta sessão", out)
+
     def test_a_failed_install_is_reported_instead_of_silently_kept(self):
         """`install_prebuilt` devolvendo False não pode virar "sucesso"."""
         out = self._rodar(
@@ -2747,7 +2856,7 @@ class ReleaseUpdateInTuiTests(unittest.TestCase):
         Sem isto, um "instale sempre" passaria nos testes positivos.
         """
         out = self._rodar(latest=lambda **_k: self._rel("v2.0.0"), respostas=(True, False))
-        self.assertIn("recusada", out)
+        self.assertIn("Troca cancelada", out)
         self.assertEqual(self.instalacoes, [])
 
     def test_nothing_is_installed_when_the_download_fails(self):
@@ -2762,13 +2871,13 @@ class ReleaseUpdateInTuiTests(unittest.TestCase):
 
     def test_nothing_is_installed_when_the_tag_is_already_current(self):
         out = self._rodar(latest=lambda **_k: self._rel("v1.0.1"))
-        self.assertIn("mais recente", out)
+        self.assertIn("já está selecionada", out)
         self.assertEqual(self.instalacoes, [])
 
     def test_same_tag_says_up_to_date_and_never_updates(self):
         """`update` levanta se for chamado: já em dia não pode baixar de novo."""
         out = self._rodar(latest=lambda **_k: self._rel("v1.0.1"))
-        self.assertIn("mais recente", out)
+        self.assertIn("já está selecionada", out)
 
     def test_network_failure_does_not_raise(self):
         def boom(**_k):
@@ -2789,10 +2898,10 @@ class ReleaseUpdateInTuiTests(unittest.TestCase):
 
     def test_declining_the_download_keeps_current_binary(self):
         out = self._rodar(latest=lambda **_k: self._rel("v2.0.0"), respostas=(True, False))
-        self.assertIn("recusada", out)
+        self.assertIn("Troca cancelada", out)
 
     def test_declining_the_check_never_hits_the_network(self):
-        """Dizer não à consulta não pode chamar `latest_release`."""
+        """Dizer não à consulta não pode chamar a listagem de releases."""
         out = self._rodar(
             latest=lambda **_k: self.fail("não deveria consultar"),
             respostas=(False,),

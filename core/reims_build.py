@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import filecmp
 import os
 import shutil
 import subprocess
@@ -576,7 +577,11 @@ def install_prebuilt(reims_dir: Path) -> bool:
     # ------------------------------------------------------------------
     ctl_src = prebuilt_reims_ctl(reims_dir)
     ctl_dest = reims_ctl_install_dir() / "reims-ctl"
-    ctl_ok = ctl_src is None or (ctl_dest.is_file() and os.access(ctl_dest, os.X_OK))
+    ctl_ok = ctl_src is None or (
+        ctl_dest.is_file()
+        and os.access(ctl_dest, os.X_OK)
+        and filecmp.cmp(ctl_src, ctl_dest, shallow=False)
+    )
     if (
         atual == safe
         and dest.is_file()
@@ -637,7 +642,7 @@ def install_prebuilt(reims_dir: Path) -> bool:
         # O motor. Fica no diretório em que `core.reims_ctl.reims_ctl_bin()`
         # procura: o PATH do usuário pode não incluir ~/.cargo/bin, mas aquela
         # função checa o caminho literal, então o motor aparece do mesmo jeito.
-        if ctl_src is not None and not (ctl_dest.is_file() and os.access(ctl_dest, os.X_OK)):
+        if ctl_src is not None and not ctl_ok:
             ctl_dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ctl_src, ctl_dest)
             ctl_dest.chmod(0o755)
