@@ -329,8 +329,9 @@ if [ -z "${REIMS_ROM}" ]; then
     echo -e "${RED}Erro: a release ${REIMS_RELEASE} não trouxe ReimsVgpu.rom.${NC}"
     exit 1
 fi
-if [ ! -f "${REIMS_DEST}/vendor/qemu/pc-bios/bios-256k.bin" ]; then
-    echo -e "${RED}Erro: a release ${REIMS_RELEASE} não trouxe vendor/qemu/pc-bios/bios-256k.bin.${NC}"
+if [ ! -f "${REIMS_DEST}/vendor/qemu/build/share/qemu/bios-256k.bin" ] \
+    && [ ! -f "${REIMS_DEST}/vendor/qemu/pc-bios/bios-256k.bin" ]; then
+    echo -e "${RED}Erro: a release ${REIMS_RELEASE} não trouxe bios-256k.bin no diretório de ROMs do QEMU.${NC}"
     echo -e "${RED}  Sem este firmware o QEMU pode não iniciar; publique o asset completo no fork.${NC}"
     exit 1
 fi

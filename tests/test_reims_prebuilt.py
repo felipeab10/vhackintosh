@@ -2165,10 +2165,11 @@ class QemuPrefixLayoutTests(unittest.TestCase):
         if not self.BUILD_ISO.is_file():
             self.skipTest("build-iso.sh ausente")
         texto = self.BUILD_ISO.read_text(encoding="utf-8")
+        self.assertIn('"${REIMS_DEST}/vendor/qemu/build/share/qemu/bios-256k.bin"', texto)
         self.assertIn('"${REIMS_DEST}/vendor/qemu/pc-bios/bios-256k.bin"', texto)
         # O preflight confere no bundle de origem; o runtime instala essas ROMs
         # junto com o QEMU no diretório usado por reims-ctl.
-        i = texto.index("não trouxe vendor/qemu/pc-bios/bios-256k.bin")
+        i = texto.index("não trouxe bios-256k.bin no diretório de ROMs do QEMU")
         trecho = texto[max(0, i - 260):i + 400]
         self.assertIn("exit 1", trecho, "pc-bios ausente deveria abortar o build")
         self.assertNotIn("YELLOW", trecho, "pc-bios ausente não é aviso amarelo")
