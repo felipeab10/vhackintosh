@@ -89,8 +89,8 @@ class ABInstallerTest:
         disp_choice = Prompt.ask(i18n.t("installer.prompt.mode"), choices=["1", "2"], default="1")
         fullscreen = "1" if disp_choice == "1" else "0"
 
-        # Áudio corrigido definitivo (ich9-intel-hda)
-        audio_device = "ich9-intel-hda"
+        # macOS Tahoe x86-64 tem AppleUSBAudio, mas não AppleHDA.
+        audio_device = "usb-audio"
 
         # 5. Provisionamento da VM de teste (limpeza automática)
         test_vm_id = f"test-ab-{macos_version}-{os.getpid()}"

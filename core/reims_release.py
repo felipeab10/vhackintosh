@@ -22,6 +22,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -404,6 +405,44 @@ def _verify_tree(reims_dir: Path) -> None:
         )
 
 
+def _remove_path(path: Path) -> None:
+    """Remove qualquer tipo de entrada sem seguir links simbólicos."""
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _merge_release_tree(source: Path, destination: Path) -> None:
+    """Mescla arquivos da release, substituindo colisões de links/tipos.
+
+    `copytree(..., dirs_exist_ok=True, symlinks=True)` tenta recriar um link
+    simbólico mesmo quando o link de uma release anterior já ocupa o destino,
+    encerrando com EEXIST. A cópia recursiva trata cada entrada: diretórios
+    reais são mesclados e arquivos/links existentes são removidos antes da
+    substituição. Assim também é possível trocar entre releases com layouts de
+    OVMF diferentes sem apagar arquivos locais fora do pacote.
+    """
+    if source.is_dir() and not source.is_symlink():
+        if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+            _remove_path(destination)
+        destination.mkdir(parents=True, exist_ok=True)
+        for child in source.iterdir():
+            _merge_release_tree(child, destination / child.name)
+        shutil.copystat(source, destination, follow_symlinks=False)
+        return
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink() or destination.exists():
+        _remove_path(destination)
+    if source.is_symlink():
+        os.symlink(os.readlink(source), destination)
+    elif source.is_dir():
+        shutil.copytree(source, destination, symlinks=True)
+    else:
+        shutil.copy2(source, destination, follow_symlinks=False)
+
+
 def update_from_release(
     *,
     tag: str = "latest",
@@ -459,17 +498,12 @@ def update_from_release(
 
         # Só agora mexemos no destino. Preservamos o que já estiver lá (fontes,
         # scripts do modo fontes) para não quebrar quem usa a árvore completa.
+        # A mesclagem troca links já existentes: releases diferentes podem
+        # trazer os mesmos nomes em vm/ovmf com destinos distintos.
         reims_dir.mkdir(parents=True, exist_ok=True)
         for item in staged.iterdir():
             dest = reims_dir / item.name
-            if item.is_dir() and not item.is_symlink():
-                shutil.copytree(item, dest, dirs_exist_ok=True, symlinks=True)
-            else:
-                if dest.is_symlink() or dest.is_file():
-                    dest.unlink()
-                elif dest.is_dir():
-                    shutil.rmtree(dest)
-                shutil.move(str(item), str(dest))
+            _merge_release_tree(item, dest)
 
         (reims_dir / MARKER_REL).write_text(f"{resolved}\n", encoding="utf-8")
         emit(f"reims-vgpu atualizado para {resolved}")

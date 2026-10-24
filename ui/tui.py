@@ -493,10 +493,18 @@ class VMTUI:
         from core import passthrough
 
         sock = reims_ctl.qmp_socket(vm)
-        if not passthrough.probe_qmp(sock):
-            console.print(
-                i18n.t("tui.usb.not_running")
-            )
+        try:
+            with passthrough.QmpClient(sock):
+                pass
+        except passthrough.QmpError as exc:
+            pid = reims_ctl.vms_rodando().get(vm.id)
+            if pid:
+                console.print(i18n.t(
+                    "tui.usb.qmp_unavailable", pid=pid, error=exc.message
+                ))
+            else:
+                console.print(i18n.t("tui.usb.not_running"))
+                console.print(f"[dim]{exc.message}[/dim]")
             console.print(
                 i18n.t("tui.usb.auto_hint")
             )
@@ -1628,6 +1636,14 @@ class VMTUI:
         Nada aqui é fatal: falha de rede, API do GitHub fora do ar ou release sem
         o asset apenas avisam.
         """
+        # A release é baixada para o checkout em /opt/reims-vgpu e depois
+        # instalada no prefixo que a VM executa. Em instalações appliance,
+        # ambos pertencem ao root; verifique antes de consultar/baixar para
+        # evitar uma falha de permissão no meio da troca.
+        if os.geteuid() != 0:
+            console.print(i18n.t("tui.release.not_root"))
+            return
+
         try:
             from core.reims_release import (
                 DEFAULT_REIMS_DIR,
