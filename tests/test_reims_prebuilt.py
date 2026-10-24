@@ -1375,6 +1375,28 @@ class UpdateFromReleaseTests(unittest.TestCase):
         # O modo fontes continua funcionando: nada de apagar scripts/.
         self.assertTrue((self.reims / "scripts" / "install-ctl.sh").is_file())
 
+    def test_successful_update_replaces_existing_ovmf_symlinks(self):
+        """Trocar repetidamente de release deve substituir links OVMF existentes."""
+        tree = _make_release_tree(self.root / "release-with-ovmf")
+        ovmf = tree / "vm" / "ovmf" / "aa64"
+        ovmf.mkdir(parents=True)
+        (ovmf / "aarch64").symlink_to("OVMF_CODE.fd")
+        (ovmf / "OVMF_CODE.fd").write_bytes(b"ovmf-novo")
+        archive = _pack(tree, self.root / "release-with-ovmf.tar.gz")
+        installed_ovmf = self.reims / "vm" / "ovmf" / "aa64"
+        installed_ovmf.mkdir(parents=True)
+        (installed_ovmf / "aarch64").symlink_to("versao-anterior.fd")
+
+        with patch.object(reims_release, "_download", self._fake_download(archive)):
+            result = reims_release.update_from_release(
+                tag="v1.0.2", reims_dir=self.reims, log=lambda _m: None
+            )
+
+        self.assertTrue(result.ok, result.message)
+        self.assertTrue((installed_ovmf / "aarch64").is_symlink())
+        self.assertEqual(os.readlink(installed_ovmf / "aarch64"), "OVMF_CODE.fd")
+        self.assertEqual((installed_ovmf / "OVMF_CODE.fd").read_bytes(), b"ovmf-novo")
+
     def test_path_traversal_in_tarball_is_refused(self):
         evil = self.root / "evil.tar.gz"
         with tarfile.open(evil, "w:gz") as tar:
@@ -2709,7 +2731,7 @@ class ReleaseUpdateInTuiTests(unittest.TestCase):
 
     def _rodar(
         self, *, latest, update=None, respostas=(True, True), instala=True,
-        releases=None, escolha=1, live=False,
+        releases=None, escolha=1, live=False, uid=0,
     ):
         """Executa o item de menu com as releases dubladas e devolve o texto."""
         import io
@@ -2758,6 +2780,8 @@ class ReleaseUpdateInTuiTests(unittest.TestCase):
             self.tui.Prompt, "ask", return_value=str(escolha)
         ), patch.object(
             self.tui, "is_live_media", return_value=live
+        ), patch.object(
+            self.tui.os, "geteuid", return_value=uid
         ), redirect_stdout(buf):
             self.inst._menu_reims_release()
         return buf.getvalue()
@@ -2907,6 +2931,16 @@ class ReleaseUpdateInTuiTests(unittest.TestCase):
             respostas=(False,),
         )
         self.assertIn("Mantendo", out)
+
+    def test_non_root_is_reported_before_checking_or_changing_a_release(self):
+        """Sem root, falha de permissão deve ser explicada antes do download."""
+        out = self._rodar(
+            latest=lambda **_k: self.fail("não deveria consultar releases"),
+            uid=1000,
+        )
+        self.assertIn("requer root", out)
+        self.assertIn("nenhuma release foi", " ".join(out.split()))
+        self.assertEqual(self.instalacoes, [])
 
     def test_no_release_with_the_asset_is_reported(self):
         out = self._rodar(latest=lambda **_k: None)

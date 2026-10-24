@@ -163,8 +163,26 @@ def vm_dir(vm: VMConfig) -> Path:
 
 
 def qmp_socket(vm: VMConfig) -> Path:
-    """O socket QMP fixo que o reims-ctl cria para a VM (paths.rs::vm.qmp_socket)."""
-    return vm_dir(vm) / "qmp.sock"
+    """Socket QMP no diretório efetivamente registrado para a VM.
+
+    O `reims-ctl` aceita VMs cujo diretório não seja o padrão do appliance e
+    move sockets longos para o runtime dir para caber no limite de `sockaddr_un`.
+    Consultar o registro evita que uma segunda sessão de terminal suponha um
+    caminho diferente daquele usado pelo processo QEMU.
+    """
+    record = vm_record(vm.id)
+    directory = record.get("dir") if isinstance(record, dict) else None
+    vm_path = Path(directory) if isinstance(directory, str) and directory else vm_dir(vm)
+    own = vm_path / "qmp.sock"
+    if len(os.fsencode(own)) < 100:
+        return own
+
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir and Path(runtime_dir).is_absolute():
+        base = Path(runtime_dir) / "reims-ctl"
+    else:
+        base = Path(os.environ.get("TMPDIR") or "/tmp") / f"reims-ctl-{os.getuid()}"
+    return base / f"{vm.id}.qmp"
 
 
 def ensure_registered(vm: VMConfig) -> None:

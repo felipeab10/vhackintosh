@@ -67,12 +67,15 @@ nvidia-utils
 vulkan-mesa-layers
 libdrm
 
-# Áudio de Baixa Latência (PipeWire / ICH9 HDA)
+# Áudio do host e do convidado. `sof-firmware` fornece firmware DSP necessário
+# em vários notebooks Intel (incluindo a família Dell G15 5520) para o Linux
+# inicializar as saídas físicas que o PipeWire expõe ao QEMU.
 pipewire
 pipewire-pulse
 pipewire-alsa
 pipewire-audio
 wireplumber
+sof-firmware
 
 # Utilitários e Particionamento
 arch-install-scripts

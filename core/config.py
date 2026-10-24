@@ -52,7 +52,7 @@ class VMConfig:
     vfio_pci_id: Optional[str] = None
     selected_gpu: Optional[str] = None  # Ex: "0000:01:00.0"
     selected_gpu_name: Optional[str] = None  # Ex: "NVIDIA RTX 3050 Mobile"
-    audio_device: str = "ich9-intel-hda"  # Padrão ultimate-macOS-KVM (ich9-intel-hda + hda-duplex)
+    audio_device: str = "usb-audio"  # macOS Tahoe fornece AppleUSBAudio, mas não AppleHDA x86-64
     # Removidos: `force_x11` (a sessão é Wayland nativo desde a migração do
     # appliance) e `display_resolution` (a geometria é resolvida por aspect-fit
     # no reims-vgpu, sem resolução fixa). Ambos eram código morto — nada os lia —
