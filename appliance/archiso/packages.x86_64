@@ -76,6 +76,13 @@ pipewire-alsa
 pipewire-audio
 wireplumber
 sof-firmware
+alsa-card-profiles
+alsa-firmware
+alsa-plugins
+alsa-topology-conf
+alsa-ucm-conf
+alsa-utils
+jack2
 
 # Utilitários e Particionamento
 arch-install-scripts
