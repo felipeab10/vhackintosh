@@ -6,11 +6,10 @@
 #
 # Uso: vhackintosh-waysession <comando-da-vm> [args...]
 #
-# Desenho: o sway sobe com /etc/vhackintosh/sway.conf, cuja linha `exec` aponta
-# para o cliente primário. Este script gera esse cliente em tempo de execução
-# com o comando exato da VM, de modo que a VM vira filha do sway e herda dele
-# WAYLAND_DISPLAY e SWAYSOCK. Quando a VM termina, o cliente derruba o sway e o
-# console volta para a TUI.
+# O appliance inicia esta sessão uma vez pelo serviço compartilhado do display;
+# o cliente residente mantém o Sway vivo para todas as VMs. A cópia isolada da
+# configuração também permite o fallback local em desenvolvimento sem colisão
+# de scripts ou arquivos de status entre invocações.
 #
 # O caminho do cliente NÃO é fixado aqui: ele é lido da linha `exec` da própria
 # config do sway. Assim config e script não podem divergir — a config é a única
@@ -113,22 +112,50 @@ vhack_sobe_pipewire() {
 
 vhack_sobe_pipewire
 
-CONF="${VHACK_SWAY_CONF:-/etc/vhackintosh/sway.conf}"
-if [ ! -f "$CONF" ]; then
-    echo "vhackintosh-waysession: config do sway nao encontrada: $CONF" >&2
+BASE_CONF="${VHACK_SWAY_CONF:-/etc/vhackintosh/sway.conf}"
+if [ ! -f "$BASE_CONF" ]; then
+    echo "vhackintosh-waysession: config do sway nao encontrada: $BASE_CONF" >&2
     exit 1
 fi
 
 # Extrai o caminho do cliente primário da linha `exec` da config (primeira
 # ocorrência). É esta leitura que mantém config e script em acordo.
-APP_SH="$(sed -n 's/^[[:space:]]*exec[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' "$CONF" | head -n 1)"
-if [ -z "$APP_SH" ]; then
-    echo "vhackintosh-waysession: nenhuma diretiva 'exec' em $CONF" >&2
+APP_TEMPLATE="$(sed -n 's/^[[:space:]]*exec[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' "$BASE_CONF" | head -n 1)"
+if [ -z "$APP_TEMPLATE" ]; then
+    echo "vhackintosh-waysession: nenhuma diretiva 'exec' em $BASE_CONF" >&2
     exit 1
 fi
 
-mkdir -p "$(dirname "$APP_SH")" 2>/dev/null || true
+# The shared display service supplies one RuntimeDirectory. A local fallback
+# without one gets a fresh directory under the user's runtime dir.
+if [ -n "${RUNTIME_DIRECTORY:-}" ]; then
+    SESSION_DIR="$RUNTIME_DIRECTORY"
+    OWN_SESSION_DIR=0
+else
+    SESSION_DIR="$(mktemp -d "$XDG_RUNTIME_DIR/vhackintosh-session.XXXXXX")" || exit 1
+    OWN_SESSION_DIR=1
+fi
+cleanup_session_dir() {
+    if [ "$OWN_SESSION_DIR" = "1" ]; then
+        rm -rf -- "$SESSION_DIR"
+    fi
+}
+trap cleanup_session_dir EXIT
+APP_SH="$SESSION_DIR/sway-app.sh"
+CONF="$SESSION_DIR/sway.conf"
 STATUS_FILE="${APP_SH}.status"
+
+# Replace only the primary exec directive while preserving the appliance's
+# remaining Sway settings. The generated path contains no whitespace.
+if ! awk -v app="$APP_SH" '
+    /^[[:space:]]*exec[[:space:]]+/ && !replaced { print "exec " app; replaced = 1; next }
+    { print }
+    END { if (!replaced) exit 2 }
+' "$BASE_CONF" > "$CONF"; then
+    echo "vhackintosh-waysession: nao foi possivel isolar a config do sway" >&2
+    exit 1
+fi
+
 rm -f "$STATUS_FILE"
 
 # Gera o cliente primário. `printf '%q '` cita cada argumento para que espaços,

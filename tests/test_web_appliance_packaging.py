@@ -29,6 +29,8 @@ class WebAppliancePackagingTests(unittest.TestCase):
             service["ExecStart"],
             "/usr/bin/python3 -m core.vm_supervisor --vm-id %i",
         )
+        packages = (ROOT / "appliance/archiso/packages.x86_64").read_text(encoding="utf-8")
+        self.assertRegex(packages, r"(?m)^util-linux$")
         self.assertEqual(service["KillMode"], "control-group")
         self.assertNotIn("Restart", service)
         self.assertIn(
@@ -36,6 +38,9 @@ class WebAppliancePackagingTests(unittest.TestCase):
             text,
         )
         self.assertIn("Environment=VHACKINTOSH_VM_ID=%i", text)
+        self.assertIn("Environment=XDG_RUNTIME_DIR=/run/vhackintosh-display", text)
+        self.assertIn("Environment=WAYLAND_DISPLAY=wayland-0", text)
+        self.assertIn("vhackintosh-display.service", parser["Unit"].get("Requires", ""))
         self.assertEqual(service["User"], "root")
         self.assertFalse(
             (AIROOTFS / "etc/systemd/system/multi-user.target.wants/vhackintosh-vm@.service").exists(),
@@ -55,6 +60,30 @@ class WebAppliancePackagingTests(unittest.TestCase):
         self.assertIn("install -m 0644", build)
         validator = (ROOT / "appliance/validate_iso.py").read_text(encoding="utf-8")
         self.assertIn('"etc/systemd/system/vhackintosh-vm@.service"', validator)
+        self.assertIn("vhackintosh-display.service", build)
+        self.assertIn("vhackintosh-wait-wayland", build)
+        self.assertIn('"etc/systemd/system/vhackintosh-display.service"', validator)
+
+    def test_shared_display_unit_owns_one_compositor_for_all_vm_windows(self):
+        display_path = AIROOTFS / "etc/systemd/system/vhackintosh-display.service"
+        display_text = display_path.read_text(encoding="utf-8")
+        display = configparser.ConfigParser(strict=False, interpolation=None)
+        display.read_string(display_text)
+        service = display["Service"]
+        self.assertIn("openvt --switch --wait", service["ExecStart"])
+        self.assertIn("vhackintosh-waysession", service["ExecStart"])
+        self.assertIn("core.display_session_guard", service["ExecStart"])
+        self.assertEqual(service["RuntimeDirectory"], "vhackintosh-display")
+        self.assertEqual(service["Environment"].split("\\n")[-1], "WAYLAND_DISPLAY=wayland-0")
+        self.assertIn("ExecStartPost=/usr/bin/bash /usr/local/bin/vhackintosh-wait-wayland", display_text)
+        self.assertEqual(service["KillMode"], "control-group")
+        if shutil.which("systemd-analyze"):
+            subprocess.run(
+                ["systemd-analyze", "verify", str(display_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
 
     def test_build_downloads_and_marks_reims_before_packaging_web_bundle(self):
         build = (ROOT / "appliance/build-iso.sh").read_text(encoding="utf-8")
@@ -137,8 +166,15 @@ class WebAppliancePackagingTests(unittest.TestCase):
         web.read_string(web_path.read_text(encoding="utf-8"))
 
         self.assertEqual(vm["Service"]["Type"], "simple")
-        self.assertEqual(vm["Service"]["ExecStart"], "/usr/bin/python3 -m core.vm_supervisor --vm-id %i")
+        self.assertEqual(
+            vm["Service"]["ExecStart"],
+            "/usr/bin/python3 -m core.vm_supervisor --vm-id %i",
+        )
+        self.assertNotIn("openvt", vm["Service"]["ExecStart"])
         self.assertEqual(vm["Service"]["KillMode"], "control-group")
+        self.assertIn("vhackintosh-display.service", vm["Unit"].get("Requires", ""))
+        self.assertIn("vhackintosh-display.service", vm["Unit"].get("After", ""))
+        self.assertEqual(vm["Service"]["Environment"].split("\\n")[-1], "WAYLAND_DISPLAY=wayland-0")
         self.assertIn("Environment=VHACKINTOSH_VM_ID=%i", vm_text)
         self.assertIn("Environment=VHACKINTOSH_VM_CONTROL_BASE=%t", vm_text)
         self.assertIn("Environment=VHACKINTOSH_VM_SUPERVISOR=1", vm_text)
@@ -262,6 +298,7 @@ class WebAppliancePackagingTests(unittest.TestCase):
             "/etc/systemd/system/vhackintosh-agent.service",
             "/etc/systemd/system/vhackintosh-web.service",
             "/etc/systemd/system/vhackintosh-vm@.service",
+            "/etc/systemd/system/vhackintosh-display.service",
             "/usr/lib/sysusers.d/vhackintosh-web.conf",
             "/usr/lib/tmpfiles.d/vhackintosh-web.conf",
         ):
@@ -270,6 +307,7 @@ class WebAppliancePackagingTests(unittest.TestCase):
         self.assertIn('["/usr/local/bin/vhackintosh-web-bootstrap"]="0:0:755"', profile)
         self.assertIn('["/usr/local/bin/vhackintosh-web-admin"]="0:0:755"', profile)
         self.assertIn('["/usr/local/bin/vhackintosh-web-recover"]="0:0:755"', profile)
+        self.assertIn('["/usr/local/bin/vhackintosh-wait-wayland"]="0:0:755"', profile)
 
     def test_iso_validator_requires_payload_and_rejects_secrets_or_node_modules(self):
         required = (
@@ -292,6 +330,8 @@ class WebAppliancePackagingTests(unittest.TestCase):
             "etc/systemd/system/vhackintosh-agent.service",
             "etc/systemd/system/vhackintosh-web.service",
             "etc/systemd/system/vhackintosh-vm@.service",
+            "etc/systemd/system/vhackintosh-display.service",
+            "usr/local/bin/vhackintosh-wait-wayland",
             "usr/local/bin/vhackintosh-web-bootstrap",
             "usr/local/bin/vhackintosh-web-admin",
             "usr/local/bin/vhackintosh-web-recover",
@@ -313,6 +353,8 @@ class WebAppliancePackagingTests(unittest.TestCase):
                     continue
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text("test", encoding="utf-8")
+                if relative == "usr/local/bin/vhackintosh-wait-wayland":
+                    file.chmod(0o755)
             web_root = rootfs / "opt/vhackintosh/web"
             (rootfs / "opt/reims-vgpu/.release").parent.mkdir(parents=True, exist_ok=True)
             (rootfs / "opt/reims-vgpu/.release").write_text("v1.0.0\n", encoding="utf-8")

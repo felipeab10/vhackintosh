@@ -54,6 +54,8 @@ def validate_web_manager_payload(rootfs: Path) -> None:
         "etc/systemd/system/vhackintosh-agent.service",
         "etc/systemd/system/vhackintosh-web.service",
         "etc/systemd/system/vhackintosh-vm@.service",
+        "etc/systemd/system/vhackintosh-display.service",
+        "usr/local/bin/vhackintosh-wait-wayland",
         "usr/local/bin/vhackintosh-web-bootstrap",
         "usr/local/bin/vhackintosh-web-admin",
         "usr/local/bin/vhackintosh-web-recover",
@@ -63,6 +65,12 @@ def validate_web_manager_payload(rootfs: Path) -> None:
     for relative in required:
         if not (rootfs / relative).is_file():
             raise RuntimeError(f"ISO web manager payload missing required file: {relative}")
+    wait_wayland = rootfs / "usr/local/bin/vhackintosh-wait-wayland"
+    if not wait_wayland.stat().st_mode & 0o111:
+        raise RuntimeError(
+            "vhackintosh-wait-wayland is not executable in ISO rootfs "
+            '(declare ["/usr/local/bin/vhackintosh-wait-wayland"]="0:0:755" in profiledef.sh)'
+        )
     for service in ("vhackintosh-agent.service", "vhackintosh-web.service"):
         enabled = rootfs / "etc/systemd/system/multi-user.target.wants" / service
         expected_target = f"../{service}"

@@ -26,11 +26,11 @@ from __future__ import annotations
 import json
 import base64
 import os
+import subprocess
 import re
 import selectors
 import signal
 import stat
-import subprocess
 import tempfile
 import time
 import tomllib
@@ -295,6 +295,7 @@ WAYSESSION_CANDIDATES = (
         / "vhackintosh-waysession"
     ),
 )
+SHARED_DISPLAY_UNIT = Path("/etc/systemd/system/vhackintosh-display.service")
 
 
 def find_waysession() -> Optional[str]:
@@ -305,13 +306,62 @@ def find_waysession() -> Optional[str]:
 
 
 def session_argv(argv: list[str], env: dict) -> tuple[list[str], bool]:
-    """Envolve `argv` na sessão kiosk quando não há sessão gráfica alguma.
+    """Use the appliance's shared compositor, starting it for TUI launches.
 
-    Devolve `(argv_efetivo, sessao_faltando)` — `sessao_faltando` é True quando
-    não há display nem waysession, caso em que a janela não vai abrir.
+    The shared Sway owns the physical DRM device once; all Reims SDL windows
+    connect to its Wayland socket and can use the same physical Vulkan GPU.
+    Outside an installed appliance, retain the development kiosk fallback.
     """
-    if env.get("DISPLAY") or env.get("WAYLAND_DISPLAY"):
+    shared_unit = SHARED_DISPLAY_UNIT
+    shared_runtime = "/run/vhackintosh-display"
+    display_name = env.get("WAYLAND_DISPLAY")
+    runtime_dir = env.get("XDG_RUNTIME_DIR")
+    socket_path = (
+        Path(display_name)
+        if display_name and display_name.startswith("/")
+        else Path(runtime_dir or "") / (display_name or "")
+    )
+
+    # An existing X11/Wayland session is usable as-is, except for the shared
+    # appliance socket whose service may have gone idle since the last TUI run.
+    if env.get("DISPLAY"):
         return argv, False
+    if (
+        display_name
+        and runtime_dir != shared_runtime
+        and socket_path.exists()
+    ):
+        return argv, False
+
+    if shared_unit.is_file():
+        systemctl = "/usr/bin/systemctl"
+        if not os.path.exists(systemctl):
+            raise RuntimeError("systemctl não está disponível para iniciar o display compartilhado.")
+        try:
+            result = subprocess.run(
+                [systemctl, "start", "vhackintosh-display.service"],
+                capture_output=True,
+                text=True,
+                timeout=40,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"Não foi possível iniciar o display compartilhado: {exc}") from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(
+                "Não foi possível iniciar o display compartilhado do appliance"
+                + (f": {detail}" if detail else ".")
+            )
+        env["XDG_RUNTIME_DIR"] = shared_runtime
+        env["WAYLAND_DISPLAY"] = "wayland-0"
+        if not (Path(shared_runtime) / "wayland-0").is_socket():
+            raise RuntimeError("O compositor compartilhado iniciou sem publicar o socket Wayland.")
+        return argv, False
+
+    if display_name and socket_path.exists():
+        return argv, False
+
     waysession = find_waysession()
     if waysession:
         return [waysession] + argv, False
