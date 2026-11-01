@@ -6,12 +6,12 @@
 
 ## 1. Visão e Propósito
 
-O **vHackintosh** é uma distribuição e gerenciador de máquinas virtuais (*Linux Appliance & VM Manager*) projetado para transformar qualquer computador compatível em uma estação de trabalho macOS de alta performance através de virtualização KVM e aceleração gráfica paravirtualizada via **Reims vGPU (Metal over Vulkan)** ou **VFIO Passthrough**.
+O **vHackintosh** é uma distribuição e gerenciador de máquinas virtuais (*Linux Appliance & VM Manager*) projetado para transformar computadores compatíveis em estações de trabalho macOS usando virtualização KVM e aceleração gráfica paravirtualizada via **Reims vGPU (Metal over Vulkan)**. O painel ainda não oferece passthrough VFIO.
 
 O objetivo final é entregar a experiência de um console (*Kiosk Mode* tipo SteamOS/Proxmox), onde o sistema operacional subjacente (Linux mínimo) é transparente para o usuário:
 - **Zero Atrito:** Auto-login no boot, menu elegante com contagem regressiva de 5 segundos (com tecla `ESPAÇO` para abrir o gerenciador).
 - **Tela Cheia Kiosk:** macOS inicia direto em Fullscreen 100%, com captura exclusiva de teclado e mouse.
-- **Sincronização Total de Energia:** Desligar ou reiniciar o macOS desliga ou reinicia a máquina física automaticamente.
+- **Energia isolada no painel web:** Desligar ou reiniciar o macOS pelo painel afeta somente a VM por padrão. A sincronização legada de energia do host pertence ao fluxo da TUI e não está exposta no painel.
 - **Auto-Configuração Inteligente:** Sugestão automática de vCPUs e RAM com base na topologia da CPU (P-Cores vs E-Cores) e checagem de compatibilidade de GPU.
 - **OpenCore Automatizado:** Injeção automática de seriais gerados pelo GenSMBIOS no `config.plist` e detecção automática da partição de boot.
 
@@ -21,11 +21,13 @@ O objetivo final é entregar a experiência de um console (*Kiosk Mode* tipo Ste
 
 ### 2.1. Gráficos & Aceleração
 - **Reims vGPU como Padrão:** Toda a pilha de renderização (desde o instalador OpenCore até a interface gráfica do macOS) utiliza o `reims-vgpu-pci` com a ROM UEFI GOP (`reims-vgpu-gop.rom`) e backend Vulkan.
-- **Backend Wayland Nativo (sway kiosk):** O ambiente gráfico do appliance é uma sessão Wayland mínima com o **sway** em modo kiosk. A janela do reims-vgpu (winit) usa superfície Wayland nativa (`VK_KHR_wayland_surface`), sem Xorg, sem `xinit`, sem Openbox e sem XWayland. O aviso de GPU proprietária NVIDIA é suprimido por `SWAY_UNSUPPORTED_GPU=true` — env var em vez da flag `--unsupported-gpu` porque flag desconhecida é erro fatal e env var desconhecida é simplesmente ignorada.
-- **Opção de Passthrough VFIO:** Para GPUs AMD dedicadas suportadas nativamente pelo macOS, o sistema oferece isolamento de grupo IOMMU e stub do `vfio-pci`.
+- **Backend Wayland Nativo (sway kiosk):** Um serviço mantém um único compositor Sway compartilhado para o console do appliance; cada VM abre sua própria janela Reims SDL/Vulkan nesse compositor, sem iniciar um servidor gráfico concorrente nem tomar novamente o dispositivo DRM. O modo kiosk não instala Xorg nem XWayland.
+- **VFIO:** Existem verificações e utilitários legados no projeto, mas o painel não oferece passthrough. O fluxo VFIO gerenciado só deve ser anunciado após validar grupos IOMMU, funções PCI, exclusividade e proteção da GPU do host.
 
-### 2.2. Gestão de VMs & Exclusividade
-- **Múltiplas VMs, Uma Ativa:** O usuário pode criar e armazenar várias VMs (ex: macOS Tahoe, macOS Sequoia, Sonoma), mas apenas uma pode ser executada por vez para garantir 100% dos recursos dedicados.
+### 2.2. Gestão de VMs & Isolamento
+- **Múltiplas VMs:** O usuário pode criar e armazenar várias VMs e o painel pode executá-las simultaneamente quando a memória e os recursos do host permitem. A admissão reserva RAM e impede que duas VMs gerenciadas compartilhem o mesmo disco gravável ou dispositivo USB selecionado.
+- **Limites atuais de isolamento:** A admissão de grupos VFIO e portas ainda não está implementada; passthrough VFIO não é oferecido pelo painel. Não declarar suporte multi-VM para esses recursos até haver inventário e reserva específicos.
+- **Política de energia do painel:** Novas VMs usam `vm-only`; o painel não desliga nem reinicia o host quando o convidado encerra. A política legada da TUI continua separada e depende da fase instalada confirmada.
 - **Auto-Start Interceptável:** Uma VM pode ser marcada como padrão de inicialização. No boot do host, um contador de 5 segundos aguarda a tecla `ESPAÇO`. Se pressionada, o gerenciador abre; se expirar, a VM sobe imediatamente.
 
 ### 2.3. Compilação Silenciosa com UX Rica
@@ -77,7 +79,7 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
   - O manifesto vem de `reims-ctl gpus`, que sonda o Vulkan de verdade e devolve nome, `vendor:device` e ICD por placa. Não é inferido do nome do fabricante: ser NVIDIA ou AMD não é prova de funcionar, e um nome de fabricante não diz *qual* placa é.
   - Os caminhos de manifesto **não** têm sufixo de arquitetura. Medido neste host, `/usr/share/vulkan/icd.d/` contém `intel_hasvk_icd.json`, `intel_icd.json` e `nvidia_icd.json`; nomes como `intel_icd.x86_64.json` ou `radeon_icd.x86_64.json` são de outra distribuição e não existem.
   - Medido em 19/10: um notebook com RTX 3050 e Iris Xe subiu até o desktop com a **NVIDIA** depois que a escolha passou a ser gravada no TOML. Antes disso a seção `[gpu]` ficava vazia, o `reims-ctl` aplicava o próprio default ("the first discrete GPU, then the first integrated one" — a NVIDIA) e a escolha do operador era ignorada.
-- **VFIO Passthrough Nativo para AMD:** Para placas desktop AMD Polaris (RX 400/500), Vega e Navi (RX 5000/6000), o sistema oferece vinculação direta via `vfio-pci` com 100% de suporte nativo Apple Metal 3, DisplayPort áudio e aceleração bare-metal.
+- **VFIO:** Detecção de GPUs AMD e ferramentas de diagnóstico não significam que o passthrough esteja disponível. O painel não vincula GPUs a `vfio-pci`; não afirmar compatibilidade ou suporte nativo até existir um fluxo gerenciado validado para o grupo IOMMU completo e para todas as funções PCI envolvidas.
 
 ### 2.11. Resolução do Kernel Handoff em `#[EB|LOG:EXITBS:START]`
 - **Causa Raiz Identificada:** A parada no milissegundo de transição `ExitBootServices: START` entre o firmware UEFI e o Kernel XNU decorre da checagem obrigatória do chip de segurança AppleSMC e da sincronização de timers de CPU.
@@ -131,8 +133,8 @@ A instalação do macOS realiza múltiplos reboots que o gerenciador orquestra v
 
 ### 2.17. Arquitetura Gráfica Kiosk Wayland (sway) & Suporte a Touchpads (Dell G15)
 - **Por que Wayland e não mais X11:** A janela do reims-vgpu era apresentada por uma sessão X11 (`xinit` + Openbox). Num compositor tiling (niri), o pedido de fullscreen vira uma dica EWMH que o compositor pode recusar, e a janela ficava *tiled* em vez de ocupar o monitor — o desktop do guest aparecia menor que a tela. Em Wayland nativo, `Fullscreen::Borderless` vira `xdg_toplevel.set_fullscreen()`, que o compositor honra por protocolo.
-- **Independência de resolução:** O sway entrega ao cliente o output inteiro (uma janela só, tile = tela) e o reims-vgpu encaixa o framebuffer do guest por **aspect-fit** — ver `crates/reims-vgpu/src/backend/window/viewport.rs`, `aspect_fit`: *"the largest centered rectangle with src's aspect ratio that fits dst"*. O host **nunca recorta**: 1080p, 1440p e 4K exibem o desktop inteiro, sem configuração por monitor.
-- **Sessão mínima (`/usr/local/bin/vhackintosh-waysession` + `/etc/vhackintosh/sway.conf`):** O sway sobe com `sway -c /etc/vhackintosh/sway.conf`; a config declara `exec /run/vhackintosh/sway-app.sh`, gerado em tempo de execução pela sessão com o comando exato da VM. A VM vira filha do sway (herdando `WAYLAND_DISPLAY` e `SWAYSOCK`) e, ao terminar, o script derruba o sway devolvendo o console à TUI. Sem barra, sem bordas, sem gaps.
+- **Independência de resolução:** O Sway organiza as janelas das VMs no output e o Reims encaixa o framebuffer de cada guest por **aspect-fit** — ver `crates/reims-vgpu/src/backend/window/viewport.rs`, `aspect_fit`: *"the largest centered rectangle with src's aspect ratio that fits dst"*. O host **nunca recorta**: 1080p, 1440p e 4K exibem o desktop inteiro, sem configuração por monitor.
+- **Compositor compartilhado no appliance:** `vhackintosh-display.service` mantém uma única sessão Sway e um socket Wayland compartilhado; cada VM Reims usa esse socket para abrir sua própria janela. O ciclo de vida do compositor é separado do processo de cada VM, permitindo várias janelas sem tentar abrir múltiplas sessões que disputem o DRM. Fora do appliance, `vhackintosh-waysession` mantém o fallback de kiosk local.
 - **Tapping do touchpad — o motivo de ser sway e não cage:** O libinput **não possui atributo de tapping** na sua tabela de quirks (verificado na string table do binário: `AttrEventCode`, `AttrInputProp`, `AttrFuzz`, `AttrPressureRange`, `AttrSizeHint`…, nenhum de tap). Tapping só existe via API do compositor, e o `cage` não lê arquivo de configuração algum — logo não tem como habilitá-lo. O sway declara `input "type:touchpad" { tap enabled; natural_scroll enabled; }`, reproduzindo o antigo `/etc/X11/xorg.conf.d/40-touchpad.conf`.
 - **Captura Automática de Cursor:** `grab-on-hover=on` no display GTK do QEMU continua ativo para captura transparente de entrada no motor nativo.
 - **Nota honesta sobre X11 residual:** `libxcb` e `xcb-util-*` continuam instalados como dependência transitiva do `wlroots` e do `gtk3` (via `qemu-desktop`). São bibliotecas cliente, não um servidor X: nenhum processo Xorg roda e o XWayland não é instalado.
