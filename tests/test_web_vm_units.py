@@ -32,7 +32,15 @@ def show_result(
 
 
 class SystemdVmUnitManagerTests(unittest.TestCase):
-    def make_manager(self, responses=(), *, process_factory=None, runner=None, scope="system"):
+    def make_manager(
+        self,
+        responses=(),
+        *,
+        process_factory=None,
+        runner=None,
+        scope="system",
+        start_timeout=135.0,
+    ):
         if runner is None:
             runner = Mock(side_effect=list(responses))
         if process_factory is None:
@@ -41,6 +49,7 @@ class SystemdVmUnitManagerTests(unittest.TestCase):
             systemctl="/usr/bin/systemctl",
             scope=scope,
             timeout=2.5,
+            start_timeout=start_timeout,
             run=runner,
             process_factory=process_factory,
         ), runner
@@ -137,6 +146,17 @@ class SystemdVmUnitManagerTests(unittest.TestCase):
                  "--property=MainPID", "--property=Result", "vhackintosh-vm@vm-a.service"],
             ],
         )
+        self.assertEqual(runner.call_args_list[0].kwargs["timeout"], 135.0)
+        self.assertEqual(runner.call_args_list[2].kwargs["timeout"], 2.5)
+
+    def test_start_timeout_can_be_configured_and_reports_its_value(self):
+        runner = Mock(side_effect=subprocess.TimeoutExpired(["systemctl", "start"], 90))
+        manager, _runner = self.make_manager(runner=runner, start_timeout=90.0)
+
+        with self.assertRaisesRegex(VmUnitError, "timed out after 90 seconds"):
+            manager.start("vm-a")
+
+        self.assertEqual(runner.call_args.kwargs["timeout"], 90.0)
 
     def test_admission_failure_message_reads_only_allowlisted_unit_summary(self):
         runner = Mock(return_value=subprocess.CompletedProcess(

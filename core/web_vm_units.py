@@ -58,6 +58,7 @@ class SystemdVmUnitManager:
         systemctl: str = "systemctl",
         scope: str = "system",
         timeout: float = 15.0,
+        start_timeout: float = 135.0,
         run: Callable[..., Any] = subprocess.run,
         process_factory: Callable[[int], Any] = psutil.Process,
     ) -> None:
@@ -67,9 +68,12 @@ class SystemdVmUnitManager:
             raise ValueError("systemd scope must be 'system' or 'user'")
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
             raise ValueError("systemctl timeout must be positive")
+        if isinstance(start_timeout, bool) or not isinstance(start_timeout, (int, float)) or start_timeout <= 0:
+            raise ValueError("systemctl start timeout must be positive")
         self.systemctl = systemctl
         self.scope = scope
         self.timeout = float(timeout)
+        self.start_timeout = float(start_timeout)
         self._run = run
         self._process_factory = process_factory
 
@@ -123,7 +127,9 @@ class SystemdVmUnitManager:
 
     def start(self, vm_id: str) -> VmUnitStatus:
         unit = self.unit_name(vm_id)
-        self._invoke([self.systemctl, "start", unit])
+        # Starting the VM also starts the shared Wayland service, whose
+        # systemd unit may spend up to 120 seconds preparing the compositor.
+        self._invoke([self.systemctl, "start", unit], timeout=self.start_timeout)
         return self.query(vm_id)
 
     def stop(self, vm_id: str) -> VmUnitStatus:
@@ -171,17 +177,18 @@ class SystemdVmUnitManager:
                 return cleaned[:500] or None
         return None
 
-    def _invoke(self, command: list[str]) -> Any:
+    def _invoke(self, command: list[str], *, timeout: float | None = None) -> Any:
+        effective_timeout = self.timeout if timeout is None else timeout
         try:
             completed = self._run(
                 self._scoped(command),
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=self.timeout,
+                timeout=effective_timeout,
             )
         except subprocess.TimeoutExpired as exc:
-            raise VmUnitError(f"systemctl timed out after {self.timeout:g} seconds") from exc
+            raise VmUnitError(f"systemctl timed out after {effective_timeout:g} seconds") from exc
         except OSError as exc:
             raise VmUnitError(f"could not execute systemctl: {exc}") from exc
         if completed.returncode != 0:
