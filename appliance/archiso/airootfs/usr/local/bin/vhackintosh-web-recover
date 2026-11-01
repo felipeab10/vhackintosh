@@ -1,0 +1,73 @@
+#!/usr/bin/python3
+"""Reset the local web administrator password from an authorized console."""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import os
+import sqlite3
+import stat
+import sys
+from pathlib import Path
+
+# The appliance keeps Python wheels in a private, hash-locked runtime directory.
+VENDORED = Path("/opt/vhackintosh/web/current/vendor")
+if VENDORED.is_dir():
+    sys.path.insert(0, str(VENDORED))
+
+from argon2 import PasswordHasher
+
+
+def reset_password(database: str | os.PathLike[str], password: str, confirmation: str) -> None:
+    """Replace the existing administrator password and revoke every session."""
+    if not isinstance(password, str) or len(password) < 12 or len(password) > 1024:
+        raise ValueError("a senha precisa ter entre 12 e 1024 caracteres")
+    if password != confirmation:
+        raise ValueError("as senhas não coincidem")
+
+    path = Path(database)
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+        raise PermissionError("o banco de autenticação precisa ser um arquivo regular e privado")
+
+    password_hash = PasswordHasher().hash(password)
+    with sqlite3.connect(path, timeout=5, isolation_level=None) as db:
+        db.execute("BEGIN IMMEDIATE")
+        admin = db.execute("SELECT 1 FROM administrator WHERE id=1").fetchone()
+        if admin is None:
+            db.execute("ROLLBACK")
+            raise LookupError("nenhum administrador foi configurado; use o fluxo normal de primeiro acesso")
+        db.execute("UPDATE administrator SET password_hash=? WHERE id=1", (password_hash,))
+        db.execute("DELETE FROM web_session")
+        db.execute("COMMIT")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--database", default="/var/lib/vhackintosh/web/auth.sqlite")
+    args = parser.parse_args(argv)
+    if os.geteuid() != 0:
+        print("Recuperação disponível somente para um operador root local.", file=sys.stderr)
+        return 1
+    if not sys.stdin.isatty() or os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+        print("Execute a recuperação em um terminal local do appliance; sessões remotas são recusadas.", file=sys.stderr)
+        return 1
+
+    try:
+        print("A recuperação trocará a senha administrativa e encerrará todas as sessões web.")
+        if input("Digite RECUPERAR para continuar: ").strip() != "RECUPERAR":
+            print("Recuperação cancelada.")
+            return 1
+        password = getpass.getpass("Nova senha (mínimo 12 caracteres): ")
+        confirmation = getpass.getpass("Confirme a nova senha: ")
+        reset_password(args.database, password, confirmation)
+    except (OSError, sqlite3.Error, ValueError, LookupError, PermissionError) as exc:
+        print(f"Falha ao recuperar o acesso: {exc}", file=sys.stderr)
+        return 1
+    print("Senha alterada. Todas as sessões foram encerradas; entre novamente no painel.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

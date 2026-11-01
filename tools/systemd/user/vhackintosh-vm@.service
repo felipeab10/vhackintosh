@@ -1,0 +1,22 @@
+[Unit]
+Description=vHackintosh host VM %i
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/vhackintosh
+Environment=PYTHONPATH=%h/vhackintosh
+Environment=VHACKINTOSH_VM_CATALOG=%h/.config/vhackintosh/vms.json
+Environment=VHACKINTOSH_VM_CONTROL_BASE=%t
+Environment=VHACKINTOSH_VM_SUPERVISOR=1
+RuntimeDirectory=vh-%i
+RuntimeDirectoryMode=0750
+Environment=HOME=%h
+ExecStart=%h/.local/share/vhackintosh-web-dev/venv/bin/python -m core.vm_supervisor --vm-id %i
+Restart=no
+TimeoutStopSec=45s
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal

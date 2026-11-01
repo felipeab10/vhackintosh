@@ -384,13 +384,27 @@ if [ -f /usr/local/bin/vhack-copy-system ]; then
     /usr/local/bin/vhack-copy-system "/" "/mnt/"
 else
     rsync -aAX --info=progress2 --no-inc-recursive \
-        --exclude={"/dev/*","/proc/*","/sys/*","/tmp/*","/run/*","/mnt/*","/media/*","/lost+found","/run/archiso/*"} \
+        --exclude={"/dev/*","/proc/*","/sys/*","/tmp/*","/run/*","/mnt/*","/media/*","/lost+found","/run/archiso/*","/var/lib/vhackintosh/web/***"} \
         / /mnt/
 fi
 
 # Diretórios virtuais no destino
 mkdir -p /mnt/{dev,proc,sys,tmp,run,mnt,media}
 chmod 1777 /mnt/tmp
+
+# Garanta o auto-start mesmo se o rsync não preservar os links do perfil live.
+# Os dois arquivos de unidade fazem parte da ISO e precisam existir no destino;
+# links relativos são resolvidos pelo systemd no boot instalado.
+SYSTEMD_WANTS_DIR="/mnt/etc/systemd/system/multi-user.target.wants"
+for service in vhackintosh-agent.service vhackintosh-web.service; do
+    if [ ! -f "/mnt/etc/systemd/system/${service}" ]; then
+        echo -e "${RED}Erro: unidade obrigatória ausente no sistema copiado: ${service}${NC}"
+        exit 1
+    fi
+done
+mkdir -p "${SYSTEMD_WANTS_DIR}"
+ln -sfn ../vhackintosh-agent.service "${SYSTEMD_WANTS_DIR}/vhackintosh-agent.service"
+ln -sfn ../vhackintosh-web.service "${SYSTEMD_WANTS_DIR}/vhackintosh-web.service"
 
 echo -e "\n${CYAN}▶ 4/5 Gerando /etc/fstab e configurações de sistema...${NC}"
 if command -v genfstab >/dev/null 2>&1; then
@@ -491,7 +505,19 @@ $CHROOT_EXEC /bin/bash -c "
 
     # Habilita o gerenciador de conexões de rede
     systemctl enable NetworkManager.service 2>/dev/null || true
+
+    # systemctl enable confirma o estado no gerenciador quando disponível;
+    # os links foram criados diretamente em /etc antes do chroot acima.
+    systemctl enable vhackintosh-agent.service vhackintosh-web.service || true
 "
+
+# Não conclua uma instalação que ficou sem auto-start do painel.
+for service in vhackintosh-agent.service vhackintosh-web.service; do
+    if [ "$(readlink -f "${SYSTEMD_WANTS_DIR}/${service}" 2>/dev/null || true)" != "/mnt/etc/systemd/system/${service}" ]; then
+        echo -e "${RED}Erro: não foi possível habilitar o início automático de ${service}.${NC}"
+        exit 1
+    fi
+done
 
 echo -e "\n${BLUE}▶ Sincronizando dados pendentes no disco...${NC}"
 sync

@@ -59,7 +59,12 @@ def main():
 
     excludes = [
         "/dev/*", "/proc/*", "/sys/*", "/tmp/*", "/run/*",
-        "/mnt/*", "/media/*", "/lost+found", "/run/archiso/*"
+        "/mnt/*", "/media/*", "/lost+found", "/run/archiso/*",
+        # Authentication state and appliance-local TLS identity belong to
+        # the target installation, never to the disposable live environment.
+        # rsync's default protect behavior keeps an existing destination path
+        # intact when this source path is excluded.
+        "/var/lib/vhackintosh/web/***",
     ]
     exclude_args = []
     for exc in excludes:

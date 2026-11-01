@@ -9,37 +9,24 @@ from core import reims_build
 
 
 def test_iso_packaging_supports_prebuilt_release():
-    """O caminho padrão agora é a release pré-compilada do GitHub.
-
-    Antes este teste exigia o contrário ("nunca transportar binários"), porque o
-    appliance compilava o fork do QEMU a cada boot. Compilar levava horas e o
-    usuário trocava o SSD do notebook para testar; a decisão foi reverter para o
-    binário pré-compilado, que é x86-64 genérico e carrega o Vulkan por dlopen.
-    O que continua proibido é *compilar* algo aqui, não empacotar o binário.
-    """
+    """A ISO consome uma release pré-compilada; não compila fontes localmente."""
     script = Path(__file__).resolve().parents[1] / "appliance/build-iso.sh"
     text = script.read_text()
 
-    # A release é o caminho padrão...
+    # A release é o caminho padrão e pode ser fixada por tag.
     assert "-r|--release|--tag" in text
+    assert 'REIMS_RELEASE="${REIMS_RELEASE:-latest}"' in text
     assert "releases/latest/download" in text
     assert "releases/download" in text
     assert "reims-vgpu-linux-x86_64.tar.gz" in text
-    assert "REIMS_PREBUILT=1" in text
-    # ...e o modo fontes continua existindo como alternativa.
-    assert "--from-source" in text
-    assert "Cargo.toml" in text and "scripts/install-ctl.sh" in text
-    assert "não contém as fontes completas" in text
-    # A opção de atualizar as fontes a partir da release.
-    assert "-u|--update-sources" in text
+    assert "REIMS_PREBUILT=1" not in text
+    assert "--from-source" not in text
+    assert "cargo build" not in text
 
-    # Não transportar binários de um build *local* do QEMU pelos caminhos de
-    # sempre: o que vai para a ISO é o tarball da release, extraído, não um
-    # `build/` copiado do checkout do host.
+    # Extrai apenas o asset selecionado e omite os firmwares redundantes.
+    assert 'tar -xzf "${REIMS_TMP_TAR}" -C "${REIMS_DEST}"' in text
+    assert "--exclude='*/vm/ovmf/*'" in text
     assert 'cp -a /opt/reims-vgpu/*' not in text
-    assert "--exclude='build'" in text
-    assert "--exclude='out'" in text
-    assert text.index('mkdir -p "${REIMS_DEST}/vendor/qemu"') < text.index('"${REIMS_SRC}/vendor/qemu/" "${REIMS_DEST}/vendor/qemu/"')
 
 
 def test_root_paths_match_appliance_runtime():
@@ -67,20 +54,18 @@ def test_user_paths_are_not_rewritten():
         )
 
 
-def test_failed_stage_does_not_write_success_stamp(tmp_path: Path):
+def test_local_build_is_disabled_without_changing_existing_stamp(tmp_path: Path):
     source = tmp_path / "engine"
-    (source / "scripts").mkdir(parents=True)
-    (source / "scripts/install-ctl.sh").write_text("#!/bin/sh\n")
-    (source / "crates").mkdir()
-    (source / "vendor/qemu").mkdir(parents=True)
-    (source / "vendor/qemu/meson.build").write_text("project('qemu')\n")
-    (source / "Cargo.toml").write_text("[workspace]\n")
+    source.mkdir()
     stamp = source / reims_build.BUILD_STAMP_NAME
     stamp.write_text("previous-success\n")
-    with patch.object(reims_build, "ensure_executable_bits"), patch.object(
-        reims_build, "_run_stage", return_value=False
-    ), patch.object(reims_build, "LOGS_DIR", tmp_path / "logs"):
-        assert not reims_build.build(source)
+    with patch.object(reims_build, "_run_stage", side_effect=AssertionError("build stage must not run")):
+        try:
+            reims_build.build(source)
+        except reims_build.BuildError as exc:
+            assert "local reims-vgpu builds are disabled" in str(exc)
+        else:
+            raise AssertionError("local build should be rejected without a release")
     assert stamp.read_text() == "previous-success\n"
 
 
@@ -143,26 +128,28 @@ class ReimsBuildStampTests(unittest.TestCase):
                 reims_build, "CONFIG_DIR", td_path / "config"
             ):
                 # 1. Sem stamp -> precisa compilar
-                st = reims_build.evaluate(explicit=repo)
+                # Exercise stamp handling directly; discovery intentionally
+                # rejects an untagged source tree as an appliance runtime.
+                st = reims_build.evaluate(reims_dir=repo)
                 self.assertTrue(st.needs_build)
                 self.assertIn("sem registro", st.reason)
 
                 # 2. Grava stamp -> não precisa compilar
                 fp = reims_build.source_fingerprint(repo)
                 reims_build.write_stamp(repo, fp)
-                st2 = reims_build.evaluate(explicit=repo)
+                st2 = reims_build.evaluate(reims_dir=repo)
                 self.assertFalse(st2.needs_build)
                 self.assertIn("binário atualizado", st2.reason)
 
                 # 3. Altera fonte -> precisa compilar novamente
                 (repo / "crates" / "lib.rs").write_text("// updated source code")
-                st3 = reims_build.evaluate(explicit=repo)
+                st3 = reims_build.evaluate(reims_dir=repo)
                 self.assertTrue(st3.needs_build)
                 self.assertIn("o fonte do reims-vgpu mudou", st3.reason)
 
                 # 4. Grava novo stamp -> volta a ficar pronto
                 reims_build.write_stamp(repo, reims_build.source_fingerprint(repo))
-                st4 = reims_build.evaluate(explicit=repo)
+                st4 = reims_build.evaluate(reims_dir=repo)
                 self.assertFalse(st4.needs_build)
 
     def test_stamp_fallback_to_config_dir(self):
@@ -192,4 +179,3 @@ class ReimsBuildStampTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

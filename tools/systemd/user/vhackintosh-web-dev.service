@@ -1,0 +1,20 @@
+[Unit]
+Description=vHackintosh local development web API connected to the host runtime
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/vhackintosh
+Environment=PYTHONPATH=%h/vhackintosh
+Environment=VHACKINTOSH_WEB_DEV_CATALOG=%h/.config/vhackintosh/vms.json
+ExecStart=%h/.local/share/vhackintosh-web-dev/venv/bin/python %h/vhackintosh/tools/dev_web_manager.py
+Restart=always
+RestartSec=3s
+TimeoutStopSec=45s
+UMask=0077
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

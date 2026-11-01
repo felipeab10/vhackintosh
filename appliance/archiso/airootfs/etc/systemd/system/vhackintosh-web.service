@@ -1,0 +1,45 @@
+[Unit]
+Description=vHackintosh HTTPS management dashboard
+After=network.target systemd-sysusers.service systemd-tmpfiles-setup.service vhackintosh-agent.service
+Wants=vhackintosh-agent.service
+
+[Service]
+Type=simple
+User=vhackintosh-web
+Group=vhackintosh-web
+WorkingDirectory=/opt/vhackintosh/web/current
+Environment=PYTHONPATH=/opt/vhackintosh/web/current/vendor
+Environment=VHACKINTOSH_WEB_HOST=0.0.0.0
+Environment=VHACKINTOSH_WEB_PORT=8443
+Environment=VHACKINTOSH_WEB_TLS_DIR=/var/lib/vhackintosh/web/tls
+Environment=VHACKINTOSH_AGENT_SOCKET=/run/vhackintosh-agent/agent.sock
+Environment=VHACKINTOSH_WEB_TRANSFER_DIR=/var/lib/vhackintosh/web/transfers
+Environment=VHACKINTOSH_WEB_FRONTEND_DIST=/opt/vhackintosh/web/current/web/frontend/dist
+RuntimeDirectory=vhackintosh-web
+RuntimeDirectoryMode=0750
+ExecStartPre=+/usr/local/bin/vhackintosh-web-bootstrap
+ExecStart=/usr/bin/python3 -m web.api.server
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=20s
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/vhackintosh/web /run/vhackintosh-web
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

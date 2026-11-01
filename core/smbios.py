@@ -172,7 +172,7 @@ class GenSMBIOS:
         """Read-only local consistency check; never returns full identity values."""
         import plistlib
         path = Path(opencore_path)
-        if not path.exists():
+        if path.is_symlink() or not path.is_file():
             return {"ok": False, "reason": "OpenCore EFI image missing"}
         # qcow2 is copied/extracted by the disk provisioner helper in normal use;
         # callers without guestfish receive an explicit unavailable result.
@@ -181,16 +181,36 @@ class GenSMBIOS:
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             plist_path = Path(td) / "config.plist"
-            result = subprocess.run(["guestfish", "--ro", "-a", str(path), "-m", "/dev/sda1", "download", "/EFI/OC/config.plist", str(plist_path)], capture_output=True)
+            try:
+                result = subprocess.run(
+                    ["guestfish", "--ro", "-a", str(path), "-m", "/dev/sda1", "download", "/EFI/OC/config.plist", str(plist_path)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=20, check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return {"ok": False, "reason": "OpenCore config could not be read"}
             if result.returncode:
                 return {"ok": False, "reason": "OpenCore config could not be read"}
-            config = plistlib.loads(plist_path.read_bytes())
-        generic = config.get("PlatformInfo", {}).get("Generic", {})
-        matches = all((
-            generic.get("SystemProductName") == vm.smbios.model,
-            generic.get("SystemSerialNumber") == vm.smbios.serial_number,
-            generic.get("MLB") == vm.smbios.board_serial,
-            generic.get("SystemUUID") == vm.smbios.smuuid,
-            generic.get("ROM") == bytes.fromhex(vm.smbios.rom),
-        ))
+            try:
+                if plist_path.stat().st_size > 2 * 1024 * 1024:
+                    return {"ok": False, "reason": "OpenCore config could not be read"}
+                config = plistlib.loads(plist_path.read_bytes())
+            except (OSError, plistlib.InvalidFileException, ValueError, TypeError):
+                return {"ok": False, "reason": "OpenCore config could not be read"}
+        if not isinstance(config, dict):
+            return {"ok": False, "reason": "OpenCore config could not be read"}
+        platform = config.get("PlatformInfo")
+        generic = platform.get("Generic") if isinstance(platform, dict) else None
+        if not isinstance(generic, dict):
+            return {"ok": False, "reason": "identity fields missing or differ; Apple activation remains unverified"}
+        try:
+            matches = all((
+                generic.get("SystemProductName") == vm.smbios.model,
+                generic.get("SystemSerialNumber") == vm.smbios.serial_number,
+                generic.get("MLB") == vm.smbios.board_serial,
+                generic.get("SystemUUID") == vm.smbios.smuuid,
+                generic.get("ROM") == bytes.fromhex(vm.smbios.rom),
+            ))
+        except (TypeError, ValueError):
+            matches = False
         return {"ok": matches, "reason": "local SMBIOS fields match" if matches else "identity fields missing or differ; Apple activation remains unverified"}

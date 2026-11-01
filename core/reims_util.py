@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -138,6 +139,7 @@ def generate_opencore(
     verbose_boot: bool = False,
     text_picker: bool = False,
     show_picker: bool = False,
+    job_context=None,
 ) -> bool:
     """Gera uma imagem OpenCore personalizada utilizando `reims-util opencore`.
 
@@ -180,8 +182,14 @@ def generate_opencore(
             )
         return False
 
-    dest = Path(output_path).resolve()
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    final_dest = Path(output_path).resolve()
+    final_dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{final_dest.stem}.", suffix=final_dest.suffix, dir=final_dest.parent
+    )
+    os.close(fd)
+    dest = Path(temporary_name)
+    dest.unlink()
 
     cmd = [
         str(util_bin),
@@ -216,21 +224,28 @@ def generate_opencore(
     log_file = LOG_FILE
 
     try:
-        res = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=120,
-        )
+        if job_context is not None:
+            res = job_context.run_subprocess(cmd, timeout=120, check=False)
+            command_stdout = ""
+            command_stderr = ""
+        else:
+            res = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=120,
+            )
+            command_stdout = res.stdout or ""
+            command_stderr = res.stderr or ""
         with log_file.open("a", encoding="utf-8") as lf:
             lf.write(f"\n--- reims-util opencore ({dest.name}) ---\n")
             lf.write(f"Command: {' '.join(cmd)}\n")
             lf.write(f"Returncode: {res.returncode}\n")
-            if res.stdout:
-                lf.write(f"Stdout: {res.stdout.strip()}\n")
-            if res.stderr:
-                lf.write(f"Stderr: {res.stderr.strip()}\n")
+            if command_stdout:
+                lf.write(f"Stdout: {command_stdout.strip()}\n")
+            if command_stderr:
+                lf.write(f"Stderr: {command_stderr.strip()}\n")
 
         if res.returncode != 0:
             return False
@@ -242,19 +257,27 @@ def generate_opencore(
             with log_file.open("a", encoding="utf-8") as lf:
                 lf.write("Erro: qemu-img não encontrado para validar a EFI gerada.\n")
             return False
-        check = subprocess.run(
-            [qemu_img, "check", str(dest)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=30,
-        )
+        if job_context is not None:
+            check = job_context.run_subprocess([qemu_img, "check", str(dest)], timeout=30, check=False)
+            check_stderr = ""
+        else:
+            check = subprocess.run(
+                [qemu_img, "check", str(dest)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+            )
+            check_stderr = check.stderr or ""
         if check.returncode:
             with log_file.open("a", encoding="utf-8") as lf:
-                lf.write(f"Erro: qemu-img check falhou: {check.stderr.strip()}\n")
+                lf.write(f"Erro: qemu-img check falhou: {check_stderr.strip()}\n")
             return False
+        os.replace(dest, final_dest)
         return True
     except (OSError, subprocess.SubprocessError) as exc:
         with log_file.open("a", encoding="utf-8") as lf:
             lf.write(f"Exception during reims-util invocation: {exc}\n")
         return False
+    finally:
+        dest.unlink(missing_ok=True)

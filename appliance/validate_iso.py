@@ -30,6 +30,87 @@ def validate_opencore_image(path: Path) -> None:
         )
 
 
+def validate_web_manager_payload(rootfs: Path) -> None:
+    """Require the complete web bundle and reject developer-only artifacts."""
+    required = (
+        "opt/vhackintosh/web/current/web/api/server.py",
+        "opt/vhackintosh/web/current/web/api/app.py",
+        "opt/vhackintosh/web/current/web/api/admin_cli.py",
+        "opt/vhackintosh/web/current/web/frontend/dist/index.html",
+        "opt/vhackintosh/web/current/web/frontend/THIRD_PARTY_NOTICES.md",
+        "opt/vhackintosh/web/current/web/frontend/licenses/inter-OFL-1.1.txt",
+        "opt/vhackintosh/web/current/web/frontend/licenses/fira-code-OFL-1.1.txt",
+        "opt/vhackintosh/web/current/web/frontend/licenses/lucide-ISC.txt",
+        "opt/vhackintosh/web/current/requirements.lock",
+        "opt/vhackintosh/web/current/BUNDLE.json",
+        "opt/vhackintosh/web/current/MANIFEST.sha256",
+        "opt/vhackintosh/web/current/core/web_jobs.py",
+        "opt/vhackintosh/web/current/core/web_rpc.py",
+        "opt/vhackintosh/web/current/core/runtime_inventory.py",
+        "opt/vhackintosh/web/current/vendor/fastapi/__init__.py",
+        "opt/vhackintosh/web/current/vendor/uvicorn/__init__.py",
+        "opt/vhackintosh/web/current/vendor/argon2/__init__.py",
+        "opt/vhackintosh/web/current/vendor/psutil/__init__.py",
+        "etc/systemd/system/vhackintosh-agent.service",
+        "etc/systemd/system/vhackintosh-web.service",
+        "etc/systemd/system/vhackintosh-vm@.service",
+        "usr/local/bin/vhackintosh-web-bootstrap",
+        "usr/local/bin/vhackintosh-web-admin",
+        "usr/local/bin/vhackintosh-web-recover",
+        "usr/lib/sysusers.d/vhackintosh-web.conf",
+        "usr/lib/tmpfiles.d/vhackintosh-web.conf",
+    )
+    for relative in required:
+        if not (rootfs / relative).is_file():
+            raise RuntimeError(f"ISO web manager payload missing required file: {relative}")
+    for service in ("vhackintosh-agent.service", "vhackintosh-web.service"):
+        enabled = rootfs / "etc/systemd/system/multi-user.target.wants" / service
+        expected_target = f"../{service}"
+        if not enabled.is_symlink() or os.readlink(enabled) != expected_target:
+            raise RuntimeError(
+                f"ISO web manager service is not enabled for boot: {service}"
+            )
+    web_root = rootfs / "opt/vhackintosh/web"
+    bundle_root = (web_root / "current").resolve()
+    versions_root = (web_root / "bundles").resolve()
+    if not (web_root / "current").is_symlink() or bundle_root.parent != versions_root:
+        raise RuntimeError("web bundle current pointer is not an immutable version entry")
+    for path in web_root.rglob("*"):
+        if path.name == "node_modules" or path.name == ".env" or path.name == ".npmrc":
+            raise RuntimeError(f"developer-only web payload included in ISO: {path.relative_to(rootfs)}")
+        if path.name.startswith(".env.") or path.suffix.lower() in {".key", ".crt", ".pem"}:
+            raise RuntimeError(f"credential or TLS artifact included in ISO: {path.relative_to(rootfs)}")
+    metadata = json.loads((bundle_root / "BUNDLE.json").read_text(encoding="utf-8"))
+    runtime_release = (rootfs / "opt/reims-vgpu/.release").read_text(encoding="utf-8").strip()
+    if (metadata.get("format_version") != 1 or metadata.get("api_contract_version") != 1
+            or metadata.get("rpc_protocol_version") != 1
+            or not metadata.get("jobs_schema_min", 0) <= 0 <= metadata.get("jobs_schema_max", -1)
+            or metadata.get("runtime_release") != runtime_release
+            or bundle_root.name != metadata.get("bundle_id")):
+        raise RuntimeError("web bundle compatibility metadata does not match the appliance runtime")
+    manifest = bundle_root / "MANIFEST.sha256"
+    declared: set[str] = set()
+    for line in manifest.read_text(encoding="ascii").splitlines():
+        digest, separator, relative = line.partition("  ")
+        if not separator or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise RuntimeError("invalid web payload SHA-256 manifest")
+        target = bundle_root / relative
+        resolved = target.resolve()
+        if bundle_root not in resolved.parents or not target.is_file() or target.is_symlink():
+            raise RuntimeError(f"web payload manifest path is invalid: {relative}")
+        actual = hashlib.sha256(target.read_bytes()).hexdigest()
+        if actual != digest:
+            raise RuntimeError(f"web payload hash mismatch: {relative}")
+        declared.add(relative)
+    actual_files = {
+        path.relative_to(bundle_root).as_posix()
+        for path in bundle_root.rglob("*")
+        if path.is_file() and path != manifest
+    }
+    if declared != actual_files:
+        raise RuntimeError("web payload SHA-256 manifest does not cover every packaged file")
+
+
 class Provenance(NamedTuple):
     """Release pré-compilada do fork empacotada e conferida."""
 
@@ -58,8 +139,14 @@ def confere_provenance(rootfs: Path) -> Provenance:
         bundle / "vendor/qemu/build/bin/qemu-system-x86_64",
         bundle / "vendor/qemu/build/qemu-system-x86_64",
     )
-    if not any(path.is_file() for path in qemu_candidates):
+    qemu = next((path for path in qemu_candidates if path.is_file()), None)
+    if qemu is None:
         raise RuntimeError("prebuilt ISO has no QEMU executable in the Reims release bundle")
+    if not qemu.stat().st_mode & 0o111:
+        raise RuntimeError(
+            "bundled Reims QEMU is not executable in ISO rootfs "
+            "(declare its exact path as 0:0:755 in profiledef.sh)"
+        )
     rom_candidates = (
         bundle / "vendor/qemu/build/share/qemu/ReimsVgpu.rom",
         bundle / "vendor/qemu/pc-bios/ReimsVgpu.rom",
@@ -68,8 +155,14 @@ def confere_provenance(rootfs: Path) -> Provenance:
     if not any(path.is_file() for path in rom_candidates):
         raise RuntimeError("prebuilt ISO has no ReimsVgpu.rom in the release bundle")
     ctl_candidates = (bundle / "bin/reims-ctl", bundle / "reims-ctl")
-    if not any(path.is_file() for path in ctl_candidates):
+    ctl = next((path for path in ctl_candidates if path.is_file()), None)
+    if ctl is None:
         raise RuntimeError("prebuilt ISO has no reims-ctl in the release bundle")
+    if not ctl.stat().st_mode & 0o111:
+        raise RuntimeError(
+            "bundled reims-ctl is not executable in ISO rootfs "
+            "(declare its exact path as 0:0:755 in profiledef.sh)"
+        )
     registered_release = rootfs / "opt/reims-vgpu/.release"
     if registered_release.is_file():
         value = registered_release.read_text(encoding="utf-8").strip()
@@ -111,6 +204,7 @@ def main() -> int:
                 raise RuntimeError("ISO has no airootfs.sfs")
             command("unsquashfs", "-no-progress", "-no-xattrs", "-d", str(temp / "rootfs"), str(squashfs))
             rootfs = temp / "rootfs"
+            validate_web_manager_payload(rootfs)
             for required_path in (
                 "opt/vhackintosh/core/smbios.py",
                 "opt/vhackintosh/core/reims_util.py",
@@ -218,7 +312,7 @@ def main() -> int:
                 "macserial_sha256": hashlib.sha256(macserial.read_bytes()).hexdigest(),
                 "reims_util_sha256": hashlib.sha256(reims_util.read_bytes()).hexdigest(),
                 "ovmf_vars_sha256": ovmf_vars_hash,
-                "checks": ["squashfs-extracted", "opencore-qcow2", "plist-neutral", "macserial-pinned", "reims-util-packaged", "ovmf-vars-match", "reims-release-packaged", "reims-ctl-packaged"],
+                "checks": ["squashfs-extracted", "opencore-qcow2", "plist-neutral", "macserial-pinned", "reims-util-packaged", "ovmf-vars-match", "reims-release-packaged", "reims-ctl-packaged", "web-manager-packaged"],
             }
         # Atomic metadata publication only after all checks complete.
         target = iso.with_suffix(iso.suffix + ".manifest.json")

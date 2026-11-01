@@ -7,12 +7,12 @@ automaticamente as partições de boot no OpenCore.
 from __future__ import annotations
 import os
 import time
-import json
-import socket
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Callable
 from rich.console import Console
+
+from core.passthrough import QmpClient as _SharedQmpClient, QmpError
 
 console = Console()
 
@@ -29,41 +29,29 @@ class VMState(str, Enum):
 
 
 class QMPClient:
-    """Cliente de comunicação QMP com a instância QEMU em execução."""
+    """Compatibilidade da state machine sobre o broker QMP compartilhado."""
 
     def __init__(self, socket_path: str | Path):
         self.socket_path = Path(socket_path)
-        self.sock: Optional[socket.socket] = None
+        self._client = _SharedQmpClient(self.socket_path, timeout=5.0)
 
     def connect(self, timeout_sec: float = 10.0) -> bool:
-        start = time.time()
-        while time.time() - start < timeout_sec:
+        # Preserva a espera pela criação inicial do socket pelo reims-ctl.
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
             if self.socket_path.exists():
                 try:
-                    self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    self.sock.connect(str(self.socket_path))
-                    # Lê banner de abertura do QMP
-                    self.sock.recv(1024)
-                    # Habilita capacidades
-                    self.execute("qmp_capabilities")
+                    self._client.connect()
                     return True
-                except Exception:
-                    pass
-            time.sleep(0.3)
+                except QmpError:
+                    return False
+            time.sleep(min(0.3, max(0, deadline - time.monotonic())))
         return False
 
     def execute(self, cmd: str, arguments: Optional[dict] = None) -> Optional[dict]:
-        if not self.sock:
-            return None
-        payload = {"execute": cmd}
-        if arguments:
-            payload["arguments"] = arguments
         try:
-            msg = json.dumps(payload) + "\n"
-            self.sock.sendall(msg.encode("utf-8"))
-            data = self.sock.recv(4096).decode("utf-8")
-            return json.loads(data)
-        except Exception:
+            return self._client.execute(cmd, arguments)
+        except QmpError:
             return None
 
     def send_key(self, qcode: str) -> bool:
@@ -79,12 +67,7 @@ class QMPClient:
         self.send_key("ret")
 
     def close(self) -> None:
-        if self.sock:
-            try:
-                self.sock.close()
-            except Exception:
-                pass
-            self.sock = None
+        self._client.close()
 
 
 class InstallationStateMachine:

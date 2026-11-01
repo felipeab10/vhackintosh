@@ -1,0 +1,7 @@
+# Runtime dependencies for the appliance's HTTP manager.
+fastapi>=0.115,<1.0
+uvicorn>=0.34,<1.0
+argon2-cffi>=23.1,<26
+psutil>=5.9,<8
+
+psutil>=6.0,<8.0

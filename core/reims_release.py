@@ -191,14 +191,10 @@ def _version_says_new_generation(dados: bytes) -> Optional[bool]:
 
 
 def current_release(reims_dir: Path = DEFAULT_REIMS_DIR) -> Optional[str]:
-    """A tag da release hoje instalada, ou None se a árvore veio das fontes."""
-    marker = reims_dir / MARKER_REL
-    if marker.is_file() and _qemu_bin(reims_dir) is not None:
-        try:
-            return marker.read_text(encoding="utf-8", errors="replace").strip() or None
-        except OSError:
-            return None
-    return None
+    """A tag embutida/instalada, também antes da primeira atualização do painel."""
+    from core.reims_build import prebuilt_release
+
+    return prebuilt_release(reims_dir)
 
 
 def is_prebuilt(reims_dir: Path = DEFAULT_REIMS_DIR) -> bool:
@@ -444,6 +440,31 @@ def _merge_release_tree(source: Path, destination: Path) -> None:
 
 
 def update_from_release(
+    *,
+    tag: str = "latest",
+    reims_dir: Path = DEFAULT_REIMS_DIR,
+    log: Optional[Callable[[str], None]] = None,
+    force: bool = False,
+) -> UpdateResult:
+    """Update a release, excluding VM admission while the appliance is mutated."""
+    from contextlib import nullcontext
+
+    guard = nullcontext()
+    if reims_dir == DEFAULT_REIMS_DIR and os.geteuid() == 0:
+        from core.update_guard import maintenance_window
+
+        guard = maintenance_window()
+    try:
+        with guard:
+            return _update_from_release_unlocked(
+                tag=tag, reims_dir=reims_dir, log=log, force=force
+            )
+    except Exception as exc:
+        previous = current_release(reims_dir) or ""
+        return UpdateResult(ok=False, tag=tag, previous=previous, message=str(exc))
+
+
+def _update_from_release_unlocked(
     *,
     tag: str = "latest",
     reims_dir: Path = DEFAULT_REIMS_DIR,

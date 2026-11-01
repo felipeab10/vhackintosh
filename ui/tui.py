@@ -9,24 +9,25 @@ import sys
 import time
 import uuid
 import datetime
-import tomllib
+import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 from rich import box
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm, IntPrompt
 from rich.rule import Rule
-from rich.layout import Layout
 from rich.text import Text
 
-from core.config import VMConfig, VMManagerStore, ExclusiveVMLock, CONFIG_DIR
+from core.config import VMConfig, VMManagerStore, ExclusiveVMLock, CONFIG_DIR, SMBIOSConfig
 from core import i18n
 from core.reims_build import evaluate as evaluate_reims_release, find_reims_dir, install_prebuilt
 from core import reims_ctl
+from core.web_access import access_details
+from core.web_client import agent_is_required, call_agent, read_agent_catalog, WebAgentUnavailable
 from core.hardware import HardwareAdvisor
 from core.gpu import GPUChecker
 from core.readiness import SystemReadinessChecker
@@ -47,241 +48,27 @@ from core.install_phase import (
 from core.smbios import GenSMBIOS
 from core.downloader import MacOSDownloader, MACOS_PRODUCTS
 from core.disk import DiskProvisioner
+from core.vm_lifecycle import (
+    VMLifecycleService,
+    decide_reimsctl,
+    recover_reimsctl_vm_storage as _recover_reimsctl_vm_storage,
+    run_rail_session,
+    default_launch_hooks,
+)
 from ui.banner import animate_banner, centered_banner
 
 console = Console()
 
 
-def decide_reimsctl(
-    reims_dir: Optional[str],
-    macos_version: str,
-    custom_dir: Optional[Path],
-    *,
-    create_rail_dir: bool = True,
-) -> tuple[bool, str]:
-    """
-    Decide se a VM pode subir pelo reims-ctl (o único motor), ou a recusa de
-    iniciar a VM — não há mais um motor de reserva para onde cair.
-
-    Devolve `(pode_subir, motivo)` — o `motivo` existe porque um "não"
-    silencioso é indistinguível de um defeito, e esta decisão já custou o
-    salvamento de aceleração do appliance uma vez: a ausência de algo
-    essencial passava sem ninguém perceber.
-
-    Três condições, cada uma legítima:
-      1. o `reims-ctl` instalado junto da release — sem ele não há quem suba
-         a VM nem registre o QMP;
-      2. o QEMU do reims-vgpu instalado (`qemu/current`) — sem o motor
-         acelerado o convidado não sobe (o appliance não tem motor de reserva);
-      3. o layout da VM (macos.qcow2 + OpenCore.qcow2 + OVMF_VARS.fd, vindos
-         de `custom_dir`) mais o OVMF_CODE.fd, que é copiado do template aqui.
-
-    `create_rail_dir` permanece só para compatibilidade de assinatura (o
-    antigo rail criava um diretório; agora nada é escrito aqui).
-    """
-    del create_rail_dir  # nenhum efeito colateral nesta decisão
-    if not reims_dir:
-        return False, "sem diretório do reims-vgpu"
-    if not reims_ctl.reims_ctl_bin():
-        return False, "reims-ctl não encontrado; instale uma release do reims-vgpu"
-    from core.reims_build import qemu_binary
-
-    if not qemu_binary().exists():
-        return False, f"QEMU do reims-vgpu não instalado (esperado em {qemu_binary()})"
-
-    if not (
-        custom_dir
-        and (custom_dir / "macos.qcow2").exists()
-        and (custom_dir / "OpenCore.qcow2").exists()
-        and (custom_dir / "OVMF_VARS.fd").exists()
-    ):
-        return False, f"layout persistente incompleto em {custom_dir}"
-
-    # O reims-ctl exige o código do OVMF ao lado das variáveis, no diretório da
-    # VM. VMs provisionadas antes desta integração só têm o par de variáveis;
-    # completamos do template (idempotente).
-    if not (custom_dir / "OVMF_CODE.fd").exists():
-        if not DiskProvisioner.ensure_ovmf_code(custom_dir):
-            return False, f"OVMF_CODE.fd ausente e sem template para copiar (em {custom_dir})"
-
-    return True, f"reims-ctl ({macos_version})"
-
-
 def recover_reimsctl_vm_storage(vm: VMConfig) -> tuple[Optional[Path], str]:
-    """Adota com segurança o disco de uma VM existente do reims-ctl.
-
-    Catálogos antigos do vHackintosh podem apontar para o diretório removido
-    `~/reims-vgpu/vm/disks/...`, enquanto o disco foi mantido no diretório que
-    o reims-ctl registrou. Só recuperamos uma VM parada, com o mesmo ID, disco
-    e VARS válidos. Disco e OpenCore nativos ficam preservados por symlink no
-    layout do vHackintosh. Isso mantém a mesma EFI que o `reims-ctl start`
-    usava antes da migração (incluindo configurações e identidade já testadas).
-    Só gera um OpenCore do template quando o registro nativo não tem uma EFI.
-    """
-    record = reims_ctl.vm_record(vm.id)
-    if not record:
-        return None, f"não encontrei uma VM reims-ctl registrada com ID {vm.id}"
-    if record.get("state") != "stopped" or record.get("pid") is not None:
-        return None, f"a VM reims-ctl {vm.id} precisa estar parada para recuperar o armazenamento"
-
-    source_dir = Path(str(record.get("dir", ""))).expanduser()
-    if not source_dir.is_dir():
-        return None, f"o diretório registrado pelo reims-ctl não existe: {source_dir}"
-
-    config_path = source_dir / "vm.toml"
-    try:
-        with config_path.open("rb") as fh:
-            source_config = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        return None, f"não consegui ler {config_path}: {exc}"
-
-    disk_name = source_config.get("disk", "disk.qcow2")
-    q35 = source_config.get("q35") or {}
-    opencore_name = q35.get("opencore", "opencore.qcow2")
-    vars_name = q35.get("firmware_vars", "OVMF_VARS.fd")
-    source_disk = source_dir / disk_name
-    source_opencore = source_dir / opencore_name
-    source_vars = source_dir / vars_name
-    if not source_disk.is_file() or source_disk.stat().st_size == 0:
-        return None, f"o disco da VM registrada não existe ou está vazio: {source_disk}"
-    if not source_vars.is_file():
-        return None, f"as variáveis UEFI da VM registrada não existem: {source_vars}"
-
-    target_dir = CONFIG_DIR / "vms" / vm.id
-    target_disk = target_dir / "macos.qcow2"
-    target_opencore = target_dir / "OpenCore.qcow2"
-    target_vars = target_dir / "OVMF_VARS.fd"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    if target_disk.exists() or target_disk.is_symlink():
-        try:
-            same_disk = target_disk.resolve(strict=True) == source_disk.resolve(strict=True)
-        except OSError:
-            same_disk = False
-        if not same_disk:
-            return None, f"já existe outro disco no destino e não será sobrescrito: {target_disk}"
-    else:
-        target_disk.symlink_to(source_disk.resolve())
-
-    # O launcher nativo pode manter uma EFI diferente do template distribuído
-    # pelo vHackintosh. Preserve exatamente a imagem apontada pelo vm.toml que
-    # já iniciou esta VM; a capitalização do nome é só o contrato do TOML novo.
-    native_opencore = source_opencore.is_file() and source_opencore.stat().st_size > 0
-    if native_opencore:
-        if target_opencore.exists() or target_opencore.is_symlink():
-            try:
-                same_opencore = (
-                    target_opencore.resolve(strict=True)
-                    == source_opencore.resolve(strict=True)
-                )
-            except OSError:
-                same_opencore = False
-            if not same_opencore:
-                return None, (
-                    "já existe outro OpenCore no destino e ele não será substituído: "
-                    f"{target_opencore}"
-                )
-        else:
-            target_opencore.symlink_to(source_opencore.resolve())
-
-    if not target_vars.exists():
-        shutil.copy2(source_vars, target_vars)
-    # write_vm_toml preserva a GPU e o MAC do TOML anterior. Levar só esse
-    # arquivo para o novo diretório mantém a seleção Intel/NVIDIA que a VM já
-    # usava, sem reaproveitar seus caminhos de EFI ou ajustes antigos.
-    target_config = target_dir / "vm.toml"
-    if not target_config.exists():
-        shutil.copy2(config_path, target_config)
-    source_code = source_dir / q35.get("firmware_code", "OVMF_CODE.fd")
-    target_code = target_dir / "OVMF_CODE.fd"
-    if not target_code.exists() and source_code.is_file():
-        shutil.copy2(source_code, target_code)
-    if not target_code.exists() and not DiskProvisioner.ensure_ovmf_code(target_dir):
-        return None, f"OVMF_CODE.fd ausente e sem template para copiar (em {target_dir})"
-
-    if native_opencore:
-        vm.disk_path = str(target_disk)
-    else:
-        try:
-            DiskProvisioner.provision(vm)
-        except Exception as exc:  # noqa: BLE001 — devolve o motivo para a TUI
-            return None, f"falha ao preparar OpenCore/UEFI no destino {target_dir}: {exc}"
-
-    required = (target_disk, target_dir / "OpenCore.qcow2", target_vars)
-    missing = [str(path) for path in required if not path.exists()]
-    if missing:
-        return None, "a recuperação terminou sem estes arquivos: " + ", ".join(missing)
-    if native_opencore:
-        return target_dir, "disco e OpenCore nativos do reims-ctl preservados"
-    return target_dir, "disco recuperado do reims-ctl; OpenCore criado pelo template vHackintosh"
+    """Compatibility adapter retaining the TUI's configurable state root."""
+    return _recover_reimsctl_vm_storage(vm, config_dir=CONFIG_DIR)
 
 
-def run_rail_session(
-    launch: Callable[[], object],
-    make_monitor: Callable[[], object],
-    is_installing: bool,
-    *,
-    max_relaunches: int = 30,
-    settle_sec: float = 0.6,
-    on_relaunch: Optional[Callable[[int], None]] = None,
-) -> tuple[int, Optional[str]]:
-    """
-    Roda o rail do reims-vgpu, relançando a VM a cada reboot do convidado.
 
-    O QEMU roda com `-action reboot=shutdown` (extra_args do vm.toml), então um
-    reboot do macOS **encerra** o QEMU em vez de reiniciá-lo. Isso é deliberado —
-    o DeviceReset congelaria o host — mas sem relançar aqui a instalação morreria
-    no primeiro reboot do instalador. Este é o "reiniciar" que falta.
 
-    `launch()` deve iniciar a VM e devolver algo com `.wait()`; `make_monitor()`
-    deve devolver um monitor QMP novo, ainda não iniciado. **Um monitor por
-    boot** não é detalhe de estilo: o `_monitor_loop` fecha a própria thread
-    quando o socket QMP cai junto com o QEMU, então um monitor reaproveitado
-    contaria o primeiro reboot e ficaria mudo nos demais. Como cada monitor
-    enxerga só a própria sessão, "este boot pediu reboot?" é simplesmente
-    `monitor.reset_count > 0`.
 
-    Devolve `(total_de_reboots, ultimo_motivo)` — somados entre todos os boots,
-    porque quem chama decide a política de energia do host pela sessão inteira.
 
-    Um boot que termina **sem** reboot conta como o usuário fechando a janela (ou
-    o instalador desligando a máquina): o laço para em vez de relançar.
-    """
-    total_resets = 0
-    last_reason: Optional[str] = None
-    relaunches = 0
-
-    while True:
-        monitor = make_monitor()
-        monitor.start()
-        try:
-            launch().wait()
-        finally:
-            # O QEMU entrega o evento QMP antes de sair; sem esta pausa a thread
-            # do monitor pode não tê-lo lido ainda e o reboot passa despercebido.
-            time.sleep(settle_sec)
-            # Deixa a thread consumir o EOF do socket QMP. Parar imediatamente
-            # pode interromper a leitura do evento final de reboot do guest.
-            wait_for_disconnect = getattr(monitor, "wait_for_disconnect", None)
-            if callable(wait_for_disconnect):
-                wait_for_disconnect(timeout_sec=2.0)
-            monitor.stop()
-
-        total_resets += monitor.reset_count
-        if monitor.last_reason:
-            last_reason = monitor.last_reason
-
-        if not is_installing or monitor.reset_count == 0:
-            break
-
-        relaunches += 1
-        if relaunches > max_relaunches:
-            if on_relaunch:
-                on_relaunch(-1)
-            break
-        if on_relaunch:
-            on_relaunch(relaunches)
-
-    return total_resets, last_reason
 
 
 class VMTUI:
@@ -289,7 +76,18 @@ class VMTUI:
 
     def __init__(self, store: VMManagerStore):
         self.store = store
+        self._catalog_revision: str | None = None
+        self._agent_vm_snapshots: dict[str, VMConfig] = {}
         self.lock = ExclusiveVMLock()
+        launch_hooks = default_launch_hooks(store)
+        launch_hooks.ensure_release = self._ensure_reims_release
+        launch_hooks.on_usb_ready = self._usb_auto_attach
+        launch_hooks.apply_gpu_environment = self._apply_gpu_environment
+        launch_hooks.apply_power_policy = self._apply_host_power_policy
+        launch_hooks.post_phase_update = self._post_vm_phase_update
+        self.lifecycle_service = VMLifecycleService(
+            store, lock=self.lock, lock_factory=ExclusiveVMLock, hooks=launch_hooks
+        )
         # Detectado uma única vez: o modo de execução não muda durante a sessão.
         self.system_mode = detect_system_mode()
         self.installer_available = has_installer_binary()
@@ -308,6 +106,19 @@ class VMTUI:
                 self._banner_animated = True
             else:
                 console.print(centered_banner(console))
+
+            # Só mostra o card no appliance que realmente empacota o serviço;
+            # o projeto também roda em ambientes de desenvolvimento sem systemd.
+            if Path("/etc/systemd/system/vhackintosh-web.service").is_file():
+                console.print(
+                    Panel(
+                        "\n".join(access_details()),
+                        title="Painel de gerenciamento",
+                        border_style="#168bd2",
+                        box=box.ROUNDED,
+                        padding=(0, 1),
+                    )
+                )
 
             running_vms = self.lock.get_running_vm_info()
             if running_vms:
@@ -334,7 +145,15 @@ class VMTUI:
             if not readiness.has_internet:
                 console.print(i18n.t("tui.main.no_internet"))
 
-            vms = self.store.list_vms()
+            try:
+                vms = self._list_managed_vms()
+            except WebAgentUnavailable as exc:
+                vms = []
+                console.print(Panel(
+                    f"O catálogo não foi carregado e nenhuma VM será iniciada pela TUI. {exc}",
+                    title="Agente de gerenciamento indisponível",
+                    border_style="red",
+                ))
             self._render_vm_table(vms)
 
             console.print(Rule(style="#164b66"))
@@ -432,6 +251,10 @@ class VMTUI:
         ``installing``. Isso mantém a sincronização de energia do host desativada
         por segurança até a confirmação explícita do usuário.
         """
+        # The appliance's agent owns catalog mutations. Do not write through a
+        # second store instance from the TUI during boot.
+        if agent_is_required():
+            return
         try:
             vms = self.store.list_vms()
         except Exception:
@@ -447,11 +270,129 @@ class VMTUI:
         console.print(i18n.t("tui.backfill.checking"))
         for vm in unverified:
             probe = InstallProbe.probe(vm.disk_path) if vm.disk_path else DiskProbe()
-            vm.install_evidence = classify_evidence(probe).value
-            vm.install_phase = InstallPhaseResolver.resolve_phase(vm, probe=probe).value
-            self.store.update_vm(vm)
+            self._patch_managed_vm(vm, {
+                "install_evidence": classify_evidence(probe).value,
+                "install_phase": InstallPhaseResolver.resolve_phase(vm, probe=probe).value,
+            })
             console.print(f"  [dim]{vm.name}: {summarize_probe(probe)} → {vm.install_phase}[/dim]")
         console.print()
+
+    def _list_managed_vms(self) -> list[VMConfig]:
+        """Use the appliance agent as catalog source; local mode stays useful for development."""
+        if not agent_is_required():
+            return self.store.list_vms()
+        vms, revision = read_agent_catalog()
+        self._catalog_revision = revision
+        self._agent_vm_snapshots = {vm.id: VMConfig.from_dict(vm.to_dict()) for vm in vms}
+        return vms
+
+    def _update_managed_vm(self, vm: VMConfig) -> dict | None:
+        """Persist a supported config snapshot through the appliance agent."""
+        if not agent_is_required():
+            self.store.update_vm(vm)
+            return None
+        if not self._catalog_revision:
+            self._list_managed_vms()
+        try:
+            result = call_agent("vms.config.update", {
+                "vm_id": vm.id,
+                "expected_revision": self._catalog_revision,
+                "config": {
+                    "name": vm.name,
+                    "macos_version": vm.macos_version,
+                    "vcpus": vm.vcpus,
+                    "ram_gb": vm.ram_gb,
+                    "disk_size_gb": vm.disk_size_gb,
+                    "auto_start": vm.auto_start,
+                    "audio_device": vm.audio_device,
+                    "fullscreen": vm.fullscreen,
+                    "opencore_show_picker": vm.opencore_show_picker,
+                    "gpu_mode": vm.gpu_mode,
+                    "selected_gpu": vm.selected_gpu,
+                    "selected_gpu_uuid": vm.selected_gpu_uuid,
+                    "network_enabled": True,
+                    "power_sync_mode": vm.power_sync_mode,
+                    "qemu_extra_args": list(vm.qemu_extra_args),
+                },
+            })
+        except WebAgentUnavailable:
+            self._restore_agent_snapshot(vm)
+            raise
+        if not isinstance(result, dict) or not isinstance(result.get("revision"), str):
+            self._restore_agent_snapshot(vm)
+            raise WebAgentUnavailable("O agente não confirmou a revisão da configuração; nenhuma gravação local foi tentada.")
+        self._catalog_revision = result["revision"]
+        self._agent_vm_snapshots[vm.id] = VMConfig.from_dict(vm.to_dict())
+        return result
+
+    def _patch_managed_vm(self, vm: VMConfig, fields: dict) -> dict | None:
+        """Persist narrowly-scoped TUI metadata through the local agent."""
+        normalized = dict(fields)
+        if "smbios" in normalized and isinstance(normalized["smbios"], dict):
+            normalized["smbios"] = SMBIOSConfig(**normalized["smbios"])
+        if not agent_is_required():
+            for name, value in normalized.items():
+                setattr(vm, name, value)
+            self.store.update_vm(vm)
+            return None
+        if not self._catalog_revision:
+            self._list_managed_vms()
+        try:
+            result = call_agent("vms.config.patch", {
+                "vm_id": vm.id, "expected_revision": self._catalog_revision,
+                "fields": {name: value.__dict__ if isinstance(value, SMBIOSConfig) else value
+                           for name, value in normalized.items()},
+            })
+        except WebAgentUnavailable:
+            self._restore_agent_snapshot(vm)
+            raise
+        if not isinstance(result, dict) or not isinstance(result.get("revision"), str):
+            self._restore_agent_snapshot(vm)
+            raise WebAgentUnavailable("O agente não confirmou a revisão da configuração.")
+        for name, value in normalized.items():
+            setattr(vm, name, value)
+        self._catalog_revision = result["revision"]
+        self._agent_vm_snapshots[vm.id] = VMConfig.from_dict(vm.to_dict())
+        return result
+
+    def _delete_managed_vm(self, vm: VMConfig, *, delete_disk: bool) -> None:
+        if not agent_is_required():
+            self.store.delete_vm(vm.id, delete_disk=delete_disk)
+            return
+        if not self._catalog_revision:
+            self._list_managed_vms()
+        result = call_agent("vms.config.delete", {
+            "vm_id": vm.id, "expected_revision": self._catalog_revision,
+            "delete_disk": delete_disk,
+        })
+        if not isinstance(result, dict) or result.get("deleted") is not True:
+            raise WebAgentUnavailable("O agente não confirmou a exclusão da VM; nenhum fallback local foi tentado.")
+        self._catalog_revision = result.get("revision")
+        self._agent_vm_snapshots.pop(vm.id, None)
+
+    def _add_managed_vm(self, vm: VMConfig) -> None:
+        """Development-only synchronous registration; appliance uses vms.provision jobs."""
+        if agent_is_required():
+            raise WebAgentUnavailable(
+                "No modo appliance, use o trabalho de provisionamento do agente; gravação local foi recusada."
+            )
+        self.store.add_vm(vm)
+
+    @staticmethod
+    def _submit_vm_provision_job(payload: dict) -> str:
+        """Submit TUI-created VMs to the same durable provisioner as the panel."""
+        result = call_agent("vms.provision", payload)
+        if not isinstance(result, dict) or not isinstance(result.get("job_id"), str):
+            raise WebAgentUnavailable(
+                "O agente não confirmou a tarefa de provisionamento; nenhuma criação local foi tentada."
+            )
+        return result["job_id"]
+
+    def _restore_agent_snapshot(self, vm: VMConfig) -> None:
+        snapshot = getattr(self, "_agent_vm_snapshots", {}).get(vm.id)
+        if snapshot:
+            for field in VMConfig.__dataclass_fields__:
+                setattr(vm, field, getattr(snapshot, field))
 
     def _language_screen(self) -> None:
         """Tela de idioma: a primeira do appliance, antes de qualquer outra.
@@ -573,8 +514,10 @@ class VMTUI:
                         auto_ids.discard(key)
                     else:
                         auto_ids.add(key)
-                    vm.usb_auto_attach = sorted(auto_ids)
-                    self.store.update_vm(vm)
+                    try:
+                        self._patch_managed_vm(vm, {"usb_auto_attach": sorted(auto_ids)})
+                    except WebAgentUnavailable as agent_error:
+                        console.print(Panel(str(agent_error), title="USB não salvo", border_style="red"))
             except passthrough.QmpError as exc:
                 console.print(i18n.t("tui.usb.hotplug_failed", error=exc.message))
             Prompt.ask(i18n.t("tui.prompt.enter_continue"))
@@ -659,8 +602,13 @@ class VMTUI:
 
         current = normalize_phase(getattr(vm, "install_phase", None))
         probe = InstallProbe.probe(vm.disk_path) if vm.disk_path else DiskProbe()
-        vm.install_evidence = classify_evidence(probe).value
-        self.store.update_vm(vm)
+        try:
+            self._patch_managed_vm(vm, {"install_evidence": classify_evidence(probe).value})
+        except WebAgentUnavailable as exc:
+            console.print(Panel(str(exc), title="Fase não salva", border_style="red"))
+            if sys.stdin.isatty():
+                Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+            return
 
         console.print(i18n.t("tui.phase.current", phase=phase_label(current)))
         console.print(i18n.t("tui.phase.reboots", count=getattr(vm, "install_reboots", 0)))
@@ -681,13 +629,21 @@ class VMTUI:
 
         if current is InstallPhase.INSTALLED:
             if Confirm.ask(i18n.t("tui.phase.confirm.revert"), default=False):
-                vm.install_phase = InstallPhase.INSTALLING.value
-                self.store.update_vm(vm)
+                try:
+                    self._patch_managed_vm(vm, {"install_phase": InstallPhase.INSTALLING.value})
+                except WebAgentUnavailable as exc:
+                    console.print(Panel(str(exc), title="Fase não salva", border_style="red"))
+                    Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+                    return
                 console.print(i18n.t("tui.phase.reverted"))
         else:
             if Confirm.ask(i18n.t("tui.phase.confirm.mark_installed"), default=False):
-                vm.install_phase = InstallPhase.INSTALLED.value
-                self.store.update_vm(vm)
+                try:
+                    self._patch_managed_vm(vm, {"install_phase": InstallPhase.INSTALLED.value})
+                except WebAgentUnavailable as exc:
+                    console.print(Panel(str(exc), title="Fase não salva", border_style="red"))
+                    Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+                    return
                 console.print(i18n.t("tui.phase.marked_installed"))
 
         Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))
@@ -701,8 +657,6 @@ class VMTUI:
         A ação normal pede ao macOS para desligar. A ação forçada é separada,
         pede confirmação explícita e corta o processo sem esperar pelo convidado.
         """
-        from core import reims_ctl
-
         if not pid:
             # Chegou aqui por chamada direta, não pela tela (que só oferece a
             # opção quando há VM rodando). Não há o que parar.
@@ -718,6 +672,29 @@ class VMTUI:
             i18n.t(confirm_key, name=vm.name), default=not force
         ):
             return
+
+        if agent_is_required():
+            confirmation = None
+            if force:
+                confirmation = Prompt.ask(
+                    f"Digite exatamente o identificador {vm.id} para confirmar",
+                    default="",
+                )
+                if confirmation != vm.id:
+                    console.print("Confirmação não corresponde ao identificador da VM; nenhuma ação foi enviada.")
+                    return
+            try:
+                accepted = self._send_agent_vm_action(
+                    vm, "force_stop" if force else "shutdown", confirmation=confirmation,
+                )
+                console.print(f"Solicitação enviada ao agente (operação {accepted['job_id']}).")
+            except WebAgentUnavailable as exc:
+                console.print(Panel(str(exc), title="Parada não executada", border_style="red"))
+            if sys.stdin.isatty():
+                Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+            return
+
+        from core import reims_ctl
 
         if force:
             console.print(i18n.t("tui.vm.actions.stop_force"))
@@ -879,12 +856,24 @@ class VMTUI:
                 self._toggle_install_phase(vm)
             elif action == "2":
                 new_state = not vm.auto_start
-                self.store.set_auto_start(vm.id, new_state)
-                vm.auto_start = new_state
+                try:
+                    self._set_auto_start(vm, new_state)
+                    vm.auto_start = new_state
+                except (WebAgentUnavailable, ValueError) as exc:
+                    console.print(Panel(str(exc), title="Não foi possível alterar o auto-start", border_style="red"))
+                    if sys.stdin.isatty():
+                        Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
             elif action == "3":
                 new_picker = not getattr(vm, "opencore_show_picker", False)
                 vm.opencore_show_picker = new_picker
-                self.store.update_vm(vm)
+                try:
+                    self._update_managed_vm(vm)
+                except (WebAgentUnavailable, ValueError) as exc:
+                    self._restore_agent_snapshot(vm)
+                    console.print(Panel(str(exc), title="Opção não salva", border_style="red"))
+                    if sys.stdin.isatty():
+                        Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+                    continue
                 console.print(i18n.t("tui.opencore.syncing"))
                 opencore_file = None
                 if vm.disk_path:
@@ -932,7 +921,7 @@ class VMTUI:
                         try:
                             vm.smbios = new_smbios
                             DiskProvisioner.inject_opencore_config(existing_efi, vm)
-                            self.store.update_vm(vm)
+                            self._patch_managed_vm(vm, {"smbios": vm.smbios.__dict__.copy()})
                         except Exception:
                             vm.smbios = old_identity
                             shutil.copy2(backup_dir / "OpenCore.qcow2", existing_efi)
@@ -945,14 +934,27 @@ class VMTUI:
                     console.print(i18n.t("smbios.regenerate.failed", error=exc))
                 Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
             elif has_multiple_gpus and action == "6":
+                previous_gpu = (vm.selected_gpu, vm.selected_gpu_name, vm.selected_gpu_uuid)
                 self._choose_gpu_for_vm(vm, gpus)
-                self.store.update_vm(vm)
-                console.print(i18n.t("tui.gpu.updated", name=vm.selected_gpu_name))
-                Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
+                try:
+                    self._update_managed_vm(vm)
+                    console.print(i18n.t("tui.gpu.updated", name=vm.selected_gpu_name))
+                    Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
+                except (WebAgentUnavailable, ValueError) as exc:
+                    vm.selected_gpu, vm.selected_gpu_name, vm.selected_gpu_uuid = previous_gpu
+                    console.print(Panel(str(exc), title="GPU não salva", border_style="red"))
+                    if sys.stdin.isatty():
+                        Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
             elif action == "7":
                 if Confirm.ask(i18n.t("tui.vm.delete.confirm", name=vm.name)):
                     del_disk = Confirm.ask(i18n.t("tui.vm.delete.disk"))
-                    self.store.delete_vm(vm.id, delete_disk=del_disk)
+                    try:
+                        self._delete_managed_vm(vm, delete_disk=del_disk)
+                    except (WebAgentUnavailable, ValueError) as exc:
+                        console.print(Panel(str(exc), title="VM não removida", border_style="red"))
+                        if sys.stdin.isatty():
+                            Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
+                        continue
                     console.print(i18n.t("tui.vm.delete.done"))
                     Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
                     break
@@ -963,6 +965,7 @@ class VMTUI:
         console.clear()
         console.print(centered_banner(console))
         console.print(i18n.t("tui.wizard.title"))
+        appliance_managed = agent_is_required()
 
         # ------------------------------------------------------------------
         # Validação antecipada de hardware (KVM e Vulkan 1.2+):
@@ -994,7 +997,8 @@ class VMTUI:
 
         # 1. Nome da VM
         name = Prompt.ask(i18n.t("tui.wizard.name.prompt"), default="macOS Workstation")
-        vm_id = name.lower().replace(" ", "-") + "-" + str(uuid.uuid4())[:4]
+        vm_id = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48] or "macos"
+        vm_id = f"{vm_id}-{uuid.uuid4().hex[:8]}"
 
         # 2. Versão do macOS
         console.print(i18n.t("tui.wizard.version.title"))
@@ -1076,16 +1080,83 @@ class VMTUI:
         auto_start = Confirm.ask(i18n.t("tui.wizard.autostart.confirm"), default=False)
 
         # 8. Geração automática de SMBIOS
-        smbios = GenSMBIOS.generate(macos_version=macos_version)
+        smbios = None if appliance_managed else GenSMBIOS.generate(macos_version=macos_version)
 
         # 9. Download / Preparação do Instalador Apple
         cached_img = MacOSDownloader.get_cached_image_path(macos_version)
         installer_path = str(cached_img) if cached_img else ""
+        installer_policy = "cached" if cached_img else "none"
         if not cached_img:
             if Confirm.ask(i18n.t("tui.wizard.download.confirm", version=macos_version.capitalize()), default=True):
-                img_result = MacOSDownloader.prepare_installer(macos_version)
-                if img_result:
-                    installer_path = str(img_result)
+                installer_policy = "download"
+                if not appliance_managed:
+                    img_result = MacOSDownloader.prepare_installer(macos_version)
+                    if img_result:
+                        installer_path = str(img_result)
+
+        if appliance_managed:
+            # With a single board, let Reims use its ordinary default. Explicit
+            # BDF selection is only sent when the operator had a real choice.
+            if len(gpus) == 1:
+                selected_gpu_slot = None
+            selected_gpu_uuid = None
+            if selected_gpu_slot:
+                try:
+                    inventory = call_agent("host.gpus")
+                except WebAgentUnavailable as exc:
+                    console.print(Panel(
+                        f"O inventário de GPU do agente não foi consultado; nenhum provisionamento local foi iniciado. {exc}",
+                        title="Provisionamento não iniciado", border_style="red",
+                    ))
+                    return
+                items = inventory.get("items") if isinstance(inventory, dict) else None
+                selected = next((
+                    item for item in items or []
+                    if isinstance(item, dict) and item.get("pci_bdf") == selected_gpu_slot
+                ), None)
+                if not selected or not selected.get("selection_supported") or not selected.get("vulkan_uuid"):
+                    console.print(Panel(
+                        "A GPU escolhida ainda não possui seleção por BDF/UUID confirmada pelo agente. "
+                        "Nenhuma VM foi criada; escolha outra placa no painel quando a capacidade estiver disponível.",
+                        title="Seleção de GPU indisponível", border_style="red",
+                    ))
+                    if sys.stdin.isatty():
+                        Prompt.ask(i18n.t("tui.prompt.enter_back"))
+                    return
+                selected_gpu_uuid = selected["vulkan_uuid"]
+
+            try:
+                job_id = self._submit_vm_provision_job({
+                    "idempotency_key": uuid.uuid4().hex,
+                    "id": vm_id,
+                    "name": name,
+                    "macos_version": macos_version,
+                    "vcpus": vcpus,
+                    "ram_gb": ram_gb,
+                    "disk_size_gb": disk_size_gb,
+                    "auto_start": auto_start,
+                    "selected_gpu_bdf": selected_gpu_slot,
+                    "selected_gpu_uuid": selected_gpu_uuid,
+                    "installer_policy": installer_policy,
+                    "fullscreen": True,
+                    "opencore_show_picker": installer_policy != "none",
+                })
+            except WebAgentUnavailable as exc:
+                console.print(Panel(
+                    f"A tarefa não foi enviada ao agente; nenhum provisionamento local foi iniciado. {exc}",
+                    title="Provisionamento não iniciado", border_style="red",
+                ))
+                if sys.stdin.isatty():
+                    Prompt.ask(i18n.t("tui.prompt.enter_back"))
+                return
+            console.print(Panel(
+                f"Provisionamento enviado ao agente. Tarefa: {job_id}. "
+                "Acompanhe o progresso na página Tarefas do painel.",
+                title="VM em preparação", border_style="green",
+            ))
+            if sys.stdin.isatty():
+                Prompt.ask(i18n.t("tui.prompt.enter_back_menu"))
+            return
 
         vm = VMConfig(
             id=vm_id,
@@ -1119,7 +1190,7 @@ class VMTUI:
                 Prompt.ask(i18n.t("tui.prompt.enter_back"))
             return
 
-        self.store.add_vm(vm)
+        self._add_managed_vm(vm)
         console.print(i18n.t("tui.wizard.created", name=name))
 
         if Confirm.ask(i18n.t("tui.wizard.start_install.confirm"), default=True):
@@ -1137,7 +1208,13 @@ class VMTUI:
             if Confirm.ask(i18n.t("tui.resources.change_gpu.confirm"), default=False):
                 self._choose_gpu_for_vm(vm, gpus)
 
-        self.store.update_vm(vm)
+        try:
+            self._update_managed_vm(vm)
+        except (WebAgentUnavailable, ValueError) as exc:
+            console.print(Panel(str(exc), title="Configuração não salva", border_style="red"))
+            if sys.stdin.isatty():
+                Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
+            return
         console.print(i18n.t("tui.resources.updated"))
         Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
 
@@ -1250,243 +1327,157 @@ class VMTUI:
         MacOSDownloader.prepare_installer(chosen_ver)
         Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))
 
+    def _set_auto_start(self, vm: VMConfig, enabled: bool) -> None:
+        """Route appliance catalog writes through its sole catalog agent."""
+        if agent_is_required():
+            if not self._catalog_revision:
+                self._list_managed_vms()
+            result = call_agent("vms.autostart.set", {
+                "vm_id": vm.id,
+                "enabled": enabled,
+                "expected_revision": self._catalog_revision,
+            })
+            if (not isinstance(result, dict) or result.get("enabled") is not enabled
+                    or not isinstance(result.get("revision"), str)):
+                raise WebAgentUnavailable("O agente não confirmou a alteração do auto-start.")
+            self._catalog_revision = result["revision"]
+            vm.auto_start = enabled
+            self._agent_vm_snapshots[vm.id] = VMConfig.from_dict(vm.to_dict())
+            return
+        # A source checkout may run without systemd or the appliance agent.
+        # Keep this developer-only path useful while retaining catalog CAS.
+        self.store.set_auto_start(vm.id, enabled, expected_revision=self.store.revision)
+        self.store.refresh()
+
     def _launch_vm(self, vm: VMConfig, is_installation: bool = False) -> None:
+        """Render the shared lifecycle service in the terminal interface."""
         console.clear()
         console.print(centered_banner(console))
+        if agent_is_required():
+            try:
+                accepted = self._send_agent_vm_action(vm, "start")
+                console.print(f"Solicitação enviada ao agente (operação {accepted['job_id']}).")
+            except WebAgentUnavailable as exc:
+                console.print(Panel(str(exc), title="Inicialização não executada", border_style="red"))
+            if sys.stdin.isatty():
+                Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
+            return
+        result = self.lifecycle_service.start(
+            vm,
+            force_installation=is_installation,
+            on_event=self._render_launch_event,
+        )
+        if result.state == "completed":
+            if sys.stdin.isatty():
+                Prompt.ask(i18n.t("tui.prompt.enter_return_manager"))
+            return
 
-        if not self.lock.acquire(vm.name, ram_gb=vm.ram_gb, vm_id=vm.id):
-            error = self.lock.last_error or {}
+        code = result.error_code or "launch_failed"
+        if code == "admission_failed":
+            error = result.details or {}
             if error.get("reason") == "already_running":
                 console.print(i18n.t("tui.launch.vm_already_running", name=vm.name))
-                Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
-                return
-            if "requested_gb" not in error:
+            elif "requested_gb" not in error:
                 console.print(i18n.t(
                     "tui.launch.memory_check_failed",
                     error=error.get("reason", "erro inesperado"),
                 ))
-                Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
-                return
-            console.print(Panel(
-                i18n.t(
-                    "tui.launch.insufficient_memory",
-                    requested=error.get("requested_gb", vm.ram_gb),
-                    available=error.get("available_gb", 0),
-                    reserve=error.get("host_reserve_gb", 0),
-                    active=", ".join(error.get("active_vms", [])) or "nenhuma",
-                ),
-                border_style="red",
-            ))
+            else:
+                console.print(Panel(
+                    i18n.t(
+                        "tui.launch.insufficient_memory",
+                        requested=error.get("requested_gb", vm.ram_gb),
+                        available=error.get("available_gb", 0),
+                        reserve=error.get("host_reserve_gb", 0),
+                        active=", ".join(error.get("active_vms", [])) or "nenhuma",
+                    ),
+                    border_style="red",
+                ))
             Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
             return
 
-        try:
-            console.print(i18n.t("tui.launch.starting", name=vm.name, version=vm.macos_version.capitalize()))
-
-            found_reims = find_reims_dir()
-            reims_dir = str(found_reims) if found_reims else None
-
-            # ------------------------------------------------------------------
-            # Verificação prévia de hardware (Vulkan 1.2+):
-            # O Reims vGPU é estritamente obrigatório e exige aceleração física Vulkan.
-            # Se o host estiver em ambiente emulado (ex: QEMU aninhado sem passthrough)
-            # ou em GPU legada sem Vulkan, interrompemos antes de iniciar a VM.
-            # ------------------------------------------------------------------
-            vulkan_ok, vulkan_msg = GPUChecker.check_vulkan_host_readiness()
-            if not vulkan_ok:
-                console.print(Panel(
-                    i18n.t("tui.launch.vulkan_blocked", diag=vulkan_msg),
-                    border_style="red",
-                ))
-                if sys.stdin.isatty():
-                    Prompt.ask(i18n.t("tui.prompt.enter_return"))
-                return
-
-            # Garante que o binário da release esteja instalado antes de iniciar a VM.
-            if reims_dir and not self._ensure_reims_release(reims_dir):
-                console.print(i18n.t("tui.launch.no_qemu"))
-                Prompt.ask(i18n.t("tui.prompt.enter_continue"))
-                return
-
-            # Resolva o armazenamento persistente. Catálogos legados podem
-            # apontar para uma árvore antiga do reims-vgpu que já foi movida;
-            # nesse caso, recuperamos disco e OpenCore do registro nativo do
-            # reims-ctl para preservar o boot que já funcionava.
-            custom_dir = None
-            recovery_error = ""
-            configured_dir = (
-                Path(vm.disk_path).expanduser().parent if vm.disk_path else None
-            )
-            if (
-                vm.disk_path
-                and Path(vm.disk_path).expanduser().is_file()
-                and configured_dir
-                and (configured_dir / "OpenCore.qcow2").is_file()
-            ):
-                custom_dir = configured_dir
-            else:
-                custom_dir, recovery_error = recover_reimsctl_vm_storage(vm)
-                if custom_dir:
-                    vm.disk_path = str(custom_dir / "macos.qcow2")
-                    self.store.update_vm(vm)
-                    console.print(f"[green]✔ {recovery_error}[/green]")
-                elif configured_dir and configured_dir.exists():
-                    # Mantém o caminho real no diagnóstico, em vez de imprimir
-                    # "layout incompleto em None".
-                    custom_dir = configured_dir
-
-            # ------------------------------------------------------------------
-            # Fase do ciclo de vida da instalação do macOS.
-            # Esta decisão governa TRÊS comportamentos críticos:
-            #   1. acoplamento da mídia de instalação (BaseSystem.img);
-            #   2. como um reboot do convidado é tratado (extra_args do vm.toml);
-            #   3. a Sincronização de Energia do Host (reboot/poweroff do PC).
-            # Enquanto a instalação não estiver concluída, o host NUNCA é
-            # reiniciado — reboots intermediários da Apple ficam contidos no QEMU.
-            # ------------------------------------------------------------------
-            probe = InstallProbe.probe(vm.disk_path) if vm.disk_path else DiskProbe()
-            policy = InstallPhaseResolver.build_policy(
-                vm, force_installation=is_installation, probe=probe
-            )
-            vm.install_phase = policy.phase.value
-            vm.install_evidence = classify_evidence(probe).value
-            vm.last_booted_at = datetime.datetime.now().isoformat(timespec="seconds")
-            self.store.update_vm(vm)
-
-            console.print(i18n.t("tui.launch.install_state", phase=phase_label(policy.phase)))
-            console.print(f"[dim]{policy.reason}[/dim]")
-            if policy.is_installing:
-                console.print(i18n.t("tui.launch.reboots_absorbed"))
-
-            # Mídia de instalação só é anexada enquanto a instalação não terminou.
-            installer_img = None
-            if policy.attach_installer:
-                for cand_img in [
-                    custom_dir / "BaseSystem.img" if custom_dir else None,
-                    CONFIG_DIR / "images" / vm.macos_version / "BaseSystem.img",
-                    Path(os.path.expanduser(f"~/.config/vhackintosh/images/{vm.macos_version}/BaseSystem.img")),
-                ]:
-                    if cand_img and cand_img.exists():
-                        installer_img = str(cand_img)
-                        break
-
-            # O rail É o caminho: existe exatamente um motor de vídeo, e é este.
-            # O antigo motor nativo (`-vga std`, emulado) foi removido, não
-            # guardado — a única coisa que ele fazia era ser para onde a VM ia
-            # quando faltava um diretório na ISO, e foi por isso que o appliance
-            # ficou rodando sem aceleração sem ninguém perceber.
-            #
-            # Logo, `use_reims_rail=False` não significa "degrada para outro
-            # motor", significa recusa de iniciar: imprime-se o motivo e para tudo.
-            use_reims_rail, rail_reason = decide_reimsctl(
-                reims_dir, vm.macos_version, custom_dir
-            )
-            if not use_reims_rail:
-                if recovery_error and "layout persistente incompleto" in rail_reason:
-                    rail_reason = f"{rail_reason}; {recovery_error}"
-                console.print(Panel(
-                    i18n.t("tui.launch.rail_unavailable", reason=rail_reason),
-                    border_style="red",
-                ))
-                if sys.stdin.isatty():
-                    Prompt.ask(i18n.t("tui.prompt.enter_continue"))
-                return
-            # --- Delegação ao reims-ctl (árvore nova do reims-vgpu) -----------
-            # O appliance não monta argv de QEMU: grava o vm.toml no layout do
-            # reims-ctl (cpus/RAM sugeridos pelo host, Haswell-noTSX fixo,
-            # installer da fase atual), registra a VM e delega o start. O QMP
-            # nasce em <vmdir>/qmp.sock — socket fixo que o monitor observa,
-            # mesmo contrato do antigo rail, sem argv de QEMU pra manter aqui.
-            env_vars = os.environ.copy()
-            reims_ctl.apply_test_graphics_environment(env_vars)
-            self._apply_gpu_environment(vm, env_vars)
-
-            installer_path = (
-                installer_img if (installer_img and policy.attach_installer) else None
-            )
-            try:
-                reims_ctl.write_vm_toml(vm, installer=installer_path)
-            except reims_ctl.GPUSelectionError as exc:
-                console.print(Panel(
-                    i18n.t("tui.launch.gpu_selection_failed", error=exc),
-                    border_style="red",
-                ))
-                if sys.stdin.isatty():
-                    Prompt.ask(i18n.t("tui.prompt.enter_continue"))
-                return
-            reims_ctl.ensure_registered(vm)
-
-            ctl_bin = reims_ctl.reims_ctl_bin()
-            if not ctl_bin:
-                console.print(Panel(
-                    i18n.t("tui.launch.ctl_missing"),
-                    border_style="red",
-                ))
-                if sys.stdin.isatty():
-                    Prompt.ask(i18n.t("tui.prompt.enter_continue"))
-                return
-            start_cmd = [ctl_bin, "start", vm.id]
-
-            # A janela do reims-vgpu (winit) fala Wayland direto: sem conexão de
-            # display ela não abre. No appliance a TUI está num TTY, então o
-            # start é envolvido numa sessão kiosk — quando já existe sessão
-            # (ex.: compositor do host), não mexemos em nada.
-            start_cmd, sem_sessao = reims_ctl.session_argv(
-                [ctl_bin, "start", vm.id], env_vars
-            )
-            if sem_sessao:
-                console.print(i18n.t("tui.launch.no_waysession"))
-
-            # Um reboot do convidado encerra o QEMU (vm.toml:
-            # extra_args = ["-action", "reboot=shutdown"]) e o laço de sessão
-            # relança — a alternativa é o DeviceReset no lugar, que congela o
-            # host no vkQueueWaitIdle com o BQL preso (a troca já era assim no
-            # antigo rail via QEMU_REBOOT_ACTION=exit).
-            from core.power import QMPPowerMonitor
-            from types import SimpleNamespace
-
-            def _new_rail_monitor():
-                # Um por boot — ver o docstring de `run_rail_session`.
-                return QMPPowerMonitor(sock_path=str(reims_ctl.qmp_socket(vm)))
-
-            def _relaunch_notice(step: int) -> None:
-                if step < 0:
-                    console.print(i18n.t("tui.launch.too_many_reboots"))
-                else:
-                    console.print(i18n.t("tui.launch.relaunching", step=step))
-
-            # O vm.toml pede `-action reboot=shutdown`: um reboot do convidado
-            # encerra o QEMU e o laço é quem o recoloca — sem ele a instalação
-            # morreria no primeiro reboot do instalador.
-            total_resets, last_reason = run_rail_session(
-                launch=lambda: reims_ctl.ReimsCtlSession(
-                    start_cmd, env=env_vars, on_ready=lambda: self._usb_auto_attach(vm)
-                ),
-                make_monitor=_new_rail_monitor,
-                is_installing=policy.is_installing,
-                on_relaunch=_relaunch_notice,
-            )
-
-            # `_apply_host_power_policy` lê `reset_count`/`last_reason` de um
-            # único objeto; entregue a sessão inteira, não o último boot.
-            self._apply_host_power_policy(
-                vm,
-                policy,
-                SimpleNamespace(
-                    reset_count=total_resets,
-                    last_reason=last_reason,
-                    shutdown_count=0,
-                ),
-            )
-
-            # Reavalia a fase após o encerramento e oferece concluir a instalação.
-            self._post_vm_phase_update(vm, policy)
-
-            console.print(i18n.t("tui.launch.finished"))
+        if code == "vulkan_blocked":
+            console.print(Panel(
+                i18n.t("tui.launch.vulkan_blocked", diag=result.message or ""),
+                border_style="red",
+            ))
             if sys.stdin.isatty():
-                Prompt.ask(i18n.t("tui.prompt.enter_return_manager"))
-        finally:
-            self.lock.release()
+                Prompt.ask(i18n.t("tui.prompt.enter_return"))
+            return
+        if code == "release_unavailable":
+            console.print(i18n.t("tui.launch.no_qemu"))
+            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+            return
+        if code == "runtime_unavailable":
+            console.print(Panel(
+                i18n.t("tui.launch.rail_unavailable", reason=result.message or ""),
+                border_style="red",
+            ))
+        elif code == "gpu_selection_failed":
+            console.print(Panel(
+                i18n.t("tui.launch.gpu_selection_failed", error=result.message or ""),
+                border_style="red",
+            ))
+        elif code == "ctl_missing":
+            console.print(Panel(i18n.t("tui.launch.ctl_missing"), border_style="red"))
+        else:
+            console.print(Panel(result.message or "Falha ao iniciar a VM.", border_style="red"))
+
+        interaction = (result.details or {}).get("interaction")
+        if interaction == "continue":
+            Prompt.ask(i18n.t("tui.prompt.enter_continue"))
+        elif interaction == "continue_short":
+            Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))
+        elif interaction == "return" and sys.stdin.isatty():
+            Prompt.ask(i18n.t("tui.prompt.enter_return"))
+
+    @staticmethod
+    def _render_launch_event(name: str, payload: dict) -> None:
+        if name == "starting":
+            console.print(i18n.t(
+                "tui.launch.starting",
+                name=payload["name"],
+                version=payload["macos_version"].capitalize(),
+            ))
+        elif name == "storage_recovered":
+            console.print(f"[green]✔ {payload['message']}[/green]")
+        elif name == "install_policy":
+            phase = normalize_phase(payload["phase"])
+            console.print(i18n.t("tui.launch.install_state", phase=phase_label(phase)))
+            console.print(f"[dim]{payload['reason']}[/dim]")
+            if payload["is_installing"]:
+                console.print(i18n.t("tui.launch.reboots_absorbed"))
+        elif name == "no_graphical_session":
+            console.print(i18n.t("tui.launch.no_waysession"))
+        elif name == "relaunching":
+            step = payload["step"]
+            if step < 0:
+                console.print(i18n.t("tui.launch.too_many_reboots"))
+            else:
+                console.print(i18n.t("tui.launch.relaunching", step=step))
+        elif name == "finished":
+            console.print(i18n.t("tui.launch.finished"))
+
+    @staticmethod
+    def _send_agent_vm_action(
+        vm: VMConfig, operation: str, *, confirmation: str | None = None,
+    ) -> dict:
+        """Submit a fixed VM operation; never tunnel to QEMU or fall back."""
+        result = call_agent("vms.action", {
+            "vm_id": vm.id,
+            "action": {
+                "operation": operation,
+                "expected_revision": None,
+                "confirmation": confirmation,
+                "idempotency_key": uuid.uuid4().hex,
+            },
+        })
+        if not isinstance(result, dict) or not isinstance(result.get("job_id"), str):
+            raise WebAgentUnavailable(
+                "O agente retornou uma resposta inválida para a operação de VM; nenhuma ação local foi tentada."
+            )
+        return result
+
 
     def _apply_host_power_policy(self, vm: VMConfig, policy: LaunchPolicy, monitor) -> None:
         """
@@ -1497,8 +1488,13 @@ class VMTUI:
         reiniciado/desligado — era exatamente isso que interrompia a instalação.
         """
         if getattr(monitor, "reset_count", 0):
-            vm.install_reboots = int(getattr(vm, "install_reboots", 0)) + monitor.reset_count
-            self.store.update_vm(vm)
+            try:
+                self._patch_managed_vm(vm, {
+                    "install_reboots": int(getattr(vm, "install_reboots", 0)) + monitor.reset_count,
+                })
+            except WebAgentUnavailable as exc:
+                console.print(Panel(str(exc), title="Estado da VM não salvo", border_style="red"))
+                return
 
         if not policy.enable_host_power_sync:
             console.print(i18n.t("tui.power.install_in_progress"))
@@ -1524,29 +1520,52 @@ class VMTUI:
 
         probe = InstallProbe.probe(vm.disk_path) if vm.disk_path else DiskProbe()
         console.print(i18n.t("tui.post.vm_disk_probe", probe=summarize_probe(probe)))
-        vm.install_evidence = classify_evidence(probe).value
+        evidence = classify_evidence(probe).value
 
         if not probe.looks_like_complete_install:
-            vm.install_phase = InstallPhase.INSTALLING.value
-            self.store.update_vm(vm)
+            try:
+                self._patch_managed_vm(vm, {
+                    "install_evidence": evidence,
+                    "install_phase": InstallPhase.INSTALLING.value,
+                })
+            except WebAgentUnavailable as exc:
+                console.print(Panel(str(exc), title="Fase não salva", border_style="red"))
+                return
             console.print(i18n.t("tui.post.not_complete"))
             console.print(i18n.t("tui.post.sync_stays_off"))
             return
 
         console.print(i18n.t("tui.post.detected_installed"))
         if not sys.stdin.isatty():
-            vm.install_phase = InstallPhase.INSTALLING.value
-            self.store.update_vm(vm)
+            try:
+                self._patch_managed_vm(vm, {
+                    "install_evidence": evidence,
+                    "install_phase": InstallPhase.INSTALLING.value,
+                })
+            except WebAgentUnavailable as exc:
+                console.print(Panel(str(exc), title="Fase não salva", border_style="red"))
             return
 
         if Confirm.ask(i18n.t("tui.post.confirm_complete"), default=True):
-            vm.install_phase = InstallPhase.INSTALLED.value
-            vm.install_reboots = int(getattr(vm, "install_reboots", 0))
-            self.store.update_vm(vm)
+            try:
+                self._patch_managed_vm(vm, {
+                    "install_evidence": evidence,
+                    "install_phase": InstallPhase.INSTALLED.value,
+                    "install_reboots": int(getattr(vm, "install_reboots", 0)),
+                })
+            except WebAgentUnavailable as exc:
+                console.print(Panel(str(exc), title="Fase não salva", border_style="red"))
+                return
             console.print(i18n.t("tui.post.sync_enabled"))
         else:
-            vm.install_phase = InstallPhase.INSTALLING.value
-            self.store.update_vm(vm)
+            try:
+                self._patch_managed_vm(vm, {
+                    "install_evidence": evidence,
+                    "install_phase": InstallPhase.INSTALLING.value,
+                })
+            except WebAgentUnavailable as exc:
+                console.print(Panel(str(exc), title="Fase não salva", border_style="red"))
+                return
             console.print(i18n.t("tui.post.kept_installing"))
 
     def _apply_gpu_environment(self, vm: VMConfig, env_vars: dict) -> None:

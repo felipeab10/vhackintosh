@@ -15,7 +15,7 @@ from rich.text import Text
 
 APP_NAME = "vHackintosh"
 APP_SUBTITLE = "Dedicated Linux Appliance & macOS VM Manager"
-VERSION = "1.0.0"
+VERSION = "1.3.0"
 
 # Kept for callers that imported the original banner art directly.
 ASCII_LOGO = r"""

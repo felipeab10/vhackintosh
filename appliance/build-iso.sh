@@ -208,6 +208,19 @@ rsync -av \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     --exclude='out' \
+    --exclude='node_modules/' \
+    --exclude='.env*' \
+    --exclude='.npmrc' \
+    --exclude='.netrc' \
+    --exclude='.git-credentials' \
+    --exclude='.credentials' \
+    --exclude='credentials.json' \
+    --exclude='*.key' \
+    --exclude='*.pem' \
+    --exclude='*.p12' \
+    --exclude='*.pfx' \
+    --exclude='*.crt' \
+    --exclude='*.token' \
     "${PROJECT_ROOT}/bin" \
     "${PROJECT_ROOT}/cli" \
     "${PROJECT_ROOT}/core" \
@@ -218,6 +231,12 @@ rsync -av \
     "${PROJECT_ROOT}/README.md" \
     "${PROJECT_ROOT}/.git" \
     "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/"
+
+# The source checkout can carry personal HTTP headers, credential helpers, or
+# embedded tokens in .git/config. Rebuild only the canonical upstream metadata
+# needed by the appliance updater before the checkout enters the ISO.
+bash "${SCRIPT_DIR}/lib/sanitize_git_config.sh" \
+    "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh"
 
 # OVMF_CODE.fd sempre mantém o mesmo tamanho. Force a cópia para que uma
 # imagem recompilada com o mesmo mtime/tamanho do artefato anterior não fique
@@ -278,7 +297,14 @@ fi
 
 echo -e "${BLUE}▶ Baixando o reims-vgpu pré-compilado (${REIMS_RELEASE}) de ${REIMS_REPO}...${NC}"
 echo -e "  URL: ${CYAN}${RELEASE_URL}${NC}"
-REIMS_TMP_TAR="$(mktemp "${TMPDIR:-/tmp}/reims-vgpu-release-XXXXXX.tar.gz")"
+# The release archive can be hundreds of MiB. Prefer /var/tmp (same backing
+# filesystem as BUILD_WORK) instead of the appliance host's often-small tmpfs.
+REIMS_TMP_DIR="${TMPDIR:-/var/tmp}"
+if [ ! -d "${REIMS_TMP_DIR}" ] || [ ! -w "${REIMS_TMP_DIR}" ]; then
+    echo -e "${RED}Erro: diretório temporário indisponível ou sem permissão: ${REIMS_TMP_DIR}${NC}"
+    exit 1
+fi
+REIMS_TMP_TAR="$(mktemp "${REIMS_TMP_DIR%/}/reims-vgpu-release-XXXXXX.tar.gz")"
 if command -v curl >/dev/null 2>&1; then
     _DL=(curl -fL --progress-bar -o "${REIMS_TMP_TAR}" "${RELEASE_URL}")
 elif command -v wget >/dev/null 2>&1; then
@@ -342,6 +368,26 @@ printf '%s\n' \
     "asset=${RELEASE_ASSET_NAME}" > "${REIMS_DEST}/SOURCE-PROVENANCE.txt"
 
 echo -e "${BLUE}▶ Modo release: o appliance instala somente o reims-vgpu pré-compilado.${NC}"
+
+# Package the management plane only after its tagged Reims runtime is present:
+# the web bundle records and validates the exact runtime release in the ISO.
+# Build in disposable work so local node_modules, env files, and Python envs
+# never enter the appliance image.
+echo -e "${BLUE}▶ Empacotando interface e runtime do gerenciador web...${NC}"
+bash "${SCRIPT_DIR}/lib/package_web_manager.sh" \
+    "${PROJECT_ROOT}" \
+    "${ARCHISO_PROFILE}/airootfs" \
+    "${ARCHISO_PROFILE}/.web-package-staging"
+
+# Enable both services in live and installed appliances; no desktop login
+# hook is involved in starting the management plane.
+SYSTEMD_WANTS="${ARCHISO_PROFILE}/airootfs/etc/systemd/system/multi-user.target.wants"
+mkdir -p "${SYSTEMD_WANTS}"
+install -m 0644 \
+    "${ARCHISO_PROFILE_SOURCE}/airootfs/etc/systemd/system/vhackintosh-vm@.service" \
+    "${ARCHISO_PROFILE}/airootfs/etc/systemd/system/vhackintosh-vm@.service"
+ln -sfn ../vhackintosh-agent.service "${SYSTEMD_WANTS}/vhackintosh-agent.service"
+ln -sfn ../vhackintosh-web.service "${SYSTEMD_WANTS}/vhackintosh-web.service"
 
 # 6. Permissões de execução dos scripts da appliance
 chmod +x "${ARCHISO_PROFILE}/airootfs/usr/local/bin/"* || true

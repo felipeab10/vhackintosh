@@ -52,6 +52,7 @@ def make_pair(base: Path, *, engine_sources=False):
 
 
 def test_menu_update_only_updates_vhackintosh_sources():
+    import contextlib
     from unittest.mock import patch
     from core.updater import RepositoryUpdate
     app = Path("/opt/vhackintosh")
@@ -60,6 +61,7 @@ def test_menu_update_only_updates_vhackintosh_sources():
          patch.object(SystemUpdater, "_preflight", return_value=(result, app)), \
          patch.object(SystemUpdater, "_apply", return_value=result) as apply, \
          patch.object(SystemUpdater, "_install_waysession") as install_waysession, \
+         patch("core.update_guard.maintenance_window", return_value=contextlib.nullcontext()), \
          patch("core.i18n.t", side_effect=lambda key, **kwargs: key), \
          patch("core.updater.console.print"):
         assert SystemUpdater.run_vhackintosh_update()
@@ -122,6 +124,78 @@ def test_appliance_update_requires_root():
             assert exc.repo == "permissions" and "requires root" in str(exc)
         else:
             raise AssertionError("non-root appliance update should be rejected")
+
+
+def test_default_repository_update_uses_appliance_maintenance_gate():
+    from unittest.mock import patch
+    from core.update_guard import MaintenanceBlocked
+
+    with patch("core.updater.os.geteuid", return_value=0), \
+         patch("core.update_guard.maintenance_window", side_effect=MaintenanceBlocked("VMs ativas: macOS")), \
+         patch.object(SystemUpdater, "_update_repositories_unlocked") as update:
+        try:
+            SystemUpdater.update_repositories()
+        except UpdateError as exc:
+            assert exc.repo == "maintenance"
+            assert "VMs ativas" in str(exc)
+        else:
+            raise AssertionError("appliance source update must be blocked while a VM is active")
+        update.assert_not_called()
+
+
+def test_menu_update_reports_active_vm_maintenance_refusal():
+    from unittest.mock import patch
+    from core.update_guard import MaintenanceBlocked
+
+    with patch("core.updater.os.geteuid", return_value=0), \
+         patch("core.update_guard.maintenance_window", side_effect=MaintenanceBlocked("VMs ativas: macOS")), \
+         patch("core.i18n.t", side_effect=lambda key, **kwargs: f"{key} {kwargs}"), \
+         patch("core.updater.console.print") as output, \
+         patch.object(SystemUpdater, "_run_vhackintosh_update_locked") as update:
+        assert not SystemUpdater.run_vhackintosh_update()
+        update.assert_not_called()
+        assert any("VMs ativas" in str(call) for call in output.call_args_list)
+
+
+def test_web_bundle_activation_uses_vm_maintenance_gate():
+    from unittest.mock import patch
+    from core.update_guard import MaintenanceBlocked
+
+    with patch("core.updater.os.geteuid", return_value=0), \
+         patch("core.update_guard.maintenance_window", side_effect=MaintenanceBlocked("VMs ativas: macOS")), \
+         patch("core.web_bundle.promote_bundle") as promote:
+        try:
+            SystemUpdater.promote_web_bundle(
+                Path("candidate"), jobs_schema=1, runtime_release="v1.0.0"
+            )
+        except UpdateError as exc:
+            assert exc.repo == "maintenance"
+        else:
+            raise AssertionError("bundle activation must be blocked while a VM is active")
+        promote.assert_not_called()
+
+
+def test_web_bundle_restart_failure_restores_previous_pointer():
+    import contextlib
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    with patch("core.updater.os.geteuid", return_value=0), \
+         patch("core.update_guard.maintenance_window", return_value=contextlib.nullcontext()), \
+         patch("core.web_bundle.current_bundle_id", return_value="a" * 64), \
+         patch("core.web_bundle.promote_bundle", return_value=SimpleNamespace(bundle_id="b" * 64)), \
+         patch("core.web_bundle.point_to_bundle") as rollback, \
+         patch.object(SystemUpdater, "_restart_web_services", side_effect=[RuntimeError("new service failed"), None]):
+        try:
+            SystemUpdater.promote_web_bundle(
+                Path("candidate"), jobs_schema=1, runtime_release="v1.0.0"
+            )
+        except UpdateError as exc:
+            assert "previous bundle was restored" in str(exc)
+        else:
+            raise AssertionError("a failed service restart must not report activation success")
+        rollback.assert_called_once()
+        assert rollback.call_args.args[0] == "a" * 64
 
 
 def test_fast_forward_and_idempotence(base: Path):

@@ -2,26 +2,26 @@
 
 > **Dedicated Linux Appliance & macOS VM Manager powered by KVM and Reims vGPU**
 
-O **vHackintosh** é uma solução completa em formato *Appliance / Kiosk OS* para transformar qualquer computador compatível em uma estação de trabalho macOS de alta performance, utilizando virtualização KVM e aceleração gráfica paravirtualizada por hardware via **Reims vGPU (Metal over Vulkan)** ou **VFIO Passthrough**.
+O **vHackintosh** é uma solução em formato *Appliance / Kiosk OS* para executar VMs macOS sobre KVM, com aceleração gráfica paravirtualizada via **Reims vGPU (Metal over Vulkan)**. O painel ainda não oferece passthrough VFIO.
 
 ---
 
 ## ✨ Principais Recursos
 
-- 🖥 **Kiosk Mode Nativo (Console Experience):**
-  - Execução direta em **100% Fullscreen** com captura exclusiva de teclado e mouse.
-  - **Sincronização de Energia Bidirecional:** Desligar ou reiniciar o macOS desliga ou reinicia a máquina física.
+- 🖥 **Appliance e painel web:**
+  - O painel gerencia VMs e telemetria do host; a URL de acesso é exibida no console/TUI do appliance.
+  - No painel, energia é isolada por padrão: desligar ou reiniciar o macOS afeta somente aquela VM.
 - ⚡ **Auto-Start com Interceptador de 5 Segundos:**
   - Inicialização automática da sua VM principal no boot.
   - Pressione `[ BARRA DE ESPAÇO ]` durante a contagem para abrir o Gerenciador de VMs.
-- 🎯 **Gerenciador Multi-VMs Exclusivo:**
+- 🎯 **Gerenciador Multi-VMs:**
   - Cadastre e gerencie múltiplas versões do macOS (Tahoe, Sequoia, Sonoma, Ventura).
-  - Execução estritamente exclusiva (apenas 1 VM ativa por vez).
+  - O painel permite VMs simultâneas quando há recursos disponíveis e bloqueia conflitos conhecidos de disco gravável e USB.
 - 🧠 **Hardware Advisor & Auto-Tuning:**
   - Detecção de topologia de CPU (P-Cores vs E-Cores e threads) e cálculo de memória RAM segura para o host.
-- 🎮 **GPU Compatibility Checker & VFIO Helper:**
+- 🎮 **GPU Compatibility Checker:**
   - Verificação de compatibilidade Vulkan 1.2+ para Reims vGPU.
-  - Mapeamento automático de grupos IOMMU e isolamento `vfio-pci`.
+  - O painel permite selecionar uma GPU Reims quando a associação BDF/UUID é confirmada. VFIO ainda não está disponível no painel.
 - 🔑 **GenSMBIOS Integrado:**
   - Geração automática de números de série válidos da Apple (Serial, MLB, SmUUID, ROM).
   - Injeção in-place no arquivo `config.plist` do OpenCore.
@@ -65,6 +65,21 @@ vhackintosh/
 ---
 
 ## 🚀 Como Usar
+
+### Painel web de gerenciamento
+
+No appliance, consulte no console/TUI o endereço anunciado pelo serviço web.
+No primeiro acesso, crie a conta administrativa uma vez pelo console local com
+`vhackintosh-web-admin setup`; depois entre pelo navegador com usuário e senha.
+A ativação do produto é opcional e pode ser solicitada depois do login. O painel cria VMs em tarefas
+assíncronas, acompanha métricas e controla a energia de cada convidado. O
+comportamento padrão é `vm-only`: ações de energia do macOS não desligam nem
+reiniciam o host. A política kiosk de sincronização de energia do fluxo legado
+da TUI não é uma opção disponível no painel.
+
+Para executar o painel contra o host durante o desenvolvimento, consulte
+[`docs/web-manager-dev-host.md`](docs/web-manager-dev-host.md). Esse modo usa o
+catálogo real do usuário, mas mantém os serviços de desenvolvimento no loopback.
 
 ### Iniciar o gerenciador
 

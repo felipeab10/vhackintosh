@@ -335,7 +335,7 @@ class SeedCargoGitCacheTests(unittest.TestCase):
 
 
 class BuildIsoPackagesTheCachesTests(unittest.TestCase):
-    """A ISO precisa empacotar os dois caches, senão nada disso roda."""
+    """ISO release-only não precisa carregar caches Cargo de compilação."""
 
     def setUp(self):
         self.script = (
@@ -343,15 +343,13 @@ class BuildIsoPackagesTheCachesTests(unittest.TestCase):
         ).read_text()
 
     def test_packages_git_db_but_not_the_huge_checkouts(self):
-        self.assertIn("reims-vgpu-cargo-git", self.script)
-        self.assertIn("git/db/metal2vulkan", self.script)
-        # `checkouts/` tem ~9,3 GB de árvores de trabalho por revisão; copiar
-        # isso inviabiliza a ISO e é desnecessário (o Cargo extrai do `db`).
-        self.assertNotIn("checkouts/${_name}", self.script)
+        self.assertNotIn("reims-vgpu-cargo-git", self.script)
+        self.assertNotIn("git/db/metal2vulkan", self.script)
+        self.assertIn("somente o reims-vgpu pré-compilado", self.script)
 
     def test_packages_registry_cache(self):
-        self.assertIn("reims-vgpu-cargo-registry", self.script)
-        self.assertIn('registry/${_sub}', self.script)
+        self.assertNotIn("reims-vgpu-cargo-registry", self.script)
+        self.assertNotIn('registry/${_sub}', self.script)
 
     def test_payload_paths_match_runtime_expectation(self):
         """O destino no airootfs vira a raiz da ISO; o runtime tem de achar."""
@@ -359,7 +357,7 @@ class BuildIsoPackagesTheCachesTests(unittest.TestCase):
             reims_build.GIT_CACHE_PAYLOAD,
             reims_build.REGISTRY_CACHE_PAYLOAD,
         ):
-            self.assertIn(f"/airootfs{payload}", self.script)
+            self.assertNotIn(f"/airootfs{payload}", self.script)
 
 
 if __name__ == "__main__":
