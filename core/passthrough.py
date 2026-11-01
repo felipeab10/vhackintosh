@@ -13,11 +13,11 @@ mostrar.
 
 Decisões do design:
 
-- Conexões **curtas**: conecta, manda um comando, desconecta. O monitor de
-  energia (`core/power.py`) mantém a conexão dele aberta o tempo todo; o QEMU
-  aceita múltiplos clientes QMP simultâneos, então esta conexão curta convive
-  com aquela — por isso este módulo tem o seu próprio cliente e não importa
-  nada de `power.py`.
+- Não presumir que o servidor QMP do runtime aceita múltiplos clientes. Dentro
+  de um processo, todos os consumidores compartilham o broker de
+  `core.passthrough`; o supervisor expõe apenas os controles necessários por
+  um relay Unix local (`core.qmp.relay`) para o agente web. Assim o processo
+  supervisor mantém a única conexão direta com o socket QMP da VM.
 - **Sem `bus`/`addr` no `device_add`**: só `driver`, `vendorid`, `productid` e
   `id`. O QEMU acha o controlador USB que o próprio reims-ctl criou
   (`qdev_find_default_bus`) e posiciona o dispositivo sozinho.
@@ -33,104 +33,96 @@ CLI de smoke: `python3 -m core.passthrough list|attach|detach`.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from core.qmp.broker import QmpBroker, QmpError as BrokerQmpError
+
 # ---------------------------------------------------------------------------
-# Cliente QMP (conexão curta)
+# Broker QMP compartilhado por VM
 # ---------------------------------------------------------------------------
 
 
 class QmpError(Exception):
-    """Falha do monitor QMP.
-
-    `message` preserva o texto exato: para erro de comando é o `desc` que o
-    QEMU devolveu (em inglês, repassado sem tradução nem truncamento); para
-    falha de socket é a explicação em pt-BR do que deu errado.
-    """
+    """Falha do monitor QMP, preservando a mensagem de erro do QEMU."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
 
 
+_BROKERS_LOCK = threading.RLock()
+_BROKERS: dict[str, QmpBroker] = {}
+
+
+def _broker_for(sock_path: str | Path, timeout: float) -> QmpBroker:
+    """Retorna o único broker deste processo para o socket, sem retry implícito."""
+    canonical = os.path.abspath(os.fspath(sock_path))
+    with _BROKERS_LOCK:
+        broker = _BROKERS.get(canonical)
+        if broker is not None:
+            if not broker.connected:
+                raise QmpError(
+                    f"Conexão QMP de {canonical} foi encerrada; use reconnect() "
+                    "após confirmar que a VM continua ativa."
+                )
+            return broker
+        broker = QmpBroker(canonical, timeout=timeout)
+        try:
+            broker.connect()
+        except BrokerQmpError as exc:
+            raise QmpError(str(exc)) from exc
+        _BROKERS[canonical] = broker
+        return broker
+
+
+def close_qmp_broker(sock_path: str | Path) -> None:
+    """Fecha e remove explicitamente o broker de uma VM encerrada."""
+    canonical = os.path.abspath(os.fspath(sock_path))
+    with _BROKERS_LOCK:
+        broker = _BROKERS.pop(canonical, None)
+    if broker is not None:
+        broker.close()
+
+
+def close_qmp_brokers_for_vm(vm_id: str) -> None:
+    """Libera o monitor local da VM quando seu processo QEMU termina."""
+    with _BROKERS_LOCK:
+        paths = [
+            path for path in _BROKERS
+            if Path(path).parent.name == vm_id or Path(path).name == f"{vm_id}.qmp"
+        ]
+    for path in paths:
+        close_qmp_broker(path)
+
+
 class QmpClient:
-    """Cliente QMP de conexão curta para o socket unix de uma VM.
+    """Adaptador compatível sobre o broker persistente compartilhado por VM.
 
-    Uso::
-
-        with QmpClient("/home/u/.config/vhackintosh/vms/tahoe/qmp.sock") as qmp:
-            qmp.command("device_add", driver="usb-host", ...)
-
-    No `connect()` lê o *greeting*, negocia `qmp_capabilities` e só então
-    aceita comandos. Todo `connect`/`recv` usa `self.timeout` (5s por padrão):
-    nenhum caminho bloqueia para sempre.
-
-    O QEMU atende vários clientes QMP ao mesmo tempo, então esta conexão curta
-    não disputa nada com o monitor de energia conectado em paralelo.
+    `close()` libera somente o handle; o registry conserva a conexão enquanto
+    a VM vive. O socket tem um leitor e uma fila de eventos, mesmo quando TUI e
+    outros serviços usam o adaptador no mesmo processo.
     """
-
-    # Teto de mensagens lidas à espera de `return`/`error`. Eventos assíncronos
-    # (`{"event": ...}`) são ignorados no meio, mas o laço jamais pode ser
-    # infinito.
-    _MAX_MSGS_PER_REPLY = 512
 
     def __init__(self, sock_path: str | Path, timeout: float = 5.0) -> None:
         self.sock_path = str(sock_path)
         self.timeout = timeout
-        self._sock: Optional[socket.socket] = None
-        self._buffer = b""
-
-    # -- ciclo de vida --------------------------------------------------
+        self._broker: Optional[QmpBroker] = None
 
     def connect(self) -> None:
-        """Abre o socket, lê o greeting e negocia `qmp_capabilities`."""
-        if self._sock is not None:
-            return
-
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(self.timeout)
-        try:
-            sock.connect(self.sock_path)
-        except OSError as exc:
-            sock.close()
-            raise QmpError(
-                f"Sem conexão com o monitor QMP em {self.sock_path}: {exc}"
-            ) from exc
-
-        self._sock = sock
-        self._buffer = b""
-        try:
-            greeting = self._read_greeting()
-            if "QMP" not in greeting:
-                raise QmpError(
-                    f"Resposta inesperada do QMP em {self.sock_path}: "
-                    f"greeting ausente ({_short(greeting)})"
-                )
-            # Negociação exigida pelo protocolo antes de qualquer comando.
-            self._send({"execute": "qmp_capabilities"})
-            self._read_reply()
-        except Exception:
-            self.close()
-            raise
+        if self._broker is None:
+            self._broker = _broker_for(self.sock_path, self.timeout)
 
     def close(self) -> None:
-        """Fecha o socket (idempotente)."""
-        sock, self._sock = self._sock, None
-        self._buffer = b""
-        if sock is not None:
-            try:
-                sock.close()
-            except OSError:
-                pass
+        # Handle emprestado: o ciclo de vida do broker é encerrado pela VM.
+        self._broker = None
 
     def __enter__(self) -> QmpClient:
         self.connect()
@@ -139,118 +131,66 @@ class QmpClient:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         self.close()
 
-    # -- comandos -------------------------------------------------------
+    def command(self, name: str, **args: Any) -> Any:
+        """Mantém a API `command(nome, **argumentos)` dos clientes existentes."""
+        try:
+            return self._require().command(name, args, timeout=self.timeout)
+        except BrokerQmpError as exc:
+            raise QmpError(_error_desc(str(exc))) from exc
 
-    def command(self, name: str, **args: Any) -> dict:
-        """Manda o comando QMP `name` e devolve o campo `return` da resposta.
+    def execute(self, cmd: str, arguments: Optional[dict] = None) -> Optional[dict]:
+        """API legada da state machine: resposta envelopada ou None em erro."""
+        try:
+            result = self._require().command(cmd, arguments or {}, timeout=self.timeout)
+            return {"return": result}
+        except (QmpError, BrokerQmpError):
+            return None
 
-        Monta `{"execute": name, "arguments": args}` + linha terminada em
-        `\\r\\n` e lê respostas até achar `return` ou `error`, ignorando os
-        eventos assíncronos (`{"event": ...}`) que chegam no meio. Um `error`
-        vira `QmpError` com o `desc` do QEMU intacto.
+    def send_key(self, qcode: str) -> bool:
+        return self.execute("send-key", {"keys": [{"type": "qcode", "data": qcode}]}) is not None
 
-        O retorno documentado é `dict` (o que `device_add`/`device_del` e a
-        maioria dos comandos devolvem); `human-monitor-command` devolve string
-        — o valor é repassado como veio e quem chama normaliza.
-        """
-        self._send({"execute": name, "arguments": args})
-        reply = self._read_reply()
-        return reply["return"]
+    def send_boot_selection(self, entry_index: int = 1) -> None:
+        import time
+        time.sleep(1.0)
+        for _ in range(entry_index - 1):
+            self.send_key("right")
+            time.sleep(0.1)
+        self.send_key("ret")
 
-    # -- protocolo ------------------------------------------------------
+    def get_event(self, timeout: float | None = None) -> dict:
+        """Consome eventos da fila única alimentada pelo reader do broker."""
+        try:
+            return self._require().get_event(timeout=timeout)
+        except BrokerQmpError as exc:
+            raise QmpError(str(exc)) from exc
 
-    def _require(self) -> socket.socket:
-        if self._sock is None:
+    def reconnect(self) -> None:
+        """Reconecta explicitamente; o chamador deve verificar que a VM vive."""
+        canonical = os.path.abspath(self.sock_path)
+        with _BROKERS_LOCK:
+            broker = _BROKERS.pop(canonical, None)
+            if broker is not None:
+                broker.close()
+            self._broker = None
+            self.connect()
+
+    def _require(self) -> QmpBroker:
+        if self._broker is None:
             raise QmpError(
                 f"Cliente QMP não conectado ao socket {self.sock_path}; "
                 "chame connect() (ou use `with`) antes de comandos."
             )
-        return self._sock
-
-    def _send(self, payload: dict) -> None:
-        sock = self._require()
-        data = json.dumps(payload).encode("utf-8") + b"\r\n"
-        try:
-            sock.sendall(data)
-        except OSError as exc:
+        if not self._broker.connected:
             raise QmpError(
-                f"Falha ao enviar comando ao QMP em {self.sock_path}: {exc}"
-            ) from exc
-
-    def _read_message(self) -> dict:
-        """Lê e decodifica uma linha JSON do socket (timeout = `self.timeout`)."""
-        sock = self._require()
-        while True:
-            if b"\n" in self._buffer:
-                line, self._buffer = self._buffer.split(b"\n", 1)
-                line = line.strip()
-                if line:
-                    break
-                continue
-            try:
-                chunk = sock.recv(4096)
-            except socket.timeout as exc:
-                raise QmpError(
-                    f"Timeout de {self.timeout:g}s esperando resposta do QMP "
-                    f"em {self.sock_path}"
-                ) from exc
-            except OSError as exc:
-                raise QmpError(
-                    f"Conexão com o QMP em {self.sock_path} falhou: {exc}"
-                ) from exc
-            if not chunk:
-                raise QmpError(
-                    f"O monitor QMP em {self.sock_path} fechou a conexão"
-                )
-            self._buffer += chunk
-
-        try:
-            msg = json.loads(line.decode("utf-8", errors="replace"))
-        except ValueError as exc:
-            raise QmpError(
-                f"Resposta inválida do QMP em {self.sock_path}: "
-                f"{line[:200].decode('utf-8', errors='replace')!r}"
-            ) from exc
-        if not isinstance(msg, dict):
-            raise QmpError(
-                f"Resposta inesperada do QMP em {self.sock_path}: {_short(msg)}"
+                f"Conexão QMP de {self.sock_path} foi encerrada; não haverá "
+                "reconexão automática."
             )
-        return msg
-
-    def _read_greeting(self) -> dict:
-        """Lê o greeting, pulando eventos que o QEMU possa mandar antes dele.
-
-        Depois de um `device_del` o QEMU tem um `DEVICE_DELETED` na fila e já
-        o solta na conexão nova — o protocolo diz que o greeting vem primeiro,
-        mas na prática é preciso tolerar evento no meio.
-        """
-        for _ in range(self._MAX_MSGS_PER_REPLY):
-            msg = self._read_message()
-            if "event" in msg:
-                continue
-            return msg
-        raise QmpError(
-            f"O QMP em {self.sock_path} não enviou o greeting (só eventos)"
-        )
-
-    def _read_reply(self) -> dict:
-        """Lê mensagens até `return`/`error`; eventos assíncronos são pulados."""
-        for _ in range(self._MAX_MSGS_PER_REPLY):
-            msg = self._read_message()
-            if "event" in msg:
-                continue
-            if "error" in msg:
-                raise QmpError(_error_desc(msg["error"]))
-            if "return" in msg:
-                return msg
-        raise QmpError(
-            f"O QMP em {self.sock_path} respondeu só eventos e nenhuma "
-            "resposta de comando dentro do limite esperado"
-        )
+        return self._broker
 
 
 def _short(value: Any, limit: int = 200) -> str:
     """Texto curto e seguro para mensagem de erro."""
+    import json
     try:
         text = json.dumps(value, ensure_ascii=False, default=str)
     except (TypeError, ValueError):

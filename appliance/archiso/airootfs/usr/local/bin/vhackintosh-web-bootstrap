@@ -1,0 +1,77 @@
+#!/usr/bin/python3
+"""Remove legacy web bootstrap secrets and announce local account setup."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sqlite3
+import stat
+import sys
+from pathlib import Path
+
+
+def _print_local_console(console_path: Path, text: str) -> bool:
+    try:
+        descriptor = os.open(console_path, os.O_WRONLY | getattr(os, "O_NOCTTY", 0))
+    except OSError:
+        return False
+    try:
+        if not stat.S_ISCHR(os.fstat(descriptor).st_mode) or not os.isatty(descriptor):
+            return False
+        os.write(descriptor, text.encode("utf-8", errors="replace"))
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(descriptor)
+
+
+def _has_admin(database: Path) -> bool:
+    if not database.is_file():
+        return False
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=2)
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='administrator'"
+        ).fetchone()
+        return bool(table and connection.execute("SELECT 1 FROM administrator WHERE id=1").fetchone())
+    finally:
+        connection.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--database", default="/var/lib/vhackintosh/web/auth.sqlite")
+    parser.add_argument("--code-file", default="/run/vhackintosh-web/bootstrap-code")
+    parser.add_argument("--console", default="/dev/console")
+    args = parser.parse_args(argv)
+    code_file = Path(args.code_file)
+    try:
+        # Invalidate codes left behind by older appliance builds. First-admin
+        # creation is now restricted to the local console helper.
+        code_file.unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"Falha ao limpar código antigo de configuração do painel: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        if _has_admin(Path(args.database)):
+            return 0
+    except sqlite3.Error as exc:
+        print(f"Falha ao verificar a conta administrativa local: {exc}", file=sys.stderr)
+        return 1
+
+    message = (
+        "\n\033[96m[vHackintosh] Primeiro acesso ao painel:\033[0m\n"
+        "  No console local, execute: vhackintosh-web-admin setup\n"
+        "  Depois entre no painel com o usuário e a senha criados.\n"
+        "  A ativação do produto é opcional e pode ser solicitada após o login.\n\n"
+    )
+    if not _print_local_console(Path(args.console), message):
+        print("Primeiro acesso pendente; use vhackintosh-web-admin setup no console local.", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

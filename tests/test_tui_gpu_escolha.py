@@ -76,11 +76,52 @@ class AEscolhaDoWizardChegaAoTomlTests(unittest.TestCase):
             # The real PCI->ICD probe has separate coverage and may be
             # unavailable in CI, containers, or an emulated test host.
             with mock.patch.object(reims_ctl, "vm_dir", return_value=Path(tmp)), \
-                 mock.patch.object(reims_ctl, "_icd_para_slot", return_value="/usr/share/vulkan/icd.d/intel_icd.json"):
+                 mock.patch.object(
+                     reims_ctl,
+                     "_gpu_config_para_slot",
+                     return_value={"driver_file": "/usr/share/vulkan/icd.d/intel_icd.json"},
+                 ):
                 destino = reims_ctl.write_vm_toml(_vm("0000:00:02.0", "Intel Iris Xe"))
             texto = destino.read_text(encoding="utf-8")
         self.assertIn("[gpu]", texto, "a escolha do wizard sumiu do vm.toml")
         self.assertIn("driver_file", texto)
+
+    def test_tela_cheia_persistida_e_usada_no_proximo_boot(self):
+        """A edição do painel controla o valor projetado em [display]."""
+        from core import reims_ctl
+
+        for fullscreen, expected in ((True, "true"), (False, "false")):
+            with self.subTest(fullscreen=fullscreen), tempfile.TemporaryDirectory() as tmp:
+                vm = _vm()
+                vm.fullscreen = fullscreen
+                with mock.patch.object(reims_ctl, "vm_dir", return_value=Path(tmp)):
+                    destino = reims_ctl.write_vm_toml(vm)
+                self.assertIn(f"borderless = {expected}", destino.read_text(encoding="utf-8"))
+
+    def test_preferencias_de_tela_chegam_ao_toml_do_reims(self):
+        from core import reims_ctl
+
+        with tempfile.TemporaryDirectory() as tmp:
+            vm = _vm()
+            vm.display_resolution = "3840x2160"
+            vm.display_hidpi = True
+            vm.display_refresh_hz = 120
+            with mock.patch.object(reims_ctl, "vm_dir", return_value=Path(tmp)):
+                destino = reims_ctl.write_vm_toml(vm)
+            texto = destino.read_text(encoding="utf-8")
+        self.assertIn('resolution = "3840x2160"', texto)
+        self.assertIn("hidpi = true", texto)
+        self.assertIn("refresh = 120", texto)
+
+    def test_override_de_tela_cheia_do_launcher_tem_precedencia(self):
+        from core import reims_ctl
+
+        with tempfile.TemporaryDirectory() as tmp:
+            vm = _vm()
+            vm.fullscreen = False
+            with mock.patch.object(reims_ctl, "vm_dir", return_value=Path(tmp)):
+                destino = reims_ctl.write_vm_toml(vm, borderless=True)
+            self.assertIn("borderless = true", destino.read_text(encoding="utf-8"))
 
     def test_modo_de_validacao_grava_vmware_sem_configurar_gpu_vulkan(self):
         """O modo da ISO cria uma VM visível mesmo sem Vulkan no host aninhado."""
@@ -165,7 +206,7 @@ class AEscolhaDoWizardChegaAoTomlTests(unittest.TestCase):
             original = 'name = "teste"\n\n[gpu]\ndriver_file = "/vulkan/nvidia_icd.json"\n'
             vm_toml.write_text(original, encoding="utf-8")
             with mock.patch.object(reims_ctl, "vm_dir", return_value=vm_dir), \
-                 mock.patch.object(reims_ctl, "_icd_para_slot", return_value=None):
+                 mock.patch.object(reims_ctl, "_gpu_config_para_slot", return_value=None):
                 with self.assertRaises(reims_ctl.GPUSelectionError):
                     reims_ctl.write_vm_toml(_vm("0000:00:02.0", "Intel Iris Xe"))
             self.assertEqual(vm_toml.read_text(encoding="utf-8"), original)
@@ -179,7 +220,7 @@ class AEscolhaDoWizardChegaAoTomlTests(unittest.TestCase):
         """
         from core import reims_ctl
 
-        fonte = inspect.getsource(reims_ctl._icd_para_slot)
+        fonte = inspect.getsource(reims_ctl._gpu_config_para_slot)
         self.assertIn("_gpus_do_reims_ctl", fonte)
         lista = reims_ctl._gpus_do_reims_ctl()
         if not lista:
@@ -189,6 +230,68 @@ class AEscolhaDoWizardChegaAoTomlTests(unittest.TestCase):
             self.assertIn("icd", gpu)
             self.assertIn("name", gpu)
             self.assertRegex(gpu["vendor_device"], r"^[0-9a-f]{4}:[0-9a-f]{4}$")
+
+    def test_selecao_exige_bdf_unico_e_opcao_reims_unica(self):
+        from core import reims_ctl
+
+        par = "1002:744c"
+        slot = "0000:03:00.0"
+        gpu = {"vendor_device": par, "device_id": 0x744C, "icd": "/vulkan/amd.json", "name": "AMD"}
+        with mock.patch.object(reims_ctl, "_vendor_device_do_slot", return_value=par), \
+             mock.patch.object(reims_ctl, "_slots_do_vendor_device", return_value=[slot]), \
+             mock.patch.object(reims_ctl, "_gpus_do_reims_ctl", return_value=[gpu]):
+            self.assertEqual(
+                reims_ctl._gpu_config_para_slot(slot),
+                {"driver_file": "/vulkan/amd.json"},
+            )
+
+        with mock.patch.object(reims_ctl, "_vendor_device_do_slot", return_value=par), \
+             mock.patch.object(
+                 reims_ctl, "_slots_do_vendor_device", return_value=[slot, "0000:04:00.0"]
+             ), \
+             mock.patch.object(reims_ctl, "_gpus_do_reims_ctl", return_value=[gpu]):
+            self.assertIsNone(reims_ctl._gpu_config_para_slot(slot))
+
+        with mock.patch.object(reims_ctl, "_vendor_device_do_slot", return_value=par), \
+             mock.patch.object(reims_ctl, "_slots_do_vendor_device", return_value=[slot]), \
+             mock.patch.object(reims_ctl, "_gpus_do_reims_ctl", return_value=[gpu, dict(gpu, icd="/vulkan/other.json")]):
+            self.assertIsNone(reims_ctl._gpu_config_para_slot(slot))
+
+    def test_device_id_so_e_gravado_para_varias_gpus_no_mesmo_manifest(self):
+        from core import reims_ctl
+
+        slot = "0000:03:00.0"
+        selected = {"vendor_device": "1002:744c", "device_id": 0x744C, "icd": "/vulkan/amd.json", "name": "AMD 7900"}
+        other = {"vendor_device": "1002:73bf", "device_id": 0x73BF, "icd": "/vulkan/amd.json", "name": "AMD 6800"}
+        with mock.patch.object(reims_ctl, "_vendor_device_do_slot", return_value="1002:744c"), \
+             mock.patch.object(reims_ctl, "_slots_do_vendor_device", return_value=[slot]), \
+             mock.patch.object(reims_ctl, "_gpus_do_reims_ctl", return_value=[selected, other]):
+            self.assertEqual(
+                reims_ctl._gpu_config_para_slot(slot),
+                {"driver_file": "/vulkan/amd.json", "device_id": 0x744C},
+            )
+
+        same_id_other_card = dict(other, device_id=0x744C)
+        with mock.patch.object(reims_ctl, "_vendor_device_do_slot", return_value="1002:744c"), \
+             mock.patch.object(reims_ctl, "_slots_do_vendor_device", return_value=[slot]), \
+             mock.patch.object(
+                 reims_ctl,
+                 "_gpus_do_reims_ctl",
+                 return_value=[selected, same_id_other_card],
+             ):
+            self.assertIsNone(reims_ctl._gpu_config_para_slot(slot))
+
+    def test_parser_reims_gpus_preserva_manifest_e_device_id(self):
+        from core import reims_ctl
+
+        rows = reims_ctl._parse_reims_gpus(
+            "By default the library takes the first discrete GPU.\n"
+            " 1. Radeon RX 7900 XTX  [1002:744c]  /usr/share/vulkan/icd.d/radeon_icd.x86_64.json\n"
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["vendor_device"], "1002:744c")
+        self.assertEqual(rows[0]["device_id"], 0x744C)
+        self.assertEqual(rows[0]["icd"], "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json")
 
 
 class ODefaultNaoVemDoFabricanteTests(unittest.TestCase):
@@ -340,6 +443,23 @@ class EsperarPorPidTemFimTests(unittest.TestCase):
              mock.patch.object(reims_ctl.time, "sleep", return_value=None):
             sessao.wait()  # se não houver teto, estoura aqui
 
+    def test_supervised_session_waits_for_qemu_without_the_interactive_ceiling(self):
+        from unittest import mock
+        from core import reims_ctl
+
+        fake = mock.Mock(returncode=1, stdout="", stderr="vm already runs (pid 424242)")
+        sessao = reims_ctl.ReimsCtlSession(
+            ["reims-ctl", "start", "x"], wait_timeout_sec=None
+        )
+        checks = iter([True, True, False, False])
+        with mock.patch.object(reims_ctl.subprocess, "run", return_value=fake), \
+             mock.patch.object(reims_ctl, "_pid_alive", side_effect=lambda _pid: next(checks)), \
+             mock.patch.object(reims_ctl.time, "monotonic", side_effect=AssertionError("no timeout expected")), \
+             mock.patch.object(reims_ctl.time, "sleep", return_value=None), \
+             mock.patch.object(sessao, "_release_qmp_if_vm_ended") as release:
+            self.assertEqual(sessao.wait(), 0)
+        release.assert_called_once_with()
+
     def test_waysession_e_esperada_ate_o_fim_mesmo_sem_pid_no_stdout(self):
         """A saída do comando é assíncrona; a sessão kiosk segura o ciclo de vida."""
         from core import reims_ctl
@@ -445,8 +565,13 @@ class EsperarPorPidTemFimTests(unittest.TestCase):
                 conn, _ = server.accept()
                 with conn:
                     conn.sendall(b'{"QMP":{"version":{}}}\r\n')
-                    conn.recv(4096)  # qmp_capabilities
+                    request = json.loads(conn.recv(4096).splitlines()[0])
                     received_capabilities.set()
+                    # O broker compartilha esse monitor e correlaciona o
+                    # acknowledgement da negociação pelo id QMP.
+                    conn.sendall(
+                        (json.dumps({"return": {}, "id": request["id"]}) + "\r\n").encode()
+                    )
                     conn.sendall(
                         (json.dumps({
                             "event": "SHUTDOWN",

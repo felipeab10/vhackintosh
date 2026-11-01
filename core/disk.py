@@ -22,12 +22,28 @@ from core import reims_util
 
 console = Console()
 
+
+class _SilentProgress:
+    """Progress-compatible no-op used by supervised, headless jobs."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def add_task(self, *_args, **_kwargs):
+        return 0
+
+    def update(self, *_args, **_kwargs):
+        return None
+
 VM_STORAGE_BASE = CONFIG_DIR / "vms"
 
 DEFAULT_OVMF_VARS_TEMPLATES = [
     Path("/opt/vhackintosh/templates/OVMF_VARS.fd"),
     Path(__file__).resolve().parent.parent / "templates" / "OVMF_VARS.fd",
-    Path(os.path.expanduser("~/.config/vhackintosh/templates/OVMF_VARS.fd")),
+    CONFIG_DIR / "templates/OVMF_VARS.fd",
 ]
 
 # O par do OVMF_VARS de 540672 bytes: um build 4M (o template do repo, ou o do
@@ -36,7 +52,7 @@ DEFAULT_OVMF_VARS_TEMPLATES = [
 DEFAULT_OVMF_CODE_TEMPLATES = [
     Path("/opt/vhackintosh/templates/OVMF_CODE.fd"),
     Path(__file__).resolve().parent.parent / "templates" / "OVMF_CODE_4M.fd",
-    Path(os.path.expanduser("~/.config/vhackintosh/templates/OVMF_CODE.fd")),
+    CONFIG_DIR / "templates/OVMF_CODE.fd",
     Path("/usr/share/edk2/x64/OVMF_CODE.4m.fd"),
 ]
 
@@ -72,7 +88,13 @@ class DiskProvisioner:
         return False
 
     @classmethod
-    def provision(cls, vm: VMConfig, installer_img: Optional[str | Path] = None) -> VMDiskBundle:
+    def provision(
+        cls,
+        vm: VMConfig,
+        installer_img: Optional[str | Path] = None,
+        *,
+        job_context=None,
+    ) -> VMDiskBundle:
         """
         Cria a pasta da VM, o disco principal QCOW2 e a imagem OpenCore personalizada.
         """
@@ -83,15 +105,25 @@ class DiskProvisioner:
         opencore_path = vm_dir / "OpenCore.qcow2"
         ovmf_vars_path = vm_dir / "OVMF_VARS.fd"
 
-        with Progress(
-            SpinnerColumn(spinner_name="dots"),
-            TextColumn("[bold cyan]{task.description}[/bold cyan]"),
-            console=console,
-        ) as progress:
+        progress_context = (
+            Progress(
+                SpinnerColumn(spinner_name="dots"),
+                TextColumn("[bold cyan]{task.description}[/bold cyan]"),
+                console=console,
+            )
+            if job_context is None
+            else _SilentProgress()
+        )
+        with progress_context as progress:
             # 1. Criação do disco virtual macOS QCOW2
             task1 = progress.add_task(f"Criando disco virtual de {vm.disk_size_gb} GB...", total=None)
+            if macos_path.exists() and not cls._check_qcow2_disk(macos_path, job_context=job_context):
+                # A pre-existing output may be from an older interrupted
+                # provision attempt. Never mistake an invalid QCOW2 for a
+                # completed checkpoint.
+                macos_path.unlink(missing_ok=True)
             if not macos_path.exists():
-                cls._create_qcow2_disk(macos_path, vm.disk_size_gb)
+                cls._create_qcow2_disk(macos_path, vm.disk_size_gb, job_context=job_context)
             if not hdd_path.exists():
                 try:
                     hdd_path.symlink_to("macos.qcow2")
@@ -100,6 +132,8 @@ class DiskProvisioner:
             progress.update(task1, description=f"[bold green]✔ Disco de {vm.disk_size_gb} GB criado (macos.qcow2)[/bold green]")
 
             # 2. Cópia e customização ou geração nativa do OpenCore.qcow2
+            if opencore_path.exists() and not cls._check_qcow2_disk(opencore_path, job_context=job_context):
+                opencore_path.unlink(missing_ok=True)
             task2 = progress.add_task("Provisionando bootloader OpenCore EFI...", total=None)
             new_opencore = not opencore_path.exists()
 
@@ -141,9 +175,9 @@ class DiskProvisioner:
                     timeout=reims_util.OPENCORE_PICKER_TIMEOUT,
                     boot_args=reims_util.OPENCORE_BOOT_ARGS,
                     show_picker=bool(getattr(vm, "opencore_show_picker", False)),
+                    job_context=job_context,
                 )
                 if not generated:
-                    opencore_path.unlink(missing_ok=True)
                     raise RuntimeError(
                         "Não foi possível gerar uma EFI com os kexts APV pelo reims-util oficial. "
                         "Atualize o reims-util no menu do vHackintosh e tente novamente."
@@ -166,17 +200,57 @@ class DiskProvisioner:
         )
 
     @classmethod
-    def _create_qcow2_disk(cls, disk_path: Path, size_gb: int) -> None:
+    def _create_qcow2_disk(cls, disk_path: Path, size_gb: int, *, job_context=None) -> None:
+        disk_path = Path(disk_path)
+        disk_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{disk_path.stem}.", suffix=disk_path.suffix or ".qcow2", dir=disk_path.parent
+        )
+        os.close(fd)
+        temporary_path = Path(temporary_name)
+        temporary_path.unlink()
         cmd = [
             "qemu-img", "create",
             "-f", "qcow2",
             "-o", "cluster_size=2M",
-            str(disk_path),
+            str(temporary_path),
             f"{size_gb}G",
         ]
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if res.returncode != 0:
-            raise RuntimeError(f"Falha ao criar disco QCOW2: {res.stderr}")
+        try:
+            if job_context is not None:
+                res = job_context.run_subprocess(cmd, check=False)
+                if res.returncode != 0:
+                    raise RuntimeError(f"Falha ao criar disco QCOW2 (qemu-img retornou {res.returncode})")
+                check = job_context.run_subprocess(["qemu-img", "check", str(temporary_path)], check=False)
+                if check.returncode != 0:
+                    raise RuntimeError(f"qemu-img check falhou para o disco criado (código {check.returncode})")
+            else:
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                if res.returncode != 0:
+                    raise RuntimeError(f"Falha ao criar disco QCOW2: {res.stderr}")
+                check = subprocess.run(
+                    ["qemu-img", "check", str(temporary_path)],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30,
+                )
+                if check.returncode != 0:
+                    raise RuntimeError(f"qemu-img check falhou: {check.stderr}")
+            if not temporary_path.is_file() or temporary_path.stat().st_size == 0:
+                raise RuntimeError("qemu-img não produziu um arquivo de disco válido")
+            os.replace(temporary_path, disk_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _check_qcow2_disk(disk_path: Path, *, job_context=None) -> bool:
+        argv = ["qemu-img", "check", str(disk_path)]
+        if job_context is not None:
+            return job_context.run_subprocess(argv, check=False).returncode == 0
+        try:
+            return subprocess.run(
+                argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30,
+            ).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
 
     @classmethod
     def inject_opencore_config(

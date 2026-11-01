@@ -1,0 +1,18 @@
+[Unit]
+Description=vHackintosh local development frontend
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/vhackintosh/web/frontend
+ExecStart=%h/vhackintosh/web/frontend/node_modules/.bin/vite --host 127.0.0.1 --port 5173 --strictPort
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+UMask=0077
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

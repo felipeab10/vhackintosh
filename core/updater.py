@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import shutil
 import subprocess
 import tempfile
@@ -22,6 +23,10 @@ WAYSESSION_SOURCE = (
     / "vhackintosh-waysession"
 )
 WAYSESSION_DEST = Path("/usr/local/bin/vhackintosh-waysession")
+DEFAULT_WEB_ROOT = DEFAULT_VHACK_DIR / "web"
+DEFAULT_WEB_BUNDLES = DEFAULT_WEB_ROOT / "bundles"
+DEFAULT_WEB_CURRENT = DEFAULT_WEB_ROOT / "current"
+DEFAULT_WEB_JOBS_DB = Path("/var/lib/vhackintosh/web/jobs.sqlite")
 
 
 @dataclass
@@ -170,6 +175,125 @@ class SystemUpdater:
             raise UpdateError("vHackintosh", f"could not install vhackintosh-waysession: {exc}") from exc
 
     @classmethod
+    def promote_web_bundle(
+        cls,
+        candidate: str | os.PathLike[str],
+        *,
+        bundles_dir: Path = DEFAULT_WEB_BUNDLES,
+        current_link: Path = DEFAULT_WEB_CURRENT,
+        jobs_db: Path = DEFAULT_WEB_JOBS_DB,
+        jobs_schema: int | None = None,
+        runtime_release: str | None = None,
+    ) -> str:
+        """Activate a compatible web bundle under the appliance maintenance gate.
+
+        Production paths are root-only and serialized with VM starts, Reims
+        runtime changes, and source updates. Explicit paths are available for
+        isolated packaging/tests, but must supply the actual runtime identity.
+        """
+        production = (bundles_dir == DEFAULT_WEB_BUNDLES
+                      and current_link == DEFAULT_WEB_CURRENT
+                      and jobs_db == DEFAULT_WEB_JOBS_DB)
+        if production and os.geteuid() != 0:
+            raise UpdateError("permissions", "web bundle activation under /opt requires root")
+        try:
+            from core.web_bundle import promote_bundle
+
+            if jobs_schema is None:
+                jobs_schema = cls._read_jobs_schema(jobs_db)
+            if runtime_release is None:
+                from core.reims_build import prebuilt_current_release, prebuilt_release
+
+                runtime_release = (prebuilt_current_release()
+                                   or prebuilt_release(DEFAULT_REIMS_DIR))
+            if not runtime_release:
+                raise UpdateError("compatibility", "installed Reims runtime release is unknown")
+
+            def activate() -> str:
+                from core.web_bundle import current_bundle_id, point_to_bundle
+
+                previous_id = current_bundle_id(
+                    bundles_dir=bundles_dir, current_link=current_link
+                )
+                metadata = promote_bundle(
+                    candidate,
+                    bundles_dir=bundles_dir,
+                    current_link=current_link,
+                    jobs_schema=jobs_schema,
+                    runtime_release=runtime_release,
+                )
+                if production:
+                    try:
+                        cls._restart_web_services()
+                    except Exception as restart_error:
+                        try:
+                            point_to_bundle(
+                                previous_id,
+                                bundles_dir=bundles_dir,
+                                current_link=current_link,
+                            )
+                            cls._restart_web_services()
+                        except Exception as rollback_error:
+                            raise UpdateError(
+                                "web-bundle",
+                                f"new bundle failed to start ({restart_error}); rollback also failed ({rollback_error})",
+                            ) from rollback_error
+                        raise UpdateError(
+                            "web-bundle",
+                            f"new bundle failed to start and the previous bundle was restored: {restart_error}",
+                        ) from restart_error
+                return metadata.bundle_id
+
+            if production:
+                from core.update_guard import maintenance_window
+
+                with maintenance_window():
+                    return activate()
+            return activate()
+        except Exception as exc:
+            if isinstance(exc, UpdateError):
+                raise
+            from core.update_guard import MaintenanceBlocked
+
+            if isinstance(exc, MaintenanceBlocked):
+                raise UpdateError("maintenance", str(exc)) from exc
+            raise UpdateError(getattr(exc, "repo", "web-bundle"), str(exc)) from exc
+
+    @staticmethod
+    def _read_jobs_schema(path: Path) -> int:
+        if not path.exists():
+            return 0
+        try:
+            with sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=2.0) as database:
+                return int(database.execute("PRAGMA user_version").fetchone()[0])
+        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+            raise UpdateError("compatibility", "jobs database schema could not be read safely") from exc
+
+    @staticmethod
+    def _restart_web_services() -> None:
+        """Restart API and privileged agent together after changing `current`."""
+        units = ["vhackintosh-agent.service", "vhackintosh-web.service"]
+        restarted = subprocess.run(
+            ["/usr/bin/systemctl", "restart", *units],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=45,
+        )
+        if restarted.returncode:
+            detail = (restarted.stderr or restarted.stdout).strip()[:512]
+            raise RuntimeError(detail or "systemd rejected the web bundle restart")
+        active = subprocess.run(
+            ["/usr/bin/systemctl", "is-active", "--quiet", *units],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if active.returncode:
+            raise RuntimeError("web API or local agent did not become active")
+
+    @classmethod
     def _clone_staged(cls, path: Path, clone_fn: Callable[[str, Path], None]) -> Path:
         if not path.is_dir() or not any(path.iterdir()):
             raise UpdateError("reims-vgpu", f"source tree missing at {path}")
@@ -195,6 +319,33 @@ class SystemUpdater:
     @classmethod
     def update_repositories(cls, *, repo_paths: Optional[dict[str, Path]] = None,
                             clone_fn: Optional[Callable[[str, Path], None]] = None) -> list[RepositoryUpdate]:
+        """Update appliance sources while holding the VM maintenance gate.
+
+        Explicit temporary repositories are used by tests and development and
+        remain isolated. The default appliance paths can contain both the code
+        loaded by the services and the Reims runtime sources, so all mutations
+        must share the same admission lock used by VM launch and release swaps.
+        """
+        from contextlib import nullcontext
+
+        try:
+            guard = nullcontext()
+            if repo_paths is None and os.geteuid() == 0:
+                from core.update_guard import maintenance_window
+
+                guard = maintenance_window()
+            with guard:
+                return cls._update_repositories_unlocked(
+                    repo_paths=repo_paths, clone_fn=clone_fn
+                )
+        except Exception as exc:
+            if isinstance(exc, UpdateError):
+                raise
+            raise UpdateError(getattr(exc, "repo", "maintenance"), str(exc)) from exc
+
+    @classmethod
+    def _update_repositories_unlocked(cls, *, repo_paths: Optional[dict[str, Path]] = None,
+                                      clone_fn: Optional[Callable[[str, Path], None]] = None) -> list[RepositoryUpdate]:
         if os.geteuid() != 0 and repo_paths is None:
             raise UpdateError("permissions", "updating appliance checkouts under /opt requires root")
         updater = cls(repo_paths=repo_paths, clone_fn=clone_fn)
@@ -273,8 +424,27 @@ class SystemUpdater:
         if os.geteuid() != 0:
             console.print(i18n.t("tui.update.not_root"))
             return False
+        path = DEFAULT_VHACK_DIR
+        from contextlib import nullcontext
         try:
-            path = DEFAULT_VHACK_DIR
+            guard = nullcontext()
+            # The explicit /opt appliance updater shares the VM admission gate.
+            # Temporary repositories used by development and tests stay isolated.
+            if path == Path("/opt/vhackintosh"):
+                from core.update_guard import maintenance_window
+
+                guard = maintenance_window()
+            with guard:
+                return cls._run_vhackintosh_update_locked(path, i18n)
+        except Exception as exc:
+            repo = getattr(exc, "repo", "update")
+            console.print(i18n.t("tui.update.error", repo=repo, error=str(exc)))
+            console.print(i18n.t("tui.update.retry"))
+            return False
+
+    @classmethod
+    def _run_vhackintosh_update_locked(cls, path: Path, i18n) -> bool:
+        try:
             update, target = cls._preflight("vHackintosh", path, VHACK_URL)
             result = cls._apply(update, target)
         except Exception as exc:

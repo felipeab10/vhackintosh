@@ -1,6 +1,7 @@
 import plistlib
 import json
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,7 +16,9 @@ class TemplateIntegrityTests(unittest.TestCase):
 
         path = ROOT / "templates/OpenCore.qcow2"
         wrong_size = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json.dumps({"virtual-size": 128 * 1024 * 1024}), stderr=""
+            # The checked-in development template is the legacy 384 MiB image;
+            # the appliance validator must reject it in favor of 128 MiB output.
+            args=[], returncode=0, stdout=json.dumps({"virtual-size": 384 * 1024 * 1024}), stderr=""
         )
         with patch.object(validate_iso, "command", return_value=wrong_size):
             with self.assertRaisesRegex(RuntimeError, "128 MiB reims-util"):
@@ -88,6 +91,47 @@ class TemplateIntegrityTests(unittest.TestCase):
         self.assertIn('["/opt/vhackintosh/resources/macserial/macserial"]="0:0:755"', profiledef)
         self.assertIn('["/opt/vhackintosh/bin/"]="0:0:755"', profiledef)
         self.assertIn('["/opt/vhackintosh/themes/grub/install.sh"]="0:0:755"', profiledef)
+
+    def test_profiledef_preserves_reims_runtime_executable_permissions(self):
+        profiledef = (ROOT / "appliance/archiso/profiledef.sh").read_text(encoding="utf-8")
+        for path in (
+            "/opt/reims-vgpu/bin/reims-ctl",
+            "/opt/reims-vgpu/reims-ctl",
+            "/opt/reims-vgpu/vendor/qemu/build/bin/qemu-system-x86_64",
+            "/opt/reims-vgpu/vendor/qemu/build/qemu-system-x86_64",
+        ):
+            with self.subTest(path=path):
+                self.assertIn(f'["{path}"]="0:0:755"', profiledef)
+
+    def test_iso_validator_rejects_non_executable_reims_binaries(self):
+        from appliance.validate_iso import confere_provenance
+
+        with tempfile.TemporaryDirectory() as temp:
+            rootfs = Path(temp)
+            bundle = rootfs / "opt/reims-vgpu"
+            qemu = bundle / "vendor/qemu/build/bin/qemu-system-x86_64"
+            ctl = bundle / "bin/reims-ctl"
+            qemu.parent.mkdir(parents=True)
+            ctl.parent.mkdir(parents=True)
+            qemu.write_text("qemu", encoding="utf-8")
+            ctl.write_text("reims", encoding="utf-8")
+            (bundle / "vendor/qemu/build/share/qemu").mkdir(parents=True)
+            (bundle / "vendor/qemu/build/share/qemu/ReimsVgpu.rom").write_bytes(b"rom")
+            (bundle / ".release").write_text("v1.5.0\n", encoding="utf-8")
+            (bundle / "SOURCE-PROVENANCE.txt").write_text(
+                "mode=prebuilt\nrelease=v1.5.0\nrepo=felipeab10/reims-vgpu\nasset=reims-vgpu-linux-x86_64.tar.gz\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "QEMU is not executable"):
+                confere_provenance(rootfs)
+
+            qemu.chmod(0o755)
+            with self.assertRaisesRegex(RuntimeError, "reims-ctl is not executable"):
+                confere_provenance(rootfs)
+
+            ctl.chmod(0o755)
+            self.assertEqual(confere_provenance(rootfs).head, "v1.5.0")
 
 
 if __name__ == "__main__":

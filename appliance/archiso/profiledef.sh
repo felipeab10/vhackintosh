@@ -22,6 +22,9 @@ file_permissions=(
   ["/usr/local/bin/dmg2img"]="0:0:755"
   ["/usr/local/bin/vhack-copy-system"]="0:0:755"
   ["/usr/local/bin/vhackintosh-waysession"]="0:0:755"
+  ["/usr/local/bin/vhackintosh-web-bootstrap"]="0:0:755"
+  ["/usr/local/bin/vhackintosh-web-admin"]="0:0:755"
+  ["/usr/local/bin/vhackintosh-web-recover"]="0:0:755"
   # O reims-util é instalado em tempo de build de ISO
   # (appliance/build-iso.sh) e sem esta linha chega na ISO como 0644 — a
   # validação falha com "bundled reims-util is not executable in ISO rootfs",
@@ -31,8 +34,19 @@ file_permissions=(
   ["/etc/sysctl.d/90-reims-vgpu.conf"]="0:0:644"
   ["/etc/vhackintosh/sway.conf"]="0:0:644"
   ["/etc/systemd/system/getty@.service.d/autologin.conf"]="0:0:644"
+  ["/etc/systemd/system/vhackintosh-agent.service"]="0:0:644"
+  ["/etc/systemd/system/vhackintosh-web.service"]="0:0:644"
+  ["/etc/systemd/system/vhackintosh-vm@.service"]="0:0:644"
+  ["/usr/lib/sysusers.d/vhackintosh-web.conf"]="0:0:644"
+  ["/usr/lib/tmpfiles.d/vhackintosh-web.conf"]="0:0:644"
   ["/opt/vhackintosh/bin/"]="0:0:755"
   ["/opt/vhackintosh/bin/vhackintosh"]="0:0:755"
   ["/opt/vhackintosh/resources/macserial/macserial"]="0:0:755"
+  # O mkarchiso zera modos do payload copiado. Preserve os executáveis do
+  # runtime Reims para que o painel consiga consultá-los antes da primeira VM.
+  ["/opt/reims-vgpu/bin/reims-ctl"]="0:0:755"
+  ["/opt/reims-vgpu/reims-ctl"]="0:0:755"
+  ["/opt/reims-vgpu/vendor/qemu/build/bin/qemu-system-x86_64"]="0:0:755"
+  ["/opt/reims-vgpu/vendor/qemu/build/qemu-system-x86_64"]="0:0:755"
   ["/opt/vhackintosh/themes/grub/install.sh"]="0:0:755"
 )

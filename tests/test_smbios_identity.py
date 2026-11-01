@@ -1,4 +1,5 @@
 import plistlib
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -92,6 +93,49 @@ class SMBIOSIdentityTests(unittest.TestCase):
         with patch.object(GenSMBIOS, "_macserial", side_effect=SMBIOSError("missing")):
             with self.assertRaises(SMBIOSError):
                 GenSMBIOS.generate("tahoe")
+
+    def test_inspect_vm_uses_bounded_guestfish_and_never_returns_identity_values(self):
+        identity = SMBIOSConfig(
+            model="iMac20,1", serial_number="SECRET-SERIAL", board_serial="SECRET-MLB",
+            smuuid="12345678-1234-5678-1234-567812345678", rom="02AABBCCDDEE",
+        )
+        vm = type("VM", (), {"smbios": identity})()
+        config = {"PlatformInfo": {"Generic": {
+            "SystemProductName": identity.model, "SystemSerialNumber": identity.serial_number,
+            "MLB": identity.board_serial, "SystemUUID": identity.smuuid, "ROM": bytes.fromhex(identity.rom),
+        }}}
+        with tempfile.TemporaryDirectory() as td:
+            image = Path(td) / "OpenCore.qcow2"
+            image.write_bytes(b"managed image")
+            def guestfish(*args, **kwargs):
+                Path(args[0][-1]).write_bytes(plistlib.dumps(config))
+                self.assertEqual(kwargs["timeout"], 20)
+                self.assertEqual(args[0][1:4], ["--ro", "-a", str(image)])
+                return type("Result", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+            with patch("core.smbios.shutil.which", return_value="/usr/bin/guestfish"), patch(
+                "core.smbios.subprocess.run", side_effect=guestfish,
+            ) as run:
+                result = GenSMBIOS.inspect_vm(vm, image)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("SECRET", str(result))
+        self.assertTrue(run.called)
+
+    def test_inspect_vm_reports_guestfish_timeout_without_leaking_output(self):
+        identity = SMBIOSConfig(
+            model="iMac20,1", serial_number="SECRET-SERIAL", board_serial="SECRET-MLB",
+            smuuid="12345678-1234-5678-1234-567812345678", rom="02AABBCCDDEE",
+        )
+        vm = type("VM", (), {"smbios": identity})()
+        with tempfile.TemporaryDirectory() as td:
+            image = Path(td) / "OpenCore.qcow2"
+            image.write_bytes(b"managed image")
+            with patch("core.smbios.shutil.which", return_value="/usr/bin/guestfish"), patch(
+                "core.smbios.subprocess.run", side_effect=subprocess.TimeoutExpired("guestfish", 20, output=b"SECRET-SERIAL"),
+            ):
+                result = GenSMBIOS.inspect_vm(vm, image)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "OpenCore config could not be read")
+        self.assertNotIn("SECRET", str(result))
 
     def test_macserial_resolves_and_self_heals_chmod(self):
         with tempfile.TemporaryDirectory() as td:

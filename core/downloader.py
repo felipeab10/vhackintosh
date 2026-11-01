@@ -11,6 +11,7 @@ import time
 import random
 import string
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional, Dict
 from urllib.request import Request, urlopen, HTTPError
@@ -25,8 +26,25 @@ from rich.progress import (
     TextColumn,
 )
 from rich.text import Text
+from core.config import CONFIG_DIR
 
 console = Console()
+
+
+class _SilentProgress:
+    """Progress-compatible no-op used by supervised, headless jobs."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def add_task(self, *_args, **_kwargs):
+        return 0
+
+    def update(self, *_args, **_kwargs):
+        return None
 
 
 class _ProgressPercentColumn(ProgressColumn):
@@ -72,7 +90,7 @@ class _BarColumn(ProgressColumn):
             line.append("░" * (self.width - filled), style="#153247")
         return line
 
-IMAGES_CACHE_DIR = Path(os.path.expanduser("~/.config/vhackintosh/images"))
+IMAGES_CACHE_DIR = CONFIG_DIR / "images"
 
 # Catálogo oficial de Board IDs e parâmetros por versão do macOS suportada
 MACOS_PRODUCTS = {
@@ -113,19 +131,21 @@ class MacOSDownloader:
         return None
 
     @classmethod
-    def prepare_installer(cls, version: str) -> Optional[Path]:
+    def prepare_installer(cls, version: str, *, job_context=None) -> Optional[Path]:
         """
         Baixa o BaseSystem.dmg da Apple e converte para BaseSystem.img.
         Retorna o caminho do arquivo .img gerado.
         """
         ver_key = version.lower()
         if ver_key not in MACOS_PRODUCTS:
-            console.print(f"[red]Versão do macOS desconhecida: {version}[/red]")
+            if job_context is None:
+                console.print(f"[red]Versão do macOS desconhecida: {version}[/red]")
             return None
 
         cached = cls.get_cached_image_path(ver_key)
         if cached:
-            console.print(f"[bold green]✔ Imagem do instalador {MACOS_PRODUCTS[ver_key]['name']} já disponível no cache local.[/bold green]")
+            if job_context is None:
+                console.print(f"[bold green]✔ Imagem do instalador {MACOS_PRODUCTS[ver_key]['name']} já disponível no cache local.[/bold green]")
             return cached
 
         target_dir = IMAGES_CACHE_DIR / ver_key
@@ -135,7 +155,8 @@ class MacOSDownloader:
         img_path = target_dir / "BaseSystem.img"
 
         meta = MACOS_PRODUCTS[ver_key]
-        console.print(f"\n[bold cyan]▶ Obtendo metadados de instalação para {meta['name']} dos servidores da Apple...[/bold cyan]")
+        if job_context is None:
+            console.print(f"\n[bold cyan]▶ Obtendo metadados de instalação para {meta['name']} dos servidores da Apple...[/bold cyan]")
 
         try:
             session = cls._get_apple_session()
@@ -146,7 +167,8 @@ class MacOSDownloader:
                 os_type=meta.get("os_type", "default"),
             )
         except Exception as e:
-            console.print(f"[bold red]Falha ao obter metadados da Apple:[/bold red] {e}")
+            if job_context is None:
+                console.print(f"[bold red]Falha ao obter metadados da Apple:[/bold red] {e}")
             return None
 
         # A operação tem até três etapas: imagem, checksum e conversão local.
@@ -154,7 +176,8 @@ class MacOSDownloader:
         dmg_url = info.get("AU")
         dmg_token = info.get("AT")
         if not dmg_url or not dmg_token:
-            console.print("[red]Link de download do BaseSystem.dmg não encontrado na resposta da Apple.[/red]")
+            if job_context is None:
+                console.print("[red]Link de download do BaseSystem.dmg não encontrado na resposta da Apple.[/red]")
             return None
 
         chunk_url = info.get("CU")
@@ -162,15 +185,20 @@ class MacOSDownloader:
         has_chunklist = bool(chunk_url and chunk_token)
         stage_count = 3 if has_chunklist else 2
 
-        console.print(f"[bold green]▶ Baixando BaseSystem.dmg oficial da Apple...[/bold green]")
+        if job_context is None:
+            console.print(f"[bold green]▶ Baixando BaseSystem.dmg oficial da Apple...[/bold green]")
+        if job_context is not None:
+            job_context.checkpoint("installer_download", {"status": "started", "asset": "BaseSystem.dmg"})
         success = cls._stream_download(
             url=dmg_url,
             asset_token=dmg_token,
             destination=dmg_path,
             description=f"[1/{stage_count}] macOS {ver_key.capitalize()} installer",
+            job_context=job_context,
         )
         if not success:
-            console.print("[red]Erro durante o download do BaseSystem.dmg.[/red]")
+            if job_context is None:
+                console.print("[red]Erro durante o download do BaseSystem.dmg.[/red]")
             return None
 
         # 2. Download do BaseSystem.chunklist
@@ -180,22 +208,33 @@ class MacOSDownloader:
                 asset_token=chunk_token,
                 destination=chunk_path,
                 description=f"[2/{stage_count}] Verificando BaseSystem",
+                job_context=job_context,
             )
 
         # 3. Conversão de BaseSystem.dmg para BaseSystem.img usando dmg2img
-        console.print(f"\n[bold cyan]▶ Convertendo BaseSystem.dmg para formato de disco KVM (.img)...[/bold cyan]")
+        if job_context is None:
+            console.print(f"\n[bold cyan]▶ Convertendo BaseSystem.dmg para formato de disco KVM (.img)...[/bold cyan]")
         conversion_stage = 3 if has_chunklist else 2
-        with Progress(
-            SpinnerColumn(spinner_name="dots"),
-            TextColumn(f"[bold cyan]\\[{conversion_stage}/{stage_count}] Convertendo instalador para imagem KVM[/bold cyan]"),
-            console=console,
-        ):
-            conv_success = cls._convert_dmg_to_img(dmg_path, img_path)
+        progress_context = (
+            Progress(
+                SpinnerColumn(spinner_name="dots"),
+                TextColumn(f"[bold cyan]\\[{conversion_stage}/{stage_count}] Convertendo instalador para imagem KVM[/bold cyan]"),
+                console=console,
+            )
+            if job_context is None
+            else _SilentProgress()
+        )
+        with progress_context:
+            conv_success = cls._convert_dmg_to_img(dmg_path, img_path, job_context=job_context)
         if not conv_success:
-            console.print("[bold red]Falha na conversão do BaseSystem.dmg via dmg2img![/bold red]")
+            if job_context is None:
+                console.print("[bold red]Falha na conversão do BaseSystem.dmg via dmg2img![/bold red]")
             return None
 
-        console.print(f"[bold green]✔ Instalador do {meta['name']} pronto para uso![/bold green] ({img_path})\n")
+        if job_context is None:
+            console.print(f"[bold green]✔ Instalador do {meta['name']} pronto para uso![/bold green] ({img_path})\n")
+        if job_context is not None:
+            job_context.checkpoint("installer_download", {"status": "completed", "path": str(img_path)}, completed=True)
         return img_path
 
     @classmethod
@@ -252,7 +291,9 @@ class MacOSDownloader:
         return info
 
     @classmethod
-    def _stream_download(cls, url: str, asset_token: str, destination: Path, description: str) -> bool:
+    def _stream_download(
+        cls, url: str, asset_token: str, destination: Path, description: str, *, job_context=None
+    ) -> bool:
         purl = urlparse(url)
         headers = {
             "Host": purl.hostname,
@@ -261,39 +302,105 @@ class MacOSDownloader:
             "Cookie": f"AssetToken={asset_token}",
         }
         req = Request(url=url, headers=headers)
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.stem}.", suffix=destination.suffix, dir=destination.parent
+        )
+        os.close(fd)
+        temporary_path = Path(temporary_name)
         try:
+            if job_context is not None:
+                job_context.check_cancelled()
             resp = urlopen(req, timeout=30)
             total_size = int(resp.headers.get("Content-Length", 0))
+            last_checkpoint = time.monotonic()
+            downloaded_bytes = 0
+            if job_context is not None:
+                job_context.phase(description, 0 if total_size else None)
 
-            with Progress(
-                SpinnerColumn(spinner_name="dots", style="cyan"),
-                TextColumn("[bold cyan]{task.description}[/bold cyan]"),
-                _BarColumn(width=28),
-                _ProgressPercentColumn(),
-                _DownloadSizeColumn(),
-                console=console,
-            ) as progress:
+            progress_context = (
+                Progress(
+                    SpinnerColumn(spinner_name="dots", style="cyan"),
+                    TextColumn("[bold cyan]{task.description}[/bold cyan]"),
+                    _BarColumn(width=28),
+                    _ProgressPercentColumn(),
+                    _DownloadSizeColumn(),
+                    console=console,
+                )
+                if job_context is None
+                else _SilentProgress()
+            )
+            with progress_context as progress:
                 task = progress.add_task(escape(description), total=total_size if total_size > 0 else None)
 
-                with open(destination, "wb") as f:
+                with open(temporary_path, "wb") as f:
                     while True:
+                        if job_context is not None:
+                            job_context.check_cancelled()
                         chunk = resp.read(1024 * 1024)  # 1 MB chunk
                         if not chunk:
                             break
                         f.write(chunk)
                         progress.update(task, advance=len(chunk))
+                        downloaded_bytes += len(chunk)
+                        if job_context is not None and time.monotonic() - last_checkpoint >= 10:
+                            job_context.phase(
+                                description,
+                                min(99.0, downloaded_bytes * 100 / total_size) if total_size else None,
+                            )
+                            job_context.checkpoint(
+                                "installer_download",
+                                {"status": "downloading", "bytes": downloaded_bytes, "total": total_size or None},
+                            )
+                            last_checkpoint = time.monotonic()
+            if job_context is not None:
+                job_context.check_cancelled()
+            if total_size and downloaded_bytes != total_size:
+                raise IOError(f"download size mismatch: expected {total_size} bytes, got {downloaded_bytes}")
+            if downloaded_bytes <= 0:
+                raise IOError("download returned no data")
+            os.replace(temporary_path, destination)
             return True
         except Exception as e:
-            console.print(f"[red]Erro ao baixar {url}: {e}[/red]")
+            if job_context is not None:
+                from core.web_job_runner import JobRunnerError
+                if isinstance(e, JobRunnerError):
+                    raise
+            if job_context is None:
+                console.print(f"[red]Erro ao baixar {url}: {e}[/red]")
             return False
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
     @classmethod
-    def _convert_dmg_to_img(cls, dmg_path: Path, img_path: Path) -> bool:
+    def _convert_dmg_to_img(cls, dmg_path: Path, img_path: Path, *, job_context=None) -> bool:
         """Converte a imagem BaseSystem.dmg completa para BaseSystem.img com tabela GPT preservada."""
-        cmd = ["dmg2img", "-i", str(dmg_path), str(img_path)]
+        img_path = Path(img_path)
+        img_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{img_path.stem}.", suffix=img_path.suffix, dir=img_path.parent
+        )
+        os.close(fd)
+        temporary_path = Path(temporary_name)
+        temporary_path.unlink()
+        cmd = ["dmg2img", "-i", str(dmg_path), str(temporary_path)]
         try:
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            return proc.returncode == 0 and img_path.exists() and img_path.stat().st_size > 0
+            if job_context is not None:
+                proc = job_context.run_subprocess(cmd, check=False)
+            else:
+                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if proc.returncode != 0 or not temporary_path.is_file() or temporary_path.stat().st_size <= 0:
+                return False
+            os.replace(temporary_path, img_path)
+            return True
         except Exception as e:
-            console.print(f"[red]Erro executando dmg2img: {e}[/red]")
+            if job_context is not None:
+                from core.web_job_runner import JobRunnerError
+                if isinstance(e, JobRunnerError):
+                    raise
+            if job_context is None:
+                console.print(f"[red]Erro executando dmg2img: {e}[/red]")
             return False
+        finally:
+            temporary_path.unlink(missing_ok=True)

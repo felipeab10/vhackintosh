@@ -135,19 +135,17 @@ class ReimsUtilTests(unittest.TestCase):
     def test_generate_opencore_constructs_proper_arguments(self):
         with tempfile.TemporaryDirectory() as td:
             dest = Path(td) / "OpenCore.qcow2"
-            mock_results = [
-                Mock(returncode=0, stdout="--no-apv-arm64-port", stderr=""),
-                Mock(returncode=0, stdout="", stderr=""),
-                Mock(returncode=0, stdout="", stderr=""),
-            ]
-
-            # Mock dest.is_file() and dest.stat().st_size
-            dest.write_bytes(b"MOCK_QCOW2_CONTENT")
+            def fake_run(command, **_kwargs):
+                if command[1:3] == ["opencore", "--help"]:
+                    return Mock(returncode=0, stdout="--no-apv-arm64-port", stderr="")
+                if command[0] == "/bin/reims-util":
+                    Path(command[command.index("-o") + 1]).write_bytes(b"MOCK_QCOW2_CONTENT")
+                return Mock(returncode=0, stdout="", stderr="")
 
             with patch("core.reims_util.find_reims_util", return_value=Path("/bin/reims-util")), patch(
                 "shutil.which", return_value="/usr/bin/qemu-img"
             ), patch(
-                "subprocess.run", side_effect=mock_results
+                "subprocess.run", side_effect=fake_run
             ) as mock_run:
                 ok = reims_util.generate_opencore(
                     dest,
@@ -163,7 +161,8 @@ class ReimsUtilTests(unittest.TestCase):
                 self.assertEqual(called_cmd[0], "/bin/reims-util")
                 self.assertEqual(called_cmd[1], "opencore")
                 self.assertIn("-o", called_cmd)
-                self.assertIn(str(dest), called_cmd)
+                self.assertNotEqual(called_cmd[called_cmd.index("-o") + 1], str(dest))
+                self.assertEqual(dest.read_bytes(), b"MOCK_QCOW2_CONTENT")
                 self.assertIn("--model", called_cmd)
                 self.assertIn("iMac20,1", called_cmd)
                 self.assertIn("--serial", called_cmd)

@@ -89,7 +89,8 @@ class ABInstallerTest:
         disp_choice = Prompt.ask(i18n.t("installer.prompt.mode"), choices=["1", "2"], default="1")
         fullscreen = "1" if disp_choice == "1" else "0"
 
-        # macOS Tahoe x86-64 tem AppleUSBAudio, mas não AppleHDA.
+        # Campo legado de catálogo; o dispositivo efetivo vem da release do
+        # launcher Reims (VirtIO Sound em v1.4.0+) e não desta opção.
         audio_device = "usb-audio"
 
         # 5. Provisionamento da VM de teste (limpeza automática)
@@ -134,7 +135,13 @@ class ABInstallerTest:
             return
 
         lock = ExclusiveVMLock()
-        if not lock.acquire(vm.name, ram_gb=vm.ram_gb, vm_id=vm.id):
+        if not lock.acquire(
+            vm.name,
+            ram_gb=vm.ram_gb,
+            vm_id=vm.id,
+            disk_path=vm.disk_path,
+            usb_devices=vm.usb_auto_attach,
+        ):
             error = lock.last_error or {}
             if error.get("reason") == "already_running":
                 console.print(i18n.t("installer.error.vm_already_running", name=vm.name))
@@ -170,15 +177,13 @@ class ABInstallerTest:
             # (imagem absoluta, entrai em [q35].installer). O reboot do
             # instalador encerra o QEMU (extra_args -action reboot=shutdown).
             try:
-                reims_ctl.write_vm_toml(
+                reims_ctl.write_vm_configuration(
                     vm, installer=str(installer_img), borderless=(fullscreen == "1")
                 )
             except reims_ctl.GPUSelectionError as exc:
                 console.print(i18n.t("tui.launch.gpu_selection_failed", error=exc))
                 Prompt.ask(i18n.t("installer.prompt.exit"))
                 return
-            reims_ctl.ensure_registered(vm)
-
             ctl = reims_ctl.reims_ctl_bin()
             cmd, sem_sessao = reims_ctl.session_argv([ctl, "start", vm.id], env)
             if sem_sessao:

@@ -7,11 +7,18 @@ import filecmp
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from core.config import LOGS_DIR, CONFIG_DIR
+
+# Git-sourced dependency required by the appliance's QEMU build. Offline mode
+# is safe only when this bare repository and the crates.io registry are both
+# available in the selected Cargo home.
+_REQUIRED_GIT_DEPS = ("metal2vulkan",)
+_GIT_CACHE_ENV_HINT = "defina REIMS_CARGO_OFFLINE=1 apenas se o cache completo estiver preparado"
 
 # ---------------------------------------------------------------------------
 # Localização do fonte
@@ -115,13 +122,26 @@ def legacy_gop_rom(reims_dir: Path) -> Optional[Path]:
 def prebuilt_release(reims_dir: Path) -> Optional[str]:
     """Devolve a tag da release empacotada na ISO, ou None se veio das fontes.
 
-    Só considera pré-compilado quando há **marca** e **binário executável**: um
-    diretório com as fontes tem `vendor/qemu/` mas não necessariamente o binário
-    (que só existe depois do build), e um binário sem marca é ambíguo.
+    Prefere a marca `.release`; se ela estiver ausente, aceita a proveniência
+    registrada pelo builder da ISO. Um bundle compilado continua identificável
+    mesmo antes de qualquer preparação pelo painel, enquanto um diretório de
+    fontes com um binário local não vira release por engano.
     """
     marker = reims_dir / PREBUILT_MARKER_REL
-    if marker.is_file() and prebuilt_qemu(reims_dir) is not None:
-        return marker.read_text(encoding="utf-8", errors="replace").strip() or "desconhecida"
+    if prebuilt_qemu(reims_dir) is None:
+        return None
+    if marker.is_file():
+        try:
+            value = marker.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            value = ""
+        if value:
+            return value
+    provenance = prebuilt_provenance(reims_dir)
+    if (provenance.get("mode") == "prebuilt"
+            and provenance.get("repo") == "felipeab10/reims-vgpu"
+            and provenance.get("release")):
+        return provenance["release"]
     return None
 
 
@@ -164,6 +184,11 @@ def reims_ctl_install_dir() -> Path:
     depois `~/.cargo/bin/reims-ctl` (que como root é `/root/.cargo/bin`).
     Instalar em outro lugar deixaria o motor recém-instalado invisível.
     """
+    cargo_home = os.environ.get("CARGO_HOME")
+    if cargo_home:
+        path = Path(cargo_home).expanduser()
+        if path.is_absolute():
+            return path / "bin"
     return Path(os.path.expanduser("~/.cargo/bin"))
 
 
@@ -205,6 +230,26 @@ def appliance_build_environment() -> dict[str, str]:
 def qemu_binary() -> Path:
     """O QEMU que o install-ctl.sh instala (symlink `current`)."""
     return qemu_data_dir() / "qemu" / "current" / "bin" / "qemu-system-x86_64"
+
+
+def find_launch_runtime_dir() -> Optional[Path]:
+    """Find a release bundle or the already-installed per-user Reims runtime.
+
+    Developer hosts install ``reims-ctl`` in ``~/.cargo/bin`` and its paired
+    QEMU under ``~/.local/share/reims-ctl``. That installation is complete even
+    when the appliance-style source bundle in ``/opt/reims-vgpu`` is absent or
+    incomplete, so web VM lifecycle must recognize it without downloading or
+    replacing the user's build.
+    """
+    from core.reims_ctl import reims_ctl_bin
+
+    binary = qemu_binary()
+    # On a developer host, prefer the QEMU/controller pair that reims-ctl
+    # already installed for this account. A system-wide appliance bundle can
+    # coexist under /opt and must not replace that runtime during a local test.
+    if os.geteuid() != 0 and reims_ctl_bin() and binary.is_file() and os.access(binary, os.X_OK):
+        return qemu_data_dir()
+    return find_reims_dir()
 
 
 def is_valid_reims_tree(cand: Path) -> bool:
@@ -541,7 +586,42 @@ class BuildError(RuntimeError):
     pass
 
 
-def install_prebuilt(reims_dir: Path) -> bool:
+def install_prebuilt(reims_dir: Path, *, reservation_vm_id: str | None = None) -> bool:
+    """Install a release while excluding VM launches in the appliance."""
+    from contextlib import nullcontext
+    import filecmp
+
+    release = prebuilt_release(reims_dir) or prebuilt_current_release() or "prebuilt"
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in release)
+    target_dir = qemu_data_dir() / "qemu" / safe
+    qemu = target_dir / "bin" / "qemu-system-x86_64"
+    ctl_src = prebuilt_reims_ctl(reims_dir)
+    ctl_dest = reims_ctl_install_dir() / "reims-ctl"
+    ctl_ok = ctl_src is None or (
+        ctl_dest.is_file() and os.access(ctl_dest, os.X_OK)
+        and filecmp.cmp(ctl_src, ctl_dest, shallow=False)
+    )
+    if (prebuilt_current_release() == safe and qemu.is_file()
+            and os.access(qemu, os.X_OK) and ctl_ok):
+        return True
+
+    # Development installs and tests use explicit data directories and should
+    # not acquire the appliance-wide maintenance gate.
+    appliance_runtime = os.geteuid() == 0 and qemu_data_dir() == Path("/root/.local/share/reims-ctl")
+    guard = nullcontext()
+    if appliance_runtime:
+        from core.update_guard import maintenance_window
+
+        guard = maintenance_window(reservation_vm_id=reservation_vm_id)
+    try:
+        with guard:
+            return _install_prebuilt_atomic(reims_dir)
+    except Exception as exc:
+        print(f"  instalação do runtime recusada: {exc}")
+        return False
+
+
+def _install_prebuilt_atomic(reims_dir: Path) -> bool:
     """Instala o QEMU pré-compilado da release no prefixo que o appliance usa.
 
     Espelha o que o `install-ctl.sh` produz na árvore nova:
@@ -595,68 +675,104 @@ def install_prebuilt(reims_dir: Path) -> bool:
         print(f"  binário pré-compilado ausente: {reims_dir / PREBUILT_QEMU_RELS[0]}")
         return False
 
+    staging: Optional[Path] = None
+    backup: Optional[Path] = None
     try:
-        if not (dest.is_file() and os.access(dest, os.X_OK)):
-            (target_dir / "bin").mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
-            dest.chmod(0o755)
+        # Populate a complete versioned directory on the same filesystem, then
+        # publish it with rename. An interrupted copy cannot look installed.
+        base.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=f".{safe}.stage-", dir=base))
+        staged_dest = staging / "bin" / "qemu-system-x86_64"
+        (staging / "bin").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, staged_dest)
+        staged_dest.chmod(0o755)
 
-            # O vGPU procura a ROM pelo `romfile ReimsVgpu.rom`, relativo ao
-            # prefixo do QEMU: ela tem de ficar em share/qemu/, ao lado do
-            # binário. Sem isto a VM sobe sem a GPU virtual e o sintoma é tela
-            # preta.
-            rom_src = prebuilt_rom(reims_dir)
-            if rom_src is not None:
-                rom_dest = target_dir / "share" / "qemu"
-                rom_dest.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(rom_src, rom_dest / "ReimsVgpu.rom")
+        # O vGPU procura a ROM pelo `romfile ReimsVgpu.rom`, relativo ao
+        # prefixo do QEMU: ela tem de ficar em share/qemu/, ao lado do binário.
+        rom_src = prebuilt_rom(reims_dir)
+        if rom_src is not None:
+            rom_dest = staging / "share" / "qemu"
+            rom_dest.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(rom_src, rom_dest / "ReimsVgpu.rom")
+        else:
+            antiga = legacy_gop_rom(reims_dir)
+            if antiga is not None:
+                print(
+                    f"  aviso: a release traz {antiga.name}, que não é a ROM do "
+                    "vGPU; o QEMU precisa de ReimsVgpu.rom (romfile). "
+                    "A VM vai subir sem GPU virtual."
+                )
             else:
-                # Releases antigas traziam outra ROM, com outro nome. Dizer só
-                # "sem ROM" mandaria o usuário procurar no lugar errado.
-                antiga = legacy_gop_rom(reims_dir)
-                if antiga is not None:
-                    print(
-                        f"  aviso: a release traz {antiga.name}, que não é a ROM do "
-                        "vGPU; o QEMU precisa de ReimsVgpu.rom (romfile). "
-                        "A VM vai subir sem GPU virtual."
-                    )
-                else:
-                    print("  aviso: a release não trouxe a ROM do vGPU (ReimsVgpu.rom)")
+                print("  aviso: a release não trouxe a ROM do vGPU (ReimsVgpu.rom)")
 
-            # As demais ROMs do QEMU (pxe, vgabios) acompanham a do vGPU.
-            for origem, destino in (
-                (reims_dir / "vendor" / "qemu" / "build" / "share" / "qemu", target_dir / "share" / "qemu"),
-                (reims_dir / "vendor" / "qemu" / "pc-bios", target_dir / "pc-bios"),
-            ):
-                if origem.is_dir():
-                    for item in origem.iterdir():
-                        alvo = destino / item.name
-                        if alvo.exists():
-                            continue
-                        if item.is_symlink() or item.is_file():
-                            destino.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(item, alvo, follow_symlinks=False)
-                        elif item.is_dir():
-                            shutil.copytree(item, alvo, symlinks=True)
+        # As demais ROMs do QEMU (pxe, vgabios) acompanham a do vGPU.
+        for origem, destino in (
+            (reims_dir / "vendor" / "qemu" / "build" / "share" / "qemu", staging / "share" / "qemu"),
+            (reims_dir / "vendor" / "qemu" / "pc-bios", staging / "pc-bios"),
+        ):
+            if origem.is_dir():
+                for item in origem.iterdir():
+                    alvo = destino / item.name
+                    if alvo.exists():
+                        continue
+                    if item.is_symlink() or item.is_file():
+                        destino.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(item, alvo, follow_symlinks=False)
+                    elif item.is_dir():
+                        shutil.copytree(item, alvo, symlinks=True)
 
         # O motor. Fica no diretório em que `core.reims_ctl.reims_ctl_bin()`
         # procura: o PATH do usuário pode não incluir ~/.cargo/bin, mas aquela
         # função checa o caminho literal, então o motor aparece do mesmo jeito.
+        if not (staged_dest.is_file() and os.access(staged_dest, os.X_OK)):
+            return False
+
+        # Publish the immutable version directory first. If a prior partial
+        # install occupies this version, retain it until the replacement is
+        # complete and restore it if publication fails.
+        if target_dir.exists():
+            backup = base / f".{safe}.backup-{os.getpid()}"
+            if backup.exists():
+                shutil.rmtree(backup, ignore_errors=True)
+            os.replace(target_dir, backup)
+        os.replace(staging, target_dir)
+        staging = None
+
+        # reims-ctl has a stable lookup path. Replace via a same-directory
+        # temporary file so readers see either the old executable or the new.
         if ctl_src is not None and not ctl_ok:
             ctl_dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(ctl_src, ctl_dest)
-            ctl_dest.chmod(0o755)
+            fd, ctl_temp_name = tempfile.mkstemp(prefix=".reims-ctl.", dir=ctl_dest.parent)
+            ctl_temp = Path(ctl_temp_name)
+            try:
+                with os.fdopen(fd, "wb") as out, ctl_src.open("rb") as inp:
+                    shutil.copyfileobj(inp, out)
+                    out.flush()
+                    os.fsync(out.fileno())
+                ctl_temp.chmod(0o755)
+                os.replace(ctl_temp, ctl_dest)
+            except Exception:
+                ctl_temp.unlink(missing_ok=True)
+                raise
 
         link = base / "current"
-        if link.is_symlink() or link.exists():
-            if link.is_dir() and not link.is_symlink():
-                print(f"  {link} é um diretório; não vou substituí-lo.")
-                return False
-            link.unlink()
-        link.symlink_to(target_dir.name)
+        if link.is_dir() and not link.is_symlink():
+            print(f"  {link} é um diretório; não vou substituí-lo.")
+            return False
+        new_link = base / f".current-{os.getpid()}"
+        new_link.unlink(missing_ok=True)
+        new_link.symlink_to(target_dir.name)
+        os.replace(new_link, link)
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
     except OSError as exc:
+        if backup is not None and backup.exists() and not target_dir.exists():
+            os.replace(backup, target_dir)
         print(f"  falha ao instalar o QEMU pré-compilado: {exc}")
         return False
+    finally:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
 
     prov = prebuilt_provenance(reims_dir)
     origin = prov.get("release") or release

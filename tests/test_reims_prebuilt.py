@@ -574,6 +574,16 @@ class PrebuiltDetectionTests(unittest.TestCase):
         self._add_qemu()
         self.assertIsNone(reims_build.prebuilt_release(self.reims))
 
+    def test_iso_provenance_identifies_release_without_dashboard_marker(self):
+        """A release já embutida na ISO não deve depender do botão Preparar."""
+        self._add_qemu()
+        (self.reims / "SOURCE-PROVENANCE.txt").write_text(
+            "mode=prebuilt\nrelease=v1.5.0\nrepo=felipeab10/reims-vgpu\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(reims_build.prebuilt_release(self.reims), "v1.5.0")
+        self.assertEqual(reims_release.current_release(self.reims), "v1.5.0")
+
     def test_source_tree_is_not_prebuilt(self):
         (self.reims / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
         (self.reims / "crates").mkdir()
@@ -1031,7 +1041,7 @@ class EvaluateResolvesTheInstalledPrefixTests(unittest.TestCase):
 
 
 class EnsureReimsBuiltInstallsFirstTests(unittest.TestCase):
-    """`_ensure_reims_built` instala a compilação da ISO ANTES de decidir.
+    """`_ensure_reims_release` instala a release antes de decidir.
 
     O ramo pré-compilado devolvia o estado avaliado **antes** da instalação: a VM
     era recusada por "binário ausente" mesmo com o binário empacotado ali do lado.
@@ -1075,7 +1085,6 @@ class EnsureReimsBuiltInstallsFirstTests(unittest.TestCase):
         from unittest.mock import patch as _patch
 
         patches = [
-            _patch.object(self.tui, "ensure_executable_bits", lambda _d: None),
             _patch.object(self.tui.console, "status", lambda *a, **_k: nullcontext()),
         ]
         for nome, valor in extra.items():
@@ -1097,11 +1106,11 @@ class EnsureReimsBuiltInstallsFirstTests(unittest.TestCase):
 
         with contextlib.ExitStack() as pilha:
             for p in self._patch_tui(
-                evaluate_reims_build={"side_effect": avaliar},
+                evaluate_reims_release={"side_effect": avaliar},
                 install_prebuilt={"return_value": True},
             ):
                 pilha.enter_context(p)
-            ok = self.inst._ensure_reims_built(str(self.reims))
+            ok = self.inst._ensure_reims_release(str(self.reims))
 
         self.assertTrue(ok, "a VM foi recusada com a compilação da ISO instalada")
         self.assertEqual(len(avaliacoes), 2, "o estado não foi reavaliado após instalar")
@@ -1112,7 +1121,7 @@ class EnsureReimsBuiltInstallsFirstTests(unittest.TestCase):
         self.binario.chmod(0o755)
         with contextlib.ExitStack() as pilha:
             for p in self._patch_tui(
-                evaluate_reims_build={
+                evaluate_reims_release={
                     "side_effect": lambda explicit=None: self._estado(self.reims, self.binario)
                 },
                 install_prebuilt={"return_value": True},
@@ -1121,7 +1130,7 @@ class EnsureReimsBuiltInstallsFirstTests(unittest.TestCase):
             instalador = pilha.enter_context(
                 patch.object(self.tui, "install_prebuilt", return_value=True)
             )
-            self.inst._ensure_reims_built(str(self.reims))
+            self.inst._ensure_reims_release(str(self.reims))
         instalador.assert_called_once_with(self.reims)
 
     def test_a_failed_install_refuses_instead_of_launching_nothing(self):
@@ -1145,40 +1154,28 @@ class EnsureReimsBuiltInstallsFirstTests(unittest.TestCase):
 
         with contextlib.ExitStack() as pilha:
             for p in self._patch_tui(
-                evaluate_reims_build={"side_effect": avaliar},
+                evaluate_reims_release={"side_effect": avaliar},
                 install_prebuilt={"return_value": False},
             ):
                 pilha.enter_context(p)
-            self.assertFalse(self.inst._ensure_reims_built(str(self.reims)))
+            self.assertFalse(self.inst._ensure_reims_release(str(self.reims)))
         self.assertEqual(
             len(avaliacoes), 1, "decidiu com um estado que não foi instalado"
         )
 
-    def test_the_source_mode_still_compiles_and_is_not_touched(self):
-        """O modo fontes não pode ter regredido com a mudança do ramo pré-compilado."""
+    def test_source_mode_is_not_silently_accepted(self):
+        """A appliance exige bundle/tag pré-compilado; fonte não é fallback."""
         from types import SimpleNamespace
 
-        com_fontes = SimpleNamespace(
-            reims_dir=self.reims,
-            sources_present=True,
-            needs_build=False,
-            reason="fontes atualizadas",
-            binary_path=self.binario,
-        )
+        sem_release = SimpleNamespace(reims_dir=None, binary_path=None)
         with contextlib.ExitStack() as pilha:
-            for p in self._patch_tui(
-                evaluate_reims_build={"return_value": com_fontes},
-                install_prebuilt={"return_value": True},
-            ):
+            for p in self._patch_tui(evaluate_reims_release={"return_value": sem_release}):
                 pilha.enter_context(p)
             instalador = pilha.enter_context(
                 patch.object(self.tui, "install_prebuilt", return_value=True)
             )
-            self.assertTrue(self.inst._ensure_reims_built(str(self.reims)))
-        self.assertFalse(
-            instalador.called,
-            "o modo fontes não pode instalar o pré-compilado",
-        )
+            self.assertFalse(self.inst._ensure_reims_release(str(self.reims)))
+        self.assertFalse(instalador.called)
 
 
 class ReimsReleaseMenuItemWiringTests(unittest.TestCase):
@@ -1251,7 +1248,7 @@ class ReimsReleaseMenuItemWiringTests(unittest.TestCase):
             saida, vistos = self._rodar_menu(["A", "0"])
         self.assertEqual(vistos, ["A", "0"])
         self.assertEqual(chamadas, ["A"], 'a tecla "A" não chamou a rotina da release')
-        self.assertIn("Atualizar reims-vgpu", saida, "a opção não aparece no menu")
+        self.assertIn("Selecionar release do reims-vgpu", saida, "a opção não aparece no menu")
 
     def test_lowercase_a_also_works(self):
         chamadas = []
@@ -1677,6 +1674,7 @@ class ReleaseScriptContractTests(unittest.TestCase):
         Medido neste host (GNU tar 1.35): `-xzf` sobre arquivo existente dá
         rc=0 e o conteúdo do pacote vence; `-xkzf` dá rc=2 e mantém o antigo.
         """
+        self.skipTest("build-iso no longer has a source-update extraction mode")
         import subprocess as sp
 
         texto = BUILD_ISO.read_text(encoding="utf-8")
@@ -1713,6 +1711,7 @@ class ReleaseScriptContractTests(unittest.TestCase):
             self.assertEqual(sem_k.returncode, 0, sem_k.stderr)
             self.assertEqual((raiz / "a.txt").read_text(encoding="utf-8"), "novo")
 
+    @unittest.skip("ISO now retains the tagged bundle; ROM selection is verified by core.reims_release")
     def test_build_iso_refuses_to_rename_the_legacy_rom(self):
         """O shell e o Python têm de dar o MESMO veredito sobre a ROM antiga.
 
@@ -1810,6 +1809,7 @@ class ReleaseScriptContractTests(unittest.TestCase):
         (destino / "reims-vgpu-gop.rom").write_bytes(b"gop antiga de 26112 B")
         return raiz
 
+    @unittest.skip("ISO no longer installs a duplicate QEMU/ROM runtime outside the release bundle")
     def test_the_rom_block_installs_the_new_rom_when_it_exists(self):
         """O outro sentido do achado C: com a ROM NOVA, o bloco a escolhe mesmo.
 
@@ -1877,6 +1877,7 @@ class ReleaseScriptContractTests(unittest.TestCase):
             "prebuilt_rom e o shell discordam sobre qual ROM instalar",
         )
 
+    @unittest.skip("ISO no longer installs a duplicate QEMU/ROM runtime outside the release bundle")
     def test_the_install_block_writes_the_new_rom_under_the_expected_name(self):
         """A ponta que faltava: o `install` de verdade, com as DUAS ROMs presentes.
 
@@ -2281,9 +2282,8 @@ class QemuPrefixLayoutTests(unittest.TestCase):
 class BuildIsoFlagSemanticsTests(unittest.TestCase):
     """As flags do `build-iso.sh` não podem mentir sobre o que vão fazer.
 
-    O padrão é pré-compilado; `--source` e `--from-source` pedem o modo fontes.
-    Se `--source` fosse ignorado em silêncio, o usuário acharia que compilou
-    quando na verdade baixou um binário de release.
+    A ISO aceita releases marcadas; não oferece modo fontes, portanto não pode
+    ignorar uma opção de fontes em silêncio.
     """
 
     SCRIPT = Path(__file__).resolve().parents[1] / "appliance" / "build-iso.sh"
@@ -2294,17 +2294,18 @@ class BuildIsoFlagSemanticsTests(unittest.TestCase):
         self.texto = self.SCRIPT.read_text(encoding="utf-8")
 
     def test_default_is_prebuilt(self):
-        self.assertRegex(self.texto, r"(?m)^REIMS_PREBUILT=1$")
+        self.assertIn("Obtenção obrigatória do reims-vgpu pré-compilado", self.texto)
+        self.assertIn('"mode=prebuilt"', self.texto)
 
     def test_source_flag_turns_off_prebuilt(self):
-        bloco = self.texto.split("-s|--source)", 1)
-        self.assertEqual(len(bloco), 2, "--source desapareceu do parser")
-        # O `--source` tem de desligar o pré-compilado no seu próprio bloco.
-        self.assertIn("REIMS_PREBUILT=0", bloco[1].split(";;", 1)[0])
+        self.assertNotRegex(self.texto, r"(?m)^\s*-s\|--source\)")
+        self.assertNotIn("--from-source", self.texto)
 
     def test_help_documents_every_mode(self):
-        for termo in ("--release", "--from-source", "--update-sources", "--prebuilt"):
+        for termo in ("--release", "--update-reims-util", "--reims-util-ref"):
             self.assertIn(termo, self.texto, f"--help não documenta {termo}")
+        for termo in ("--from-source", "--update-sources", "--prebuilt"):
+            self.assertNotIn(termo, self.texto)
 
 
 class ReleaseAssetContractTests(unittest.TestCase):
@@ -2953,7 +2954,7 @@ class ReleaseFlowDocumentationTests(unittest.TestCase):
     def test_readme_mentions_the_release_workflow(self):
         readme = Path(__file__).resolve().parents[1] / "README.md"
         text = readme.read_text(encoding="utf-8")
-        for termo in ("--release", "--from-source", "--update-sources"):
+        for termo in ("--release", "pré-compilado"):
             self.assertIn(termo, text, f"README não documenta {termo}")
 
 
@@ -3149,15 +3150,15 @@ class AArvorePreCompiladaEhEncontradaTests(unittest.TestCase):
             "que é o caso de TODO usuário da ISO pronta",
         )
 
-    def test_a_checkout_de_fontes_continua_valendo(self):
-        """A correção não pode trocar um caso pelo outro."""
+    def test_checkout_de_fontes_nao_e_release_precompilada(self):
+        """Um checkout sem tag/binário não pode virar fallback de release."""
         for rel in (reims_build.INSTALL_CTL_REL, reims_build.QEMU_BUILD_LEGACY_REL):
             with self.subTest(marcador=str(rel)):
                 raiz = self.base / f"fontes-{rel.parent.name}"
                 (raiz / rel).parent.mkdir(parents=True, exist_ok=True)
                 (raiz / rel).write_text("#!/bin/sh\n", encoding="utf-8")
-                self.assertTrue(reims_build.is_valid_reims_tree(raiz))
-                self.assertEqual(reims_build.find_reims_dir(raiz), raiz)
+                self.assertFalse(reims_build.is_valid_reims_tree(raiz))
+                self.assertIsNone(reims_build.find_reims_dir(raiz))
 
     def test_a_diretorio_vazio_nao_e_arvore(self):
         """O critério não pode ficar tão frouxo que aceite qualquer diretório."""

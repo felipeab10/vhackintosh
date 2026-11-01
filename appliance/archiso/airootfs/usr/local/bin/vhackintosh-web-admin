@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "Execute este comando como root no console local do appliance." >&2
+  exit 1
+fi
+if [[ ! -t 0 || -n "${SSH_CONNECTION:-}" || -n "${SSH_TTY:-}" ]]; then
+  echo "A configuração do administrador só pode ser feita em um terminal local do appliance." >&2
+  exit 1
+fi
+
+WEB_ROOT="/opt/vhackintosh/web/current"
+if [[ ! -d "${WEB_ROOT}/web/api" || ! -d "${WEB_ROOT}/vendor" ]]; then
+  echo "Runtime do painel não está instalado corretamente." >&2
+  exit 1
+fi
+
+exec /usr/bin/runuser -u vhackintosh-web -- /usr/bin/env \
+  PYTHONPATH="${WEB_ROOT}/vendor:${WEB_ROOT}" \
+  /usr/bin/python3 -m web.api.admin_cli setup "$@"
