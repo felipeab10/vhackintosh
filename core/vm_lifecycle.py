@@ -683,7 +683,16 @@ class VMLifecycleService:
                 return self._reject(vm, phase, "ctl_missing", "reims-ctl não encontrado.", interaction="continue")
 
             base_argv = [ctl_bin, "start", vm.id]
-            start_argv, no_graphical_session = self.hooks.session_argv(base_argv, env_vars)
+            try:
+                start_argv, no_graphical_session = self.hooks.session_argv(base_argv, env_vars)
+            except RuntimeError as exc:
+                return self._reject(
+                    vm,
+                    phase,
+                    "display_session_unavailable",
+                    str(exc),
+                    interaction="continue",
+                )
             if no_graphical_session:
                 emit("no_graphical_session", {"vm_id": vm.id})
 

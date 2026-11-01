@@ -386,6 +386,12 @@ mkdir -p "${SYSTEMD_WANTS}"
 install -m 0644 \
     "${ARCHISO_PROFILE_SOURCE}/airootfs/etc/systemd/system/vhackintosh-vm@.service" \
     "${ARCHISO_PROFILE}/airootfs/etc/systemd/system/vhackintosh-vm@.service"
+install -m 0644 \
+    "${ARCHISO_PROFILE_SOURCE}/airootfs/etc/systemd/system/vhackintosh-display.service" \
+    "${ARCHISO_PROFILE}/airootfs/etc/systemd/system/vhackintosh-display.service"
+install -m 0755 \
+    "${ARCHISO_PROFILE_SOURCE}/airootfs/usr/local/bin/vhackintosh-wait-wayland" \
+    "${ARCHISO_PROFILE}/airootfs/usr/local/bin/vhackintosh-wait-wayland"
 ln -sfn ../vhackintosh-agent.service "${SYSTEMD_WANTS}/vhackintosh-agent.service"
 ln -sfn ../vhackintosh-web.service "${SYSTEMD_WANTS}/vhackintosh-web.service"
 

@@ -185,7 +185,12 @@ class ABInstallerTest:
                 Prompt.ask(i18n.t("installer.prompt.exit"))
                 return
             ctl = reims_ctl.reims_ctl_bin()
-            cmd, sem_sessao = reims_ctl.session_argv([ctl, "start", vm.id], env)
+            try:
+                cmd, sem_sessao = reims_ctl.session_argv([ctl, "start", vm.id], env)
+            except RuntimeError as exc:
+                console.print(f"[bold red]Não foi possível iniciar o display compartilhado: {exc}[/bold red]")
+                Prompt.ask(i18n.t("installer.prompt.exit"))
+                return
             if sem_sessao:
                 console.print(i18n.t("installer.warn.no_session"))
             reims_ctl.ReimsCtlSession(cmd, env=env).wait()

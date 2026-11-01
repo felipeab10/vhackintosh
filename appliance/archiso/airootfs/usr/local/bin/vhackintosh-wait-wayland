@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Wait for the shared Sway service to publish its Wayland socket before a VM
+# supervisor is allowed to start a Reims SDL window.
+set -u
+
+: "${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set}"
+: "${WAYLAND_DISPLAY:?WAYLAND_DISPLAY must be set}"
+
+if [[ "$WAYLAND_DISPLAY" = /* ]]; then
+    socket_path="$WAYLAND_DISPLAY"
+else
+    socket_path="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+fi
+
+for _ in {1..600}; do
+    [[ -S "$socket_path" ]] && exit 0
+    sleep 0.05
+done
+
+echo "vhackintosh-wait-wayland: Wayland socket did not become ready: $socket_path" >&2
+exit 1

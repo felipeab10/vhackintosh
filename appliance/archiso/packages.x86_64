@@ -54,6 +54,7 @@ socat
 # indefinido. São 41 KB instalados.
 sway
 swaybg
+util-linux
 wayland
 libinput
 ttf-dejavu
