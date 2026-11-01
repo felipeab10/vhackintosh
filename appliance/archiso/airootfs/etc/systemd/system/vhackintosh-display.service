@@ -1,6 +1,7 @@
 [Unit]
 Description=vHackintosh shared Wayland display for VM windows
-After=local-fs.target
+After=local-fs.target seatd.service
+Requires=seatd.service
 
 [Service]
 Type=simple

@@ -402,6 +402,10 @@ for service in vhackintosh-agent.service vhackintosh-web.service; do
         exit 1
     fi
 done
+if [ ! -e "/mnt/usr/lib/systemd/system/seatd.service" ]; then
+    echo -e "${RED}Erro: o pacote seatd e sua unidade systemd são necessários para iniciar o compositor gráfico.${NC}"
+    exit 1
+fi
 mkdir -p "${SYSTEMD_WANTS_DIR}"
 ln -sfn ../vhackintosh-agent.service "${SYSTEMD_WANTS_DIR}/vhackintosh-agent.service"
 ln -sfn ../vhackintosh-web.service "${SYSTEMD_WANTS_DIR}/vhackintosh-web.service"
