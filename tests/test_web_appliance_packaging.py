@@ -74,6 +74,8 @@ class WebAppliancePackagingTests(unittest.TestCase):
         self.assertIn("vhackintosh-waysession", service["ExecStart"])
         self.assertIn("core.display_session_guard", service["ExecStart"])
         self.assertEqual(service["RuntimeDirectory"], "vhackintosh-display")
+        self.assertIn("seatd.service", display["Unit"].get("Requires", ""))
+        self.assertIn("seatd.service", display["Unit"].get("After", ""))
         self.assertEqual(service["Environment"].split("\\n")[-1], "WAYLAND_DISPLAY=wayland-0")
         self.assertIn("ExecStartPost=/usr/bin/bash /usr/local/bin/vhackintosh-wait-wayland", display_text)
         self.assertEqual(service["KillMode"], "control-group")
@@ -84,6 +86,15 @@ class WebAppliancePackagingTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
+
+    def test_seatd_is_installed_and_enabled_for_live_and_installed_appliances(self):
+        packages = (ROOT / "appliance/archiso/packages.x86_64").read_text(encoding="utf-8")
+        self.assertRegex(packages, r"(?m)^seatd$")
+        wants = AIROOTFS / "etc/systemd/system/multi-user.target.wants/seatd.service"
+        self.assertTrue(wants.is_symlink())
+        self.assertTrue((AIROOTFS / "usr/local/bin/vhackintosh-install").exists())
+        installer = (AIROOTFS / "usr/local/bin/vhackintosh-install").read_text(encoding="utf-8")
+        self.assertIn("/mnt/usr/lib/systemd/system/seatd.service", installer)
 
     def test_build_downloads_and_marks_reims_before_packaging_web_bundle(self):
         build = (ROOT / "appliance/build-iso.sh").read_text(encoding="utf-8")
