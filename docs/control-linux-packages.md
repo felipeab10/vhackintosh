@@ -1,7 +1,7 @@
 # Pacotes Linux do vHackintosh Control
 
-O script `packaging/build-all.sh` compila o frontend uma vez, monta o payload
-comum e cria pacotes para três ambientes x86-64 em containers:
+O script `packaging/build-all.sh` compila o frontend uma vez e cria pacotes
+para três ambientes x86-64 em containers:
 
 - Ubuntu 24.04 LTS: `.deb`
 - Fedora 44: `.rpm`
@@ -20,11 +20,12 @@ O primeiro argumento é a versão e o segundo é o diretório de saída. Se fore
 omitidos, o script usa `1.0.0` e `dist/`. A engine pode ser escolhida com
 `VHACK_CONTAINER_ENGINE=podman` ou `VHACK_CONTAINER_ENGINE=docker`.
 
-Cada pacote é montado dentro de uma imagem limpa da sua distribuição. Os
-containers são usados apenas para empacotar; o frontend e as dependências
-Python são preparados no host de build e compartilhados como um payload. O
-script valida os metadados de cada artefato e grava `SHA256SUMS` no diretório
-de saída.
+Cada pacote é montado dentro de uma imagem limpa da sua distribuição. O
+frontend e o código da aplicação são compartilhados; as dependências Python
+são instaladas dentro do container de cada sistema para que extensões nativas,
+como `pydantic-core`, correspondam à versão do Python do pacote. O build
+confere esse ABI antes de empacotar, valida os metadados e grava `SHA256SUMS`
+no diretório de saída.
 
 ## Gerar e publicar a próxima release beta
 

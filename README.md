@@ -85,10 +85,11 @@ catálogo real do usuário, mas mantém os serviços de desenvolvimento no loopb
 
 ### Empacotar e instalar o Control em Linux
 
-O gerador `packaging/build-all.sh` constrói o payload uma vez e produz os
+O gerador `packaging/build-all.sh` compila o frontend uma vez e produz os
 pacotes `.deb` (Ubuntu 24.04), `.rpm` (Fedora 44) e `.pkg.tar.zst` (Arch Linux)
-usando Podman ou Docker. Releases futuras com tag `control-v*` publicam os três
-formatos junto com checksums. Veja [como gerar e instalar os pacotes Linux](docs/control-linux-packages.md)
+usando Podman ou Docker, com dependências Python nativas compatíveis com cada
+distribuição. Releases futuras com tag `control-v*` publicam os três formatos
+junto com checksums. Veja [como gerar e instalar os pacotes Linux](docs/control-linux-packages.md)
 e o [guia de instalação do Ubuntu](docs/control-ubuntu-install.md).
 Para gerar e publicar a próxima tag beta automaticamente após integrar o
 workflow, execute `packaging/build-all.sh --publish`.
