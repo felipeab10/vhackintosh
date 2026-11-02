@@ -35,7 +35,13 @@ jobs:
         with:
           python-version: "3.12"
       - name: Build Debian package
-        run: packaging/deb/build.sh "${GITHUB_REF_NAME#control-v}" dist
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/control-v* ]]; then
+            version="${GITHUB_REF_NAME#control-v}"
+          else
+            version="0.0.${GITHUB_RUN_NUMBER}"
+          fi
+          packaging/deb/build.sh "$version" dist
       - name: Validate package metadata
         run: dpkg-deb --info dist/vhackintosh-control_*_amd64.deb
       - name: Install package and check first-run services
