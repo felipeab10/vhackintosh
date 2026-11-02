@@ -1,4 +1,7 @@
 export const appMessages: Record<string, string> = {
+  'Primeiro acesso: usuário admin e senha vhackintosh. Será obrigatório criar uma nova senha após entrar.': 'First sign-in: username admin and password vhackintosh. You must create a new password after signing in.',
+  'Defina uma nova senha antes de continuar.': 'Set a new password before continuing.',
+  'PROTEÇÃO DA CONTA': 'ACCOUNT PROTECTION', 'Crie uma nova senha': 'Create a new password', 'A senha provisória só pode ser usada neste primeiro acesso. Defina uma senha nova para continuar.': 'The temporary password can only be used for this first sign-in. Set a new password to continue.',
   'Uso da VRAM': 'VRAM usage', 'VRAM usada': 'VRAM used', 'VRAM por placa': 'VRAM per GPU', 'Sem uso': 'Not in use',
   'Verificando aprovação automaticamente a cada 10 segundos enquanto este painel estiver aberto.': 'Automatically checking for approval every 10 seconds while this dashboard is open.',
   'Ver detalhes da ativação': 'View activation details',

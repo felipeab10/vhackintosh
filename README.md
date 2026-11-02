@@ -69,8 +69,10 @@ vhackintosh/
 ### Painel web de gerenciamento
 
 No appliance, consulte no console/TUI o endereço anunciado pelo serviço web.
-No primeiro acesso, crie a conta administrativa uma vez pelo console local com
-`vhackintosh-web-admin setup`; depois entre pelo navegador com usuário e senha.
+Em uma instalação nova, o primeiro acesso usa `admin` / `vhackintosh` e exige
+a troca imediata da senha. Depois, o painel abre as configurações do runtime
+Reims para baixar uma release publicada antes de criar a primeira VM. No
+Appliance, o mesmo fluxo cria a conta no primeiro boot.
 A ativação do produto é opcional e pode ser solicitada depois do login. O painel cria VMs em tarefas
 assíncronas, acompanha métricas e controla a energia de cada convidado. O
 comportamento padrão é `vm-only`: ações de energia do macOS não desligam nem
@@ -80,6 +82,16 @@ da TUI não é uma opção disponível no painel.
 Para executar o painel contra o host durante o desenvolvimento, consulte
 [`docs/web-manager-dev-host.md`](docs/web-manager-dev-host.md). Esse modo usa o
 catálogo real do usuário, mas mantém os serviços de desenvolvimento no loopback.
+
+### Instalar o Control em Ubuntu
+
+O pacote `.deb` para Ubuntu 24.04 LTS amd64 está publicado nas releases com o
+prefixo `control-v`. Baixe `vhackintosh-control_<versão>_amd64.deb` e instale
+com `sudo apt install ./vhackintosh-control_<versão>_amd64.deb`. O serviço inicia
+automaticamente; abra `https://localhost:8443` no host ou use o endereço de rede.
+O runtime Reims vGPU é baixado depois do primeiro login. Veja o
+[guia de instalação do Ubuntu](docs/control-ubuntu-install.md) para requisitos,
+serviços e diagnóstico.
 
 ### Iniciar o gerenciador
 

@@ -1,10 +1,11 @@
 #!/usr/bin/python3
-"""Remove legacy web bootstrap secrets and announce local account setup."""
+"""Create the first administrator account and announce its one-time credentials."""
 
 from __future__ import annotations
 
 import argparse
 import os
+import pwd
 import sqlite3
 import stat
 import sys
@@ -45,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--database", default="/var/lib/vhackintosh/web/auth.sqlite")
     parser.add_argument("--code-file", default="/run/vhackintosh-web/bootstrap-code")
     parser.add_argument("--console", default="/dev/console")
+    parser.add_argument("--web-user", default="vhackintosh-web")
     args = parser.parse_args(argv)
     code_file = Path(args.code_file)
     try:
@@ -55,21 +57,43 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Falha ao limpar código antigo de configuração do painel: {exc}", file=sys.stderr)
         return 1
 
+    root = Path.cwd()
+    if (root / "vendor").is_dir():
+        sys.path.insert(0, str(root / "vendor"))
+    sys.path.insert(0, str(root))
     try:
-        if _has_admin(Path(args.database)):
-            return 0
-    except sqlite3.Error as exc:
-        print(f"Falha ao verificar a conta administrativa local: {exc}", file=sys.stderr)
+        from web.api.app import SQLiteAuthStore
+
+        store = SQLiteAuthStore(args.database)
+        created = store.ensure_default_admin()
+        if created and os.geteuid() == 0:
+            try:
+                account = pwd.getpwnam(args.web_user)
+                database = Path(args.database)
+                os.chown(database, account.pw_uid, account.pw_gid)
+                database.chmod(0o600)
+                for suffix in ("-wal", "-shm"):
+                    sidecar = Path(f"{database}{suffix}")
+                    if sidecar.exists():
+                        os.chown(sidecar, account.pw_uid, account.pw_gid)
+                        sidecar.chmod(0o600)
+            except KeyError:
+                # Host-side tests and development environments may omit the service account.
+                pass
+    except (ImportError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        print(f"Falha ao preparar a conta administrativa inicial: {exc}", file=sys.stderr)
         return 1
+    if not created:
+        return 0
 
     message = (
-        "\n\033[96m[vHackintosh] Primeiro acesso ao painel:\033[0m\n"
-        "  No console local, execute: vhackintosh-web-admin setup\n"
-        "  Depois entre no painel com o usuário e a senha criados.\n"
-        "  A ativação do produto é opcional e pode ser solicitada após o login.\n\n"
+        "\n\033[96m[vHackintosh] Conta inicial do painel criada:\033[0m\n"
+        "  Usuário: admin\n"
+        "  Senha provisória: vhackintosh\n"
+        "  No primeiro acesso, será obrigatório definir uma nova senha.\n\n"
     )
     if not _print_local_console(Path(args.console), message):
-        print("Primeiro acesso pendente; use vhackintosh-web-admin setup no console local.", file=sys.stderr)
+        print("Conta inicial criada; o painel exigirá a troca da senha no primeiro acesso.")
     return 0
 
 

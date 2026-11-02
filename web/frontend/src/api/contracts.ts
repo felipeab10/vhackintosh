@@ -3,6 +3,8 @@ export interface SessionView {
   username: string | null;
   expires_at: string | null;
   bootstrap_required: boolean;
+  must_change_password?: boolean;
+  default_credentials_available?: boolean;
   tls_fingerprint: string | null;
 }
 
