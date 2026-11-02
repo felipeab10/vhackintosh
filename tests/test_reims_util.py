@@ -68,7 +68,7 @@ class ReimsUtilLocatorTests(unittest.TestCase):
                 self.assertIsNone(reims_util.find_reims_util())
                 self.assertFalse(reims_util.is_available())
 
-    def test_cargo_home_comes_before_path_and_before_the_baked_copy(self):
+    def test_packaged_apv_binary_precedes_stale_cargo_and_path_copies(self):
         with tempfile.TemporaryDirectory() as td:
             cargo_home = Path(td) / "cargo"
 
@@ -77,6 +77,8 @@ class ReimsUtilLocatorTests(unittest.TestCase):
             ):
                 order = [str(candidate) for candidate in reims_util.candidate_binaries()]
 
+            packaged = "/opt/vhackintosh/resources/reims-util/reims-util"
+            self.assertEqual(order[0], packaged)
             self.assertIn(str(cargo_home / "bin" / "reims-util"), order)
             self.assertLess(
                 order.index(str(cargo_home / "bin" / "reims-util")),

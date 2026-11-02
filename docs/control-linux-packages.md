@@ -25,7 +25,9 @@ frontend e o código da aplicação são compartilhados; as dependências Python
 são instaladas dentro do container de cada sistema para que extensões nativas,
 como `pydantic-core`, correspondam à versão do Python do pacote. O build
 confere esse ABI antes de empacotar, valida os metadados e grava `SHA256SUMS`
-no diretório de saída.
+no diretório de saída. Também compila a revisão oficial do `reims-util` com
+suporte APV em um builder Ubuntu 24.04 e inclui o mesmo binário compatível nos
+três pacotes.
 
 ## Gerar e publicar a próxima release beta
 
@@ -71,7 +73,8 @@ sudo pacman -U ./vhackintosh-control-<versão>-1-x86_64.pkg.tar.zst
 
 Após instalar, abra `https://localhost:8443`. O primeiro acesso usa `admin` /
 `vhackintosh`, pede uma senha nova e então permite selecionar a release do
-Reims vGPU. O pacote Control não inclui o runtime Reims.
+Reims vGPU. O pacote inclui o `reims-util` oficial validado para gerar EFI com
+os kexts APV; o runtime Reims/QEMU continua sendo baixado separadamente.
 
 As releases são voltadas a hosts x86-64 com systemd. Iniciar uma VM também
 requer virtualização KVM disponível e GPU/driver Vulkan compatíveis. Construir

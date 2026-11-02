@@ -4,7 +4,7 @@ pkgrel=1
 pkgdesc='vHackintosh Control and macOS VM host manager'
 arch=('x86_64')
 url='https://github.com/felipeab10/vhackintosh'
-license=('MIT' 'GPL-3.0-or-later' 'BSD-3-Clause')
+license=('MIT' 'GPL-3.0-or-later' 'GPL-2.0-or-later' 'LGPL-3.0-or-later' 'BSD-3-Clause')
 depends=('systemd' 'python>=3.12' 'openssl' 'curl' 'kbd' 'sway' 'swaybg' 'seatd'
          'dbus' 'pipewire' 'pipewire-pulse' 'wireplumber' 'vulkan-icd-loader'
          'mesa' 'gtk3' 'libepoxy' 'pixman' 'libslirp' 'libpng' 'libjpeg-turbo'

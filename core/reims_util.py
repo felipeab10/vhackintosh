@@ -23,6 +23,9 @@ OPENCORE_PICKER_TIMEOUT = 45
 
 
 REIMS_UTIL_CANDIDATES = (
+    # Linux distro packages ship the exact upstream revision validated for APV.
+    # Prefer it over user-installed Cargo/PATH copies, which may predate APV.
+    Path("/opt/vhackintosh/resources/reims-util/reims-util"),
     Path(os.path.expanduser("~/.cargo/bin/reims-util")),
     Path("/root/.cargo/bin/reims-util"),
     Path("/usr/local/bin/reims-util"),
@@ -73,16 +76,16 @@ def _cargo_home_bin() -> Path:
 def candidate_binaries() -> tuple[Path, ...]:
     """Candidatos na ordem em que são testados.
 
-    Espelha o `reims_util::binary()` do reims-ctl: primeiro o binário instalado
-    ao lado do reims-ctl (o que o próprio appliance compilou, na revisão que o
-    reims-ctl exige), depois o PATH — onde a ISO deixa o binário que carrega
-    pronto em /usr/local/bin. Um reims-util antigo vindo da ISO nunca deve
-    vencer o que o appliance acabou de instalar.
+    O pacote do Control vem primeiro: ele carrega a revisão oficial testada com
+    APV. Em um checkout de desenvolvimento, seguimos com o binário em
+    CARGO_HOME, o diretório ao lado de reims-ctl, PATH e por último a cópia da
+    ISO; uma cópia antiga do host não pode substituir o utilitário validado.
     """
     which_path = shutil.which("reims-util")
     raw: tuple[Optional[Path], ...] = (
+        *REIMS_UTIL_CANDIDATES[:1],
         _cargo_home_bin(),
-        *REIMS_UTIL_CANDIDATES[:2],
+        *REIMS_UTIL_CANDIDATES[1:2],
         Path(which_path) if which_path else None,
         *REIMS_UTIL_EXTRA_LOCATIONS[1:],
     )

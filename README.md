@@ -88,7 +88,8 @@ catálogo real do usuário, mas mantém os serviços de desenvolvimento no loopb
 O gerador `packaging/build-all.sh` compila o frontend uma vez e produz os
 pacotes `.deb` (Ubuntu 24.04), `.rpm` (Fedora 44) e `.pkg.tar.zst` (Arch Linux)
 usando Podman ou Docker, com dependências Python nativas compatíveis com cada
-distribuição. Releases futuras com tag `control-v*` publicam os três formatos
+distribuição. O build também compila e inclui o `reims-util` oficial com suporte
+APV em todos os formatos. Releases futuras com tag `control-v*` publicam os três formatos
 junto com checksums. Veja [como gerar e instalar os pacotes Linux](docs/control-linux-packages.md)
 e o [guia de instalação do Ubuntu](docs/control-ubuntu-install.md).
 Para gerar e publicar a próxima tag beta automaticamente após integrar o

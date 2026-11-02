@@ -180,7 +180,7 @@ class DiskProvisioner:
                 if not generated:
                     raise RuntimeError(
                         "Não foi possível gerar uma EFI com os kexts APV pelo reims-util oficial. "
-                        "Atualize o reims-util no menu do vHackintosh e tente novamente."
+                        "Atualize o pacote vHackintosh Control para instalar o reims-util APV validado e tente novamente."
                     )
             progress.update(task2, description="[bold green]✔ OpenCore EFI pronto para boot![/bold green]")
 
