@@ -1,0 +1,28 @@
+[Unit]
+Description=vHackintosh macOS VM %i
+After=local-fs.target
+RequiresMountsFor=/root/.config/vhackintosh
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vhackintosh/web/current
+Environment=PYTHONPATH=/opt/vhackintosh/web/current/vendor
+Environment=VHACKINTOSH_VM_CATALOG=/root/.config/vhackintosh/vms.json
+Environment=VHACKINTOSH_CONFIG_DIR=/root/.config/vhackintosh
+Environment=VHACKINTOSH_REIMS_REGISTRY=/root/.config/reims-ctl/vms.toml
+Environment=XDG_CONFIG_HOME=/root/.config
+Environment=XDG_DATA_HOME=/root/.local/share
+Environment=CARGO_HOME=/root/.cargo
+Environment=VHACKINTOSH_VM_ID=%i
+Environment=VHACKINTOSH_VM_CONTROL_BASE=%t
+Environment=VHACKINTOSH_VM_SUPERVISOR=1
+Environment=VHACKINTOSH_VM_DISPLAY_MODE=desktop
+RuntimeDirectory=vh-%i
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/python3 -m core.vm_supervisor --vm-id %i
+KillMode=control-group
+TimeoutStopSec=30s
+UMask=0077
+StandardOutput=journal
+StandardError=journal

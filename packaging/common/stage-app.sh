@@ -46,9 +46,11 @@ install -d "${DESTDIR}/usr/lib/systemd/system" "${DESTDIR}/etc/vhackintosh" \
   "${DESTDIR}/usr/local/bin" "${DESTDIR}/usr/lib/sysusers.d" "${DESTDIR}/usr/lib/tmpfiles.d"
 install -m 0644 "${ROOT}/packaging/systemd/vhackintosh-http-redirect.service" \
   "${DESTDIR}/usr/lib/systemd/system/vhackintosh-http-redirect.service"
-for unit in vhackintosh-web.service vhackintosh-agent.service vhackintosh-display.service vhackintosh-vm@.service; do
+for unit in vhackintosh-web.service vhackintosh-agent.service vhackintosh-display.service; do
   install -m 0644 "${ROOT}/appliance/archiso/airootfs/etc/systemd/system/${unit}" "${DESTDIR}/usr/lib/systemd/system/${unit}"
 done
+install -m 0644 "${ROOT}/packaging/systemd/vhackintosh-vm@.service" \
+  "${DESTDIR}/usr/lib/systemd/system/vhackintosh-vm@.service"
 install -m 0644 "${ROOT}/appliance/archiso/airootfs/etc/vhackintosh/sway.conf" "${DESTDIR}/etc/vhackintosh/sway.conf"
 install -m 0644 "${ROOT}/appliance/archiso/airootfs/usr/lib/sysusers.d/vhackintosh-web.conf" "${DESTDIR}/usr/lib/sysusers.d/vhackintosh-web.conf"
 install -m 0644 "${ROOT}/appliance/archiso/airootfs/usr/lib/tmpfiles.d/vhackintosh-web.conf" "${DESTDIR}/usr/lib/tmpfiles.d/vhackintosh-web.conf"

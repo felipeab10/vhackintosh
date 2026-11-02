@@ -13,6 +13,7 @@ import re
 from typing import Callable, Sequence
 
 from core.config import VMManagerStore, VMS_FILE
+from core.display_session import discover_graphical_environment
 from core.vm_lifecycle import LaunchResult, VMLifecycleService
 
 _VM_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -27,6 +28,26 @@ def run_vm(
     """Run the existing shared launch pipeline for one validated catalog ID."""
     if not isinstance(vm_id, str) or not _VM_ID.fullmatch(vm_id):
         raise ValueError("invalid VM ID for systemd instance")
+
+    # Desktop packages run the supervisor as root, outside the login user's
+    # graphical session. Reuse that session's socket so QEMU opens a normal
+    # desktop window instead of trying to seize a second DRM/VT session. The
+    # appliance unit deliberately keeps its own shared compositor environment.
+    if os.environ.get("VHACKINTOSH_VM_DISPLAY_MODE") == "desktop":
+        display_environment = discover_graphical_environment()
+        if display_environment:
+            os.environ.update(display_environment)
+            print(
+                "vm-supervisor: using the active desktop graphical session "
+                f"({display_environment.get('XDG_SESSION_TYPE', 'unknown')})",
+                flush=True,
+            )
+        else:
+            print(
+                "vm-supervisor: no active desktop display found; "
+                "falling back to the shared compositor",
+                flush=True,
+            )
 
     catalog_path = os.environ.get("VHACKINTOSH_VM_CATALOG") or str(VMS_FILE)
     store = (store_factory or VMManagerStore)(catalog_path)

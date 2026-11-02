@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import os
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from core.vm_lifecycle import LaunchResult
 from core.vm_supervisor import run_vm
@@ -31,6 +32,35 @@ class VmSupervisorEntrypointTests(unittest.TestCase):
         lifecycle.start.return_value = LaunchResult(vm_id="macos-test", state="completed", phase="installed")
 
         result = run_vm("macos-test", store_factory=lambda _path: store, lifecycle_factory=lambda _store: lifecycle)
+
+        self.assertEqual(result, 0)
+        lifecycle.start.assert_called_once_with(vm)
+
+    def test_desktop_mode_uses_the_active_users_graphical_session(self):
+        vm = Mock()
+        store = Mock()
+        store.get_vm.return_value = vm
+        lifecycle = Mock()
+        lifecycle.start.return_value = LaunchResult(
+            vm_id="macos-test", state="completed", phase="installed"
+        )
+        display = {
+            "XDG_RUNTIME_DIR": "/run/user/1000",
+            "WAYLAND_DISPLAY": "wayland-1",
+            "DISPLAY": ":0",
+            "XDG_SESSION_TYPE": "wayland",
+        }
+
+        with (
+            patch.dict(os.environ, {"VHACKINTOSH_VM_DISPLAY_MODE": "desktop"}),
+            patch("core.vm_supervisor.discover_graphical_environment", return_value=display),
+        ):
+            result = run_vm(
+                "macos-test",
+                store_factory=lambda _path: store,
+                lifecycle_factory=lambda _store: lifecycle,
+            )
+            self.assertEqual(os.environ["WAYLAND_DISPLAY"], "wayland-1")
 
         self.assertEqual(result, 0)
         lifecycle.start.assert_called_once_with(vm)
