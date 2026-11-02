@@ -241,9 +241,14 @@ def decide_reimsctl(
         custom_dir
         and (custom_dir / "macos.qcow2").exists()
         and (custom_dir / "OpenCore.qcow2").exists()
-        and (custom_dir / "OVMF_VARS.fd").exists()
     ):
         return False, f"layout persistente incompleto em {custom_dir}"
+
+    # Older desktop package builds could create a VM without copying the
+    # OVMF_VARS template. Seed a clean NVRAM only when it is absent; never
+    # overwrite state that an existing VM has already accumulated.
+    if not DiskProvisioner.ensure_ovmf_vars(custom_dir):
+        return False, f"OVMF_VARS.fd ausente e sem template para copiar (em {custom_dir})"
 
     # O reims-ctl exige o código do OVMF ao lado das variáveis, no diretório da
     # VM. VMs provisionadas antes desta integração só têm o par de variáveis;

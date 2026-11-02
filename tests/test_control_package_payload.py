@@ -36,6 +36,12 @@ class ControlPackagePayloadTests(unittest.TestCase):
         self.assertIn('"${ROOT}/packaging/systemd/vhackintosh-http-redirect.service"', stage)
         self.assertIn('"${DESTDIR}/usr/lib/systemd/system/vhackintosh-http-redirect.service"', stage)
 
+    def test_desktop_package_stages_the_matching_ovmf_code_and_vars_templates(self):
+        stage = (ROOT / "packaging/common/stage-app.sh").read_text(encoding="utf-8")
+        self.assertIn('"${APP}/templates"', stage)
+        self.assertIn('"${ROOT}/templates/OVMF_VARS.fd"', stage)
+        self.assertIn('"${ROOT}/templates/OVMF_CODE_4M.fd"', stage)
+
     def test_all_package_managers_enable_the_redirect_unit(self):
         scripts = {
             "Arch": ROOT / "packaging/arch/vhackintosh-control.install",

@@ -44,6 +44,8 @@ DEFAULT_OVMF_VARS_TEMPLATES = [
     Path("/opt/vhackintosh/templates/OVMF_VARS.fd"),
     Path(__file__).resolve().parent.parent / "templates" / "OVMF_VARS.fd",
     CONFIG_DIR / "templates/OVMF_VARS.fd",
+    Path("/usr/share/edk2/x64/OVMF_VARS.4m.fd"),
+    Path("/usr/share/OVMF/OVMF_VARS.4M.fd"),
 ]
 
 # O par do OVMF_VARS de 540672 bytes: um build 4M (o template do repo, ou o do
@@ -88,6 +90,23 @@ class DiskProvisioner:
         return False
 
     @classmethod
+    def ensure_ovmf_vars(cls, dest_dir: Path) -> bool:
+        """Seed the VM's writable NVRAM only when it is missing."""
+        dest = Path(dest_dir) / "OVMF_VARS.fd"
+        if dest.exists() or dest.is_symlink():
+            return dest.is_file() and not dest.is_symlink()
+        for candidate in DEFAULT_OVMF_VARS_TEMPLATES:
+            if not candidate.is_file():
+                continue
+            try:
+                shutil.copyfile(candidate, dest)
+                os.chmod(dest, 0o600)
+                return dest.is_file()
+            except OSError:
+                continue
+        return False
+
+    @classmethod
     def provision(
         cls,
         vm: VMConfig,
@@ -103,8 +122,6 @@ class DiskProvisioner:
         macos_path = vm_dir / "macos.qcow2"
         hdd_path = vm_dir / "hdd.qcow2"
         opencore_path = vm_dir / "OpenCore.qcow2"
-        ovmf_vars_path = vm_dir / "OVMF_VARS.fd"
-
         progress_context = (
             Progress(
                 SpinnerColumn(spinner_name="dots"),
@@ -143,12 +160,13 @@ class DiskProvisioner:
                     vm.smbios = GenSMBIOS.generate(vm.macos_version)
                 GenSMBIOS.validate(vm.smbios)
 
-            # 3. Provisionamento de OVMF_VARS.fd se não existir
-            if not ovmf_vars_path.exists():
-                for v_cand in DEFAULT_OVMF_VARS_TEMPLATES:
-                    if v_cand.exists():
-                        shutil.copyfile(v_cand, ovmf_vars_path)
-                        break
+            # 3. Provisionamento de OVMF_VARS.fd se não existir. Sem NVRAM o
+            # QEMU não consegue iniciar; não marque um provisionamento como
+            # concluído deixando o arquivo ausente.
+            if not cls.ensure_ovmf_vars(vm_dir):
+                raise FileNotFoundError(
+                    "OVMF_VARS.fd não encontrado; instale o template OVMF 4M."
+                )
             # E o código do OVMF ao lado (par do VARS; o reims-ctl pede os dois
             # no diretório da VM — ver core/reims_ctl.py).
             if not cls.ensure_ovmf_code(vm_dir):
