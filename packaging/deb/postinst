@@ -6,10 +6,11 @@ if [ "$1" = configure ]; then
     systemd-tmpfiles --create /usr/lib/tmpfiles.d/vhackintosh-web.conf
     install -d -m 0700 /root/.config/vhackintosh /root/.config/reims-ctl /root/.local/share/vhackintosh
     systemctl daemon-reload
-    systemctl enable seatd.service vhackintosh-agent.service vhackintosh-web.service
+    systemctl enable seatd.service vhackintosh-agent.service vhackintosh-web.service vhackintosh-http-redirect.service
     systemctl restart seatd.service || systemctl start seatd.service
     systemctl restart vhackintosh-agent.service || systemctl start vhackintosh-agent.service
     systemctl restart vhackintosh-web.service || systemctl start vhackintosh-web.service
+    systemctl restart vhackintosh-http-redirect.service || systemctl start vhackintosh-http-redirect.service || true
 fi
 
 #DEBHELPER#
