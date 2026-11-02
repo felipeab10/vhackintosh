@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DESTDIR="${1:?usage: stage-app.sh DESTDIR}"
 
-for tool in npm rsync; do
+for tool in npm rsync sha256sum cut; do
   command -v "$tool" >/dev/null || { echo "missing build dependency: $tool" >&2; exit 1; }
 done
 
@@ -27,8 +27,25 @@ rsync -a "${FRONTEND}/dist/" "${APP}/web/frontend/dist/"
 install -m 0644 "${ROOT}/web/frontend/THIRD_PARTY_NOTICES.md" "${APP}/web/frontend/THIRD_PARTY_NOTICES.md"
 install -m 0644 "${ROOT}/web/requirements.lock" "${APP}/requirements.lock"
 
+MACSERIAL_DIR="${DESTDIR}/opt/vhackintosh/resources/macserial"
+mkdir -p "$MACSERIAL_DIR"
+install -m 0755 "${ROOT}/resources/macserial/macserial" "${MACSERIAL_DIR}/macserial"
+install -m 0644 "${ROOT}/resources/macserial/LICENSE.txt" "${MACSERIAL_DIR}/LICENSE.txt"
+install -m 0644 "${ROOT}/resources/macserial/README.md" "${MACSERIAL_DIR}/README.md"
+MACSERIAL_SHA256="$(sha256sum "${MACSERIAL_DIR}/macserial" | cut -d ' ' -f 1)"
+[[ "$MACSERIAL_SHA256" == "b0a4a3581c0f06b3ddce915165eb3a1726acfa876192fe9ee5ef9ea08a469ad8" ]] || {
+  echo "macserial binary does not match the pinned OpenCorePkg 1.0.8 tool" >&2
+  exit 1
+}
+MACSERIAL_VERSION="$("${MACSERIAL_DIR}/macserial" -v 2>&1)"
+[[ "$MACSERIAL_VERSION" == *"2.1.8"* ]] || {
+  echo "unexpected macserial version: ${MACSERIAL_VERSION}" >&2
+  exit 1
+}
 install -d "${DESTDIR}/usr/lib/systemd/system" "${DESTDIR}/etc/vhackintosh" \
   "${DESTDIR}/usr/local/bin" "${DESTDIR}/usr/lib/sysusers.d" "${DESTDIR}/usr/lib/tmpfiles.d"
+install -m 0644 "${ROOT}/packaging/systemd/vhackintosh-http-redirect.service" \
+  "${DESTDIR}/usr/lib/systemd/system/vhackintosh-http-redirect.service"
 for unit in vhackintosh-web.service vhackintosh-agent.service vhackintosh-display.service vhackintosh-vm@.service; do
   install -m 0644 "${ROOT}/appliance/archiso/airootfs/etc/systemd/system/${unit}" "${DESTDIR}/usr/lib/systemd/system/${unit}"
 done

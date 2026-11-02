@@ -11,6 +11,7 @@ on:
       - "appliance/archiso/airootfs/usr/local/bin/vhackintosh-waysession"
       - "appliance/archiso/airootfs/usr/local/bin/vhackintosh-wait-wayland"
       - "packaging/**"
+      - "resources/macserial/**"
       - "tests/test_web_api.py"
       - "tests/test_web_appliance_packaging.py"
   push:
@@ -51,8 +52,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ./dist/vhackintosh-control_*_amd64.deb
+          test -x /opt/vhackintosh/resources/macserial/macserial
+          /opt/vhackintosh/resources/macserial/macserial -v 2>&1 | grep -q '2.1.8'
           sudo systemctl is-active vhackintosh-agent.service
           sudo systemctl is-active vhackintosh-web.service
+          sudo systemctl is-active vhackintosh-http-redirect.service
+          redirect_code=$(curl --silent --show-error -o /dev/null -D /tmp/vh-redirect-headers -w '%{http_code}' 'http://127.0.0.1/control-test?from=http')
+          test "$redirect_code" = 308
+          grep -qi '^Location: https://127.0.0.1:8443/control-test?from=http' /tmp/vh-redirect-headers
           for attempt in $(seq 1 30); do
             if curl --fail --silent --show-error --insecure https://127.0.0.1:8443/api/v1/session -o /tmp/vh-session.json; then break; fi
             sleep 1
