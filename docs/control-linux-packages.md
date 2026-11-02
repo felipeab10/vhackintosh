@@ -26,6 +26,31 @@ Python são preparados no host de build e compartilhados como um payload. O
 script valida os metadados de cada artefato e grava `SHA256SUMS` no diretório
 de saída.
 
+## Gerar e publicar a próxima release beta
+
+Depois que o workflow dos pacotes estiver integrado à branch padrão, gere os
+três pacotes e publique a próxima tag beta em uma execução:
+
+```bash
+packaging/build-all.sh --publish
+```
+
+O script busca as tags de `origin` e incrementa o número beta mais recente
+(por exemplo, `control-v1.0.0-beta.1` vira `control-v1.0.0-beta.2`). Após os
+três pacotes serem gerados com sucesso, cria uma tag anotada e a envia ao
+GitHub. O Actions reconstrói os pacotes e publica a release quando as
+validações terminarem. A publicação exige checkout limpo e sincronizado com a
+branch padrão. O comando normal de build continua sem publicar nada.
+
+Para fixar versão e diretório de saída:
+
+```bash
+packaging/build-all.sh --publish --version 1.0.0-beta.2 --output dist
+```
+
+Depois de uma release estável, a próxima versão automática será o patch
+seguinte com sufixo `-beta.1`. Tags existentes nunca são sobrescritas.
+
 Para uma versão com sufixo de pré-lançamento, Debian preserva o hífen; RPM e
 Arch convertem o hífen em ponto, conforme o formato de versão aceito por esses
 gerenciadores.

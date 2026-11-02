@@ -90,6 +90,8 @@ pacotes `.deb` (Ubuntu 24.04), `.rpm` (Fedora 44) e `.pkg.tar.zst` (Arch Linux)
 usando Podman ou Docker. Releases futuras com tag `control-v*` publicam os três
 formatos junto com checksums. Veja [como gerar e instalar os pacotes Linux](docs/control-linux-packages.md)
 e o [guia de instalação do Ubuntu](docs/control-ubuntu-install.md).
+Para gerar e publicar a próxima tag beta automaticamente após integrar o
+workflow, execute `packaging/build-all.sh --publish`.
 
 ### Iniciar o gerenciador
 
