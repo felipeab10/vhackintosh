@@ -12,7 +12,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf -- "$WORK"' EXIT
 FRONTEND="${WORK}/frontend"
 APP="${DESTDIR}/opt/vhackintosh/web/current"
-mkdir -p "$FRONTEND" "${APP}/core" "${APP}/web/api" "${APP}/web/frontend" "${APP}/vendor"
+mkdir -p "$FRONTEND" "${APP}/core" "${APP}/web/api" "${APP}/web/frontend" "${APP}/vendor" "${APP}/templates"
 
 rsync -a --delete \
   --exclude=node_modules/ --exclude=dist/ --exclude=.git/ --exclude=.env \
@@ -23,6 +23,8 @@ npm run build --prefix "$FRONTEND"
 
 rsync -a --exclude=__pycache__/ --exclude='*.pyc' "${ROOT}/core/" "${APP}/core/"
 rsync -a --exclude=__pycache__/ --exclude='*.pyc' "${ROOT}/web/api/" "${APP}/web/api/"
+install -m 0644 "${ROOT}/templates/OVMF_VARS.fd" "${APP}/templates/OVMF_VARS.fd"
+install -m 0644 "${ROOT}/templates/OVMF_CODE_4M.fd" "${APP}/templates/OVMF_CODE_4M.fd"
 rsync -a "${FRONTEND}/dist/" "${APP}/web/frontend/dist/"
 install -m 0644 "${ROOT}/web/frontend/THIRD_PARTY_NOTICES.md" "${APP}/web/frontend/THIRD_PARTY_NOTICES.md"
 install -m 0644 "${ROOT}/web/requirements.lock" "${APP}/requirements.lock"

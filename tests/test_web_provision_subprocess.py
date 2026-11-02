@@ -122,7 +122,9 @@ class WebProvisionSubprocessTests(unittest.TestCase):
                 root = Path(directory)
                 vm_dir = root / "test-vm"
                 code = root / "OVMF_CODE.fd"
+                vars_template = root / "OVMF_VARS.template.fd"
                 code.touch()
+                vars_template.write_bytes(b"fresh-nvram-template")
                 vm = SimpleNamespace(
                     id="test-vm", disk_size_gb=40, smbios=SimpleNamespace(
                         serial_number="serial", board_serial="board", smuuid="uuid", rom="rom"
@@ -132,7 +134,7 @@ class WebProvisionSubprocessTests(unittest.TestCase):
                 fake_progress.__enter__.return_value = fake_progress
                 with patch("core.disk.VM_STORAGE_BASE", root), \
                      patch("core.disk.DEFAULT_OVMF_CODE_TEMPLATES", [code]), \
-                     patch("core.disk.DEFAULT_OVMF_VARS_TEMPLATES", []), \
+                     patch("core.disk.DEFAULT_OVMF_VARS_TEMPLATES", [vars_template]), \
                      patch.object(DiskProvisioner, "_create_qcow2_disk", side_effect=lambda path, *_a, **_k: Path(path).touch()), \
                      patch.object(DiskProvisioner, "ensure_ovmf_code", return_value=True), \
                      patch("core.disk.GenSMBIOS.validate"), \
@@ -144,10 +146,18 @@ class WebProvisionSubprocessTests(unittest.TestCase):
                             DiskProvisioner.provision(vm, job_context=job_context)
                         self.assertEqual(stdout.getvalue(), "")
                         self.assertEqual(stderr.getvalue(), "")
+                        self.assertEqual(
+                            (vm_dir / "OVMF_VARS.fd").read_bytes(),
+                            b"fresh-nvram-template",
+                        )
                     else:
                         with patch("core.disk.Progress", return_value=fake_progress) as progress:
-                            DiskProvisioner.provision(vm)
+                            bundle = DiskProvisioner.provision(vm)
                         progress.assert_called_once()
+                        self.assertEqual(
+                            (bundle.vm_dir / "OVMF_VARS.fd").read_bytes(),
+                            b"fresh-nvram-template",
+                        )
 
         exercise(NoopDownloadContext())
         exercise(None)
