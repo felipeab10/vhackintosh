@@ -164,7 +164,12 @@ container_build "${VHACK_ARCH_IMAGE:-archlinux:latest}" "$PAYLOAD_ARCH" bash -eu
   cp -a /payload /tmp/vhackintosh-package-payload
   bash /src/packaging/common/install-python-deps.sh /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current/requirements.lock
   bash /src/packaging/arch/build-package.sh "$VHACK_CONTROL_VERSION" /tmp/vhackintosh-package-payload /out
-  pacman -Qp "/out/vhackintosh-control-${VHACK_CONTROL_VERSION//-/.}-1-x86_64.pkg.tar.zst" >/dev/null
+  package="/out/vhackintosh-control-${VHACK_CONTROL_VERSION//-/.}-1-x86_64.pkg.tar.zst"
+  pacman -Qp "$package" >/dev/null
+  if pacman -Qpql "$package" | grep -E "(^|/)__pycache__/|\\.py[co]$"; then
+    echo "refusing to publish Python bytecode caches in the Arch package" >&2
+    exit 1
+  fi
 '
 
 shopt -s nullglob
