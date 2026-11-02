@@ -100,7 +100,7 @@ class WaySessionRuntimeIsolationTests(unittest.TestCase):
             ["/usr/bin/systemctl", "start", "vhackintosh-display.service"],
             capture_output=True,
             text=True,
-            timeout=40,
+            timeout=135,
             check=False,
         )
 

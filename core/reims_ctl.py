@@ -296,6 +296,11 @@ WAYSESSION_CANDIDATES = (
     ),
 )
 SHARED_DISPLAY_UNIT = Path("/etc/systemd/system/vhackintosh-display.service")
+SHARED_DISPLAY_UNIT_CANDIDATES = (
+    SHARED_DISPLAY_UNIT,
+    Path("/usr/lib/systemd/system/vhackintosh-display.service"),
+    Path("/lib/systemd/system/vhackintosh-display.service"),
+)
 
 
 def find_waysession() -> Optional[str]:
@@ -333,7 +338,7 @@ def session_argv(argv: list[str], env: dict) -> tuple[list[str], bool]:
     ):
         return argv, False
 
-    if shared_unit.is_file():
+    if any(unit.is_file() for unit in (shared_unit, *SHARED_DISPLAY_UNIT_CANDIDATES[1:])):
         systemctl = "/usr/bin/systemctl"
         if not os.path.exists(systemctl):
             raise RuntimeError("systemctl não está disponível para iniciar o display compartilhado.")
@@ -342,7 +347,7 @@ def session_argv(argv: list[str], env: dict) -> tuple[list[str], bool]:
                 [systemctl, "start", "vhackintosh-display.service"],
                 capture_output=True,
                 text=True,
-                timeout=40,
+                timeout=135,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:

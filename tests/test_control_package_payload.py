@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import configparser
 import hashlib
 import unittest
 from pathlib import Path
@@ -60,6 +61,21 @@ class ControlPackagePayloadTests(unittest.TestCase):
         spec = (ROOT / "packaging/fedora/vhackintosh-control.spec").read_text(encoding="utf-8")
         self.assertRegex(spec, r"(?m)^/opt/vhackintosh/resources/macserial$")
         self.assertRegex(spec, r"(?m)^/usr/lib/systemd/system/vhackintosh-http-redirect\.service$")
+
+    def test_desktop_vm_unit_uses_the_logged_in_display_instead_of_seizing_a_vt(self):
+        unit_path = ROOT / "packaging/systemd/vhackintosh-vm@.service"
+        unit_text = unit_path.read_text(encoding="utf-8")
+        unit = configparser.ConfigParser(strict=False, interpolation=None)
+        unit.read_string(unit_text)
+
+        self.assertIn("Environment=VHACKINTOSH_VM_DISPLAY_MODE=desktop", unit_text)
+        self.assertNotIn("vhackintosh-display.service", unit["Unit"].get("Requires", ""))
+        self.assertNotIn("vhackintosh-display.service", unit["Unit"].get("After", ""))
+        self.assertNotIn("Environment=XDG_RUNTIME_DIR", unit_text)
+        self.assertNotIn("Environment=WAYLAND_DISPLAY", unit_text)
+
+        stage = (ROOT / "packaging/common/stage-app.sh").read_text(encoding="utf-8")
+        self.assertIn('"${ROOT}/packaging/systemd/vhackintosh-vm@.service"', stage)
 
 
 if __name__ == "__main__":

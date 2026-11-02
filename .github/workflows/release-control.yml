@@ -53,6 +53,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ./dist/vhackintosh-control_*_amd64.deb
+          test -f /usr/lib/systemd/system/vhackintosh-vm@.service
+          grep -q '^Environment=VHACKINTOSH_VM_DISPLAY_MODE=desktop$' /usr/lib/systemd/system/vhackintosh-vm@.service
+          ! grep -q '^Requires=vhackintosh-display.service$' /usr/lib/systemd/system/vhackintosh-vm@.service
           test -x /opt/vhackintosh/resources/macserial/macserial
           /opt/vhackintosh/resources/macserial/macserial -v 2>&1 | grep -q '2.1.8'
           test -x /opt/vhackintosh/resources/reims-util/reims-util
