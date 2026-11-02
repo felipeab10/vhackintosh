@@ -1,0 +1,18 @@
+pkgname=vhackintosh-control
+pkgver=${VHACK_CONTROL_PKGVER:-1.0.0}
+pkgrel=1
+pkgdesc='vHackintosh Control and macOS VM host manager'
+arch=('x86_64')
+url='https://github.com/felipeab10/vhackintosh'
+license=('MIT' 'GPL-3.0-or-later')
+depends=('systemd' 'python>=3.12' 'openssl' 'curl' 'kbd' 'sway' 'swaybg' 'seatd'
+         'dbus' 'pipewire' 'pipewire-pulse' 'wireplumber' 'vulkan-icd-loader'
+         'mesa' 'gtk3' 'libepoxy' 'pixman' 'libslirp' 'libpng' 'libjpeg-turbo'
+         'alsa-lib' 'libpulse' 'zstd' 'ncurses' 'bzip2' 'libusb' 'numactl' 'glib2')
+options=('!strip')
+install='vhackintosh-control.install'
+
+package() {
+  : "${VHACK_CONTROL_STAGE:?VHACK_CONTROL_STAGE must point to the staged Control payload}"
+  cp -a "${VHACK_CONTROL_STAGE}/." "${pkgdir}/"
+}

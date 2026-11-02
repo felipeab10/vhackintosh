@@ -10,7 +10,7 @@ on:
       - "appliance/archiso/airootfs/usr/local/bin/vhackintosh-web-bootstrap"
       - "appliance/archiso/airootfs/usr/local/bin/vhackintosh-waysession"
       - "appliance/archiso/airootfs/usr/local/bin/vhackintosh-wait-wayland"
-      - "packaging/deb/**"
+      - "packaging/**"
       - "tests/test_web_api.py"
       - "tests/test_web_appliance_packaging.py"
   push:
@@ -21,7 +21,7 @@ permissions:
   contents: write
 
 jobs:
-  ubuntu-package:
+  linux-packages:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -34,14 +34,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build Debian package
+      - name: Build Debian, RPM, and Arch packages
+        env:
+          VHACK_CONTAINER_ENGINE: docker
         run: |
           if [[ "$GITHUB_REF" == refs/tags/control-v* ]]; then
             version="${GITHUB_REF_NAME#control-v}"
           else
             version="0.0.${GITHUB_RUN_NUMBER}"
           fi
-          packaging/deb/build.sh "$version" dist
+          packaging/build-all.sh "$version" dist
       - name: Validate package metadata
         run: dpkg-deb --info dist/vhackintosh-control_*_amd64.deb
       - name: Install package and check first-run services
@@ -70,7 +72,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          args=("$GITHUB_REF_NAME" dist/vhackintosh-control_*_amd64.deb dist/SHA256SUMS \
+          args=("$GITHUB_REF_NAME" dist/vhackintosh-control_*_amd64.deb \
+            dist/vhackintosh-control-*.rpm dist/vhackintosh-control-*.pkg.tar.zst dist/SHA256SUMS \
             --title "vHackintosh Control ${GITHUB_REF_NAME#control-v}" --generate-notes)
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then args+=(--prerelease); fi
           gh release create "${args[@]}"
