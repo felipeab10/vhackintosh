@@ -19,7 +19,7 @@ BUILD_PYTHON=/tmp/vhackintosh-control-build-venv/bin/python
 # would point at this temporary build venv inside the final distro package.
 rm -rf -- "${APP_DIR}/vendor/bin"
 
-PYTHONPATH="${APP_DIR}/vendor" python3 - <<'PY'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${APP_DIR}/vendor" python3 - <<'PY'
 import sysconfig
 
 import fastapi
@@ -36,3 +36,9 @@ if not suffix or not extension.endswith(suffix):
     )
 print(f"Python {sysconfig.get_python_version()} dependency ABI verified: {extension}")
 PY
+
+# Python may create caches in vendor at runtime. They must stay out of the
+# package so upgrades do not collide with unowned __pycache__ files left by
+# the previously installed version.
+find "${APP_DIR}/vendor" -type d -name __pycache__ -prune -exec rm -rf -- {} +
+find "${APP_DIR}/vendor" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
