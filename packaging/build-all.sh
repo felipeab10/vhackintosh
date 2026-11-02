@@ -127,7 +127,7 @@ container_build() {
   local image="$1" payload="$2"; shift 2
   "$ENGINE" run --rm \
     --volume "${ROOT}:/src:ro" \
-    --volume "${payload}:/payload:rw" \
+    --volume "${payload}:/payload:ro" \
     --volume "${OUT}:/out:rw" \
     --env "VHACK_CONTROL_VERSION=${VERSION}" \
     "$image" "$@"
@@ -139,8 +139,9 @@ cp -a "$PAYLOAD_BASE" "$PAYLOAD_UBUNTU"
 container_build "${VHACK_UBUNTU_IMAGE:-ubuntu:24.04}" "$PAYLOAD_UBUNTU" bash -euc '
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dpkg-dev python3-venv
-  bash /src/packaging/common/install-python-deps.sh /payload/opt/vhackintosh/web/current /payload/opt/vhackintosh/web/current/requirements.lock
-  bash /src/packaging/deb/build-package.sh "$VHACK_CONTROL_VERSION" /payload /out
+  cp -a /payload /tmp/vhackintosh-package-payload
+  bash /src/packaging/common/install-python-deps.sh /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current/requirements.lock
+  bash /src/packaging/deb/build-package.sh "$VHACK_CONTROL_VERSION" /tmp/vhackintosh-package-payload /out
   dpkg-deb --info "/out/vhackintosh-control_${VHACK_CONTROL_VERSION}_amd64.deb" >/dev/null
 '
 
@@ -149,8 +150,9 @@ PAYLOAD_FEDORA="${WORK}/payload-fedora"
 cp -a "$PAYLOAD_BASE" "$PAYLOAD_FEDORA"
 container_build "${VHACK_FEDORA_IMAGE:-fedora:44}" "$PAYLOAD_FEDORA" bash -euc '
   dnf -y install rpm-build python3-pip
-  bash /src/packaging/common/install-python-deps.sh /payload/opt/vhackintosh/web/current /payload/opt/vhackintosh/web/current/requirements.lock
-  bash /src/packaging/fedora/build-package.sh "$VHACK_CONTROL_VERSION" /payload /out
+  cp -a /payload /tmp/vhackintosh-package-payload
+  bash /src/packaging/common/install-python-deps.sh /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current/requirements.lock
+  bash /src/packaging/fedora/build-package.sh "$VHACK_CONTROL_VERSION" /tmp/vhackintosh-package-payload /out
   rpm -qp --info "/out/vhackintosh-control-${VHACK_CONTROL_VERSION//-/.}-1"*.rpm >/dev/null
 '
 
@@ -159,8 +161,9 @@ PAYLOAD_ARCH="${WORK}/payload-arch"
 cp -a "$PAYLOAD_BASE" "$PAYLOAD_ARCH"
 container_build "${VHACK_ARCH_IMAGE:-archlinux:latest}" "$PAYLOAD_ARCH" bash -euc '
   pacman -Syu --noconfirm --needed base-devel python-pip
-  bash /src/packaging/common/install-python-deps.sh /payload/opt/vhackintosh/web/current /payload/opt/vhackintosh/web/current/requirements.lock
-  bash /src/packaging/arch/build-package.sh "$VHACK_CONTROL_VERSION" /payload /out
+  cp -a /payload /tmp/vhackintosh-package-payload
+  bash /src/packaging/common/install-python-deps.sh /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current/requirements.lock
+  bash /src/packaging/arch/build-package.sh "$VHACK_CONTROL_VERSION" /tmp/vhackintosh-package-payload /out
   pacman -Qp "/out/vhackintosh-control-${VHACK_CONTROL_VERSION//-/.}-1-x86_64.pkg.tar.zst" >/dev/null
 '
 

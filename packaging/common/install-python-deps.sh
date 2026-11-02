@@ -15,6 +15,10 @@ BUILD_PYTHON=/tmp/vhackintosh-control-build-venv/bin/python
   --target "${APP_DIR}/vendor" \
   -r "$REQUIREMENTS"
 
+# Console entry points are unused by the systemd services, and their shebangs
+# would point at this temporary build venv inside the final distro package.
+rm -rf -- "${APP_DIR}/vendor/bin"
+
 PYTHONPATH="${APP_DIR}/vendor" python3 - <<'PY'
 import sysconfig
 
