@@ -27,8 +27,10 @@ Control API. After changing it, the dashboard opens the Reims runtime settings
 so the user can select and prepare a published release from the fork. Once the
 runtime is ready, create and install the macOS VM from the dashboard.
 
-The package does not include the Reims binaries. It fetches a published
-release only after the signed-in administrator selects it in Control.
+The package includes the pinned official `reims-util` needed to generate
+APV-enabled OpenCore images. The Reims vGPU/QEMU runtime is still downloaded
+separately, only after the signed-in administrator selects a published release
+in Control.
 
 ## Host requirements
 

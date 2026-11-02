@@ -2,7 +2,7 @@ Name:           vhackintosh-control
 Version:        %{pkg_version}
 Release:        1%{?dist}
 Summary:        vHackintosh Control and macOS VM host manager
-License:        MIT AND GPL-3.0-or-later AND BSD-3-Clause
+License:        MIT AND GPL-3.0-or-later AND BSD-3-Clause AND (GPL-2.0-or-later OR LGPL-3.0-or-later)
 BuildArch:      x86_64
 Requires:       systemd
 Requires:       python3 >= 3.12
@@ -35,7 +35,7 @@ Requires:       glib2
 
 %description
 Installs the vHackintosh HTTPS dashboard, an HTTP-to-HTTPS redirect, the pinned
-OpenCorePkg macserial utility, privileged local agent, and shared Wayland
+OpenCorePkg macserial and APV-enabled reims-util utilities, privileged local agent, and shared Wayland
 display session for macOS virtual machines. The Reims vGPU runtime is downloaded
 from the configured GitHub fork after first sign-in.
 
@@ -55,7 +55,8 @@ systemctl daemon-reload || :
 systemctl enable seatd.service >/dev/null 2>&1 || :
 systemctl start seatd.service >/dev/null 2>&1 || :
 systemctl enable vhackintosh-agent.service vhackintosh-web.service >/dev/null 2>&1 || :
-systemctl start vhackintosh-agent.service vhackintosh-web.service >/dev/null 2>&1 || :
+systemctl restart vhackintosh-agent.service >/dev/null 2>&1 || systemctl start vhackintosh-agent.service >/dev/null 2>&1 || :
+systemctl restart vhackintosh-web.service >/dev/null 2>&1 || systemctl start vhackintosh-web.service >/dev/null 2>&1 || :
 systemctl enable vhackintosh-http-redirect.service >/dev/null 2>&1 || :
 systemctl restart vhackintosh-http-redirect.service >/dev/null 2>&1 || systemctl start vhackintosh-http-redirect.service >/dev/null 2>&1 || :
 
@@ -70,6 +71,7 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %files
 /opt/vhackintosh/web/current
 /opt/vhackintosh/resources/macserial
+/opt/vhackintosh/resources/reims-util
 /usr/lib/systemd/system/vhackintosh-agent.service
 /usr/lib/systemd/system/vhackintosh-display.service
 /usr/lib/systemd/system/vhackintosh-vm@.service

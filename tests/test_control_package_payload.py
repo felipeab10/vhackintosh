@@ -9,6 +9,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ControlPackagePayloadTests(unittest.TestCase):
+    def test_package_builds_and_stages_the_pinned_apv_reims_util(self):
+        builder = (ROOT / "packaging/common/build-reims-util.sh").read_text(encoding="utf-8")
+        build_all = (ROOT / "packaging/build-all.sh").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github/workflows/release-control.yml").read_text(encoding="utf-8")
+        revision = "c717e69f0a74ba050973dcca294ba35499145c56"
+
+        self.assertIn(revision, builder)
+        self.assertIn("cargo \"+${TOOLCHAIN}\" build --locked --release", builder)
+        self.assertIn("--no-apv-arm64-port", builder)
+        self.assertIn('"${PAYLOAD_BASE}/opt/vhackintosh/resources/reims-util"', build_all)
+        self.assertIn("/opt/vhackintosh/resources/reims-util/reims-util", workflow)
+        self.assertIn("--no-apv-arm64-port", workflow)
+
     def test_staging_includes_the_pinned_macserial_tool_and_redirect_service(self):
         stage = (ROOT / "packaging/common/stage-app.sh").read_text(encoding="utf-8")
         binary = ROOT / "resources/macserial/macserial"

@@ -12,6 +12,7 @@ on:
       - "appliance/archiso/airootfs/usr/local/bin/vhackintosh-wait-wayland"
       - "packaging/**"
       - "resources/macserial/**"
+      - "resources/reims-util/**"
       - "tests/test_web_api.py"
       - "tests/test_web_appliance_packaging.py"
   push:
@@ -54,6 +55,9 @@ jobs:
           sudo apt-get install -y ./dist/vhackintosh-control_*_amd64.deb
           test -x /opt/vhackintosh/resources/macserial/macserial
           /opt/vhackintosh/resources/macserial/macserial -v 2>&1 | grep -q '2.1.8'
+          test -x /opt/vhackintosh/resources/reims-util/reims-util
+          /opt/vhackintosh/resources/reims-util/reims-util --version | grep -q '^reims-util '
+          /opt/vhackintosh/resources/reims-util/reims-util opencore --help | grep -q -- '--no-apv-arm64-port'
           sudo systemctl is-active vhackintosh-agent.service
           sudo systemctl is-active vhackintosh-web.service
           sudo systemctl is-active vhackintosh-http-redirect.service

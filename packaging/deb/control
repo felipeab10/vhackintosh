@@ -11,6 +11,6 @@ Depends: systemd, python3 (>= 3.12), openssl, curl, kbd, sway, swaybg, seatd,
  libncurses6, libbz2-1.0, libusb-1.0-0, libnuma1, libglib2.0-0
 Description: vHackintosh Control and macOS VM host manager
  Installs the HTTPS management dashboard, HTTP redirect, pinned OpenCorePkg
- macserial utility, local privileged management agent,
+ macserial and APV-enabled reims-util utilities, local privileged management agent,
  and shared Wayland display session on Ubuntu 24.04 LTS amd64. The Reims vGPU
  runtime is downloaded from the configured GitHub fork after first sign-in.

@@ -123,6 +123,26 @@ mkdir -p "$PAYLOAD_BASE"
 echo "[1/4] Building shared Control sources and frontend (${VERSION})"
 "${ROOT}/packaging/common/stage-app.sh" "$PAYLOAD_BASE"
 
+echo "[1.5/4] Building the pinned official reims-util with APV support"
+UTIL_BUILD="${WORK}/reims-util-build"
+mkdir -p "$UTIL_BUILD"
+"$ENGINE" run --rm \
+  --volume "${ROOT}:/src:ro" \
+  --volume "${UTIL_BUILD}:/out:rw" \
+  ubuntu:24.04 bash -euc '
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq --no-install-recommends ca-certificates curl git build-essential
+    curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.98.1
+    export PATH="/root/.cargo/bin:$PATH"
+    bash /src/packaging/common/build-reims-util.sh /out
+  '
+UTIL_DIR="${PAYLOAD_BASE}/opt/vhackintosh/resources/reims-util"
+install -d -m 0755 "$UTIL_DIR"
+install -m 0755 "${UTIL_BUILD}/reims-util" "${UTIL_DIR}/reims-util"
+install -m 0644 "${UTIL_BUILD}/LICENSE" "${UTIL_DIR}/LICENSE"
+install -m 0644 "${UTIL_BUILD}/PROVENANCE.txt" "${UTIL_DIR}/PROVENANCE.txt"
+
 container_build() {
   local image="$1" payload="$2"; shift 2
   "$ENGINE" run --rm \
