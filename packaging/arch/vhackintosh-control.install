@@ -1,0 +1,23 @@
+post_install() {
+  systemd-sysusers /usr/lib/sysusers.d/vhackintosh-web.conf || true
+  systemd-tmpfiles --create /usr/lib/tmpfiles.d/vhackintosh-web.conf || true
+  install -d -m 0700 /root/.config/vhackintosh /root/.config/reims-ctl /root/.local/share/vhackintosh
+  systemctl daemon-reload || true
+  systemctl enable seatd.service vhackintosh-agent.service vhackintosh-web.service || true
+  systemctl start seatd.service vhackintosh-agent.service vhackintosh-web.service || true
+}
+
+post_upgrade() {
+  systemd-sysusers /usr/lib/sysusers.d/vhackintosh-web.conf || true
+  systemd-tmpfiles --create /usr/lib/tmpfiles.d/vhackintosh-web.conf || true
+  systemctl daemon-reload || true
+  systemctl restart vhackintosh-agent.service vhackintosh-web.service || true
+}
+
+pre_remove() {
+  systemctl disable --now vhackintosh-web.service vhackintosh-agent.service vhackintosh-display.service || true
+}
+
+post_remove() {
+  systemctl daemon-reload || true
+}

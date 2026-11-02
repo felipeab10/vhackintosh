@@ -83,15 +83,13 @@ Para executar o painel contra o host durante o desenvolvimento, consulte
 [`docs/web-manager-dev-host.md`](docs/web-manager-dev-host.md). Esse modo usa o
 catálogo real do usuário, mas mantém os serviços de desenvolvimento no loopback.
 
-### Instalar o Control em Ubuntu
+### Empacotar e instalar o Control em Linux
 
-O pacote `.deb` para Ubuntu 24.04 LTS amd64 está publicado nas releases com o
-prefixo `control-v`. Baixe `vhackintosh-control_<versão>_amd64.deb` e instale
-com `sudo apt install ./vhackintosh-control_<versão>_amd64.deb`. O serviço inicia
-automaticamente; abra `https://localhost:8443` no host ou use o endereço de rede.
-O runtime Reims vGPU é baixado depois do primeiro login. Veja o
-[guia de instalação do Ubuntu](docs/control-ubuntu-install.md) para requisitos,
-serviços e diagnóstico.
+O gerador `packaging/build-all.sh` constrói o payload uma vez e produz os
+pacotes `.deb` (Ubuntu 24.04), `.rpm` (Fedora 44) e `.pkg.tar.zst` (Arch Linux)
+usando Podman ou Docker. Releases futuras com tag `control-v*` publicam os três
+formatos junto com checksums. Veja [como gerar e instalar os pacotes Linux](docs/control-linux-packages.md)
+e o [guia de instalação do Ubuntu](docs/control-ubuntu-install.md).
 
 ### Iniciar o gerenciador
 
