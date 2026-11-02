@@ -272,7 +272,8 @@ class SQLiteAuthStore:
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     username TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    must_change_password INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS web_session (
                     token_hash TEXT PRIMARY KEY,
@@ -284,6 +285,11 @@ class SQLiteAuthStore:
                 CREATE INDEX IF NOT EXISTS web_session_expiry ON web_session(expires_at);
                 """
             )
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(administrator)")}
+            if "must_change_password" not in columns:
+                db.execute(
+                    "ALTER TABLE administrator ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
+                )
         try:
             self.path.chmod(0o600)
         except OSError:
@@ -293,19 +299,30 @@ class SQLiteAuthStore:
         with self._db() as db:
             return db.execute("SELECT 1 FROM administrator WHERE id=1").fetchone() is not None
 
-    def create_admin(self, username: str, password: str) -> None:
+    def create_admin(self, username: str, password: str, *, must_change_password: bool = False) -> None:
         password_hash = self._hasher.hash(password)
         with self._db() as db:
             db.execute(
-                "INSERT INTO administrator(id, username, password_hash, created_at) VALUES(1, ?, ?, ?)",
+                "INSERT INTO administrator(id, username, password_hash, created_at, must_change_password) VALUES(1, ?, ?, ?, ?)",
+                (username, password_hash, datetime.now(timezone.utc).isoformat(), int(must_change_password)),
+            )
+
+    def ensure_default_admin(self, username: str = "admin", password: str = "vhackintosh") -> bool:
+        """Create the one-time package account without overwriting an existing admin."""
+        password_hash = self._hasher.hash(password)
+        with self._db() as db:
+            cursor = db.execute(
+                "INSERT OR IGNORE INTO administrator(id, username, password_hash, created_at, must_change_password) "
+                "VALUES(1, ?, ?, ?, 1)",
                 (username, password_hash, datetime.now(timezone.utc).isoformat()),
             )
+            return cursor.rowcount == 1
 
     def change_password(self, username: str, password: str) -> bool:
         password_hash = self._hasher.hash(password)
         with self._db() as db:
             cursor = db.execute(
-                "UPDATE administrator SET password_hash=? WHERE id=1 AND username=?",
+                "UPDATE administrator SET password_hash=?, must_change_password=0 WHERE id=1 AND username=?",
                 (password_hash, username),
             )
             if cursor.rowcount != 1:
@@ -347,12 +364,25 @@ class SQLiteAuthStore:
             return None
         with self._db() as db:
             row = db.execute(
-                "SELECT csrf_hash, username, expires_at FROM web_session WHERE token_hash=? AND expires_at > ?",
+                "SELECT s.csrf_hash, s.username, s.expires_at, a.must_change_password "
+                "FROM web_session s JOIN administrator a ON a.id=1 AND a.username=s.username "
+                "WHERE s.token_hash=? AND s.expires_at > ?",
                 (self._token_hash(token), time.time()),
             ).fetchone()
         if row is None:
             return None
-        return {"csrf_hash": row["csrf_hash"], "username": row["username"], "expires_at": row["expires_at"]}
+        return {
+            "csrf_hash": row["csrf_hash"],
+            "username": row["username"],
+            "expires_at": row["expires_at"],
+            "must_change_password": bool(row["must_change_password"]),
+        }
+
+    def default_admin_password_pending(self) -> bool:
+        with self._db() as db:
+            return db.execute(
+                "SELECT 1 FROM administrator WHERE id=1 AND username='admin' AND must_change_password=1"
+            ).fetchone() is not None
 
     def revoke_session(self, token: str | None) -> None:
         if token:
@@ -770,10 +800,22 @@ def create_app(
         session = await current_session(request)
         if session is None:
             raise HTTPException(status_code=401, detail={"code": "authentication_required", "message": "Autentique-se para continuar."})
+        if session.get("must_change_password"):
+            raise HTTPException(status_code=403, detail={"code": "password_change_required", "message": "Defina uma nova senha antes de continuar."})
         request.state.actor = session["username"]
         return session
 
     async def require_csrf(request: Request, session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
+        _validate_browser_origin(request)
+        csrf = request.headers.get("x-csrf-token", "")
+        if not await _call(auth.verify_csrf, csrf, session["csrf_hash"]):
+            raise HTTPException(status_code=403, detail={"code": "csrf_failed", "message": "Token de proteção inválido."})
+        return session
+
+    async def require_password_change_csrf(request: Request) -> dict[str, Any]:
+        session = await current_session(request)
+        if session is None:
+            raise HTTPException(status_code=401, detail={"code": "authentication_required", "message": "Autentique-se para continuar."})
         _validate_browser_origin(request)
         csrf = request.headers.get("x-csrf-token", "")
         if not await _call(auth.verify_csrf, csrf, session["csrf_hash"]):
@@ -956,6 +998,8 @@ def create_app(
             username=session["username"] if session else None,
             expires_at=datetime.fromtimestamp(session["expires_at"], timezone.utc) if session else None,
             bootstrap_required=not await _call(auth.has_admin),
+            must_change_password=bool(session and session.get("must_change_password")),
+            default_credentials_available=await _call(auth.default_admin_password_pending),
             tls_fingerprint=app.state.tls_fingerprint,
         )
 
@@ -992,9 +1036,14 @@ def create_app(
                 # The administrator record closes bootstrap even if tmpfs cleanup fails.
                 pass
         token, csrf, expires = await _call(auth.create_session, payload.username)
+        active_session = await _call(auth.get_session, token)
         request.state.operation_id = request.state.request_id
         _set_session_cookies(response, token, csrf, cookie_secure)
-        return SessionView(authenticated=True, username=payload.username, expires_at=expires, bootstrap_required=False)
+        return SessionView(
+            authenticated=True, username=payload.username, expires_at=expires, bootstrap_required=False,
+            must_change_password=bool(active_session and active_session.get("must_change_password")),
+            default_credentials_available=await _call(auth.default_admin_password_pending),
+        )
 
     @app.post("/api/v1/session/login", response_model=SessionView)
     async def login(payload: LoginRequest, request: Request, response: Response) -> SessionView:
@@ -1009,8 +1058,13 @@ def create_app(
             raise HTTPException(status_code=401, detail={"code": "invalid_credentials", "message": "Usuário ou senha inválidos."})
         limiter.succeeded(key)
         token, csrf, expires = await _call(auth.create_session, payload.username)
+        active_session = await _call(auth.get_session, token)
         _set_session_cookies(response, token, csrf, cookie_secure)
-        return SessionView(authenticated=True, username=payload.username, expires_at=expires, bootstrap_required=False)
+        return SessionView(
+            authenticated=True, username=payload.username, expires_at=expires, bootstrap_required=False,
+            must_change_password=bool(active_session and active_session.get("must_change_password")),
+            default_credentials_available=await _call(auth.default_admin_password_pending),
+        )
 
     @app.post("/api/v1/session/logout", response_model=SessionView)
     async def logout(request: Request, response: Response, session: dict[str, Any] = Depends(require_csrf)) -> SessionView:
@@ -1025,7 +1079,7 @@ def create_app(
         payload: PasswordChangeRequest,
         request: Request,
         response: Response,
-        session: dict[str, Any] = Depends(require_csrf),
+        session: dict[str, Any] = Depends(require_password_change_csrf),
     ) -> SessionView:
         request.state.actor = session["username"]
         request.state.audit_action = "session.password_change"
@@ -1050,6 +1104,8 @@ def create_app(
             username=session["username"],
             expires_at=expires,
             bootstrap_required=False,
+            must_change_password=False,
+            default_credentials_available=False,
             tls_fingerprint=app.state.tls_fingerprint,
         )
 

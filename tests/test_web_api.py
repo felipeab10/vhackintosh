@@ -278,9 +278,10 @@ class WebApiTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.db = Path(self.temp.name) / "auth.sqlite"
         self.activation = ActivationCode("activation-code-that-is-long")
+        self.auth = SQLiteAuthStore(self.db)
         app = create_app(
             agent=FakeAgent(),
-            auth_store=SQLiteAuthStore(self.db),
+            auth_store=self.auth,
             activation_code=self.activation,
             cookie_secure=False,
             web_port=9443,
@@ -343,6 +344,31 @@ class WebApiTests(unittest.TestCase):
             json={"code": "activation-code-that-is-long", "username": "admin", "password": "correct horse battery"},
         )
         self.assertEqual(response.status_code, 200, response.text)
+
+    def test_default_admin_must_rotate_password_before_using_control(self) -> None:
+        self.assertTrue(self.auth.ensure_default_admin())
+        self.assertFalse(self.auth.ensure_default_admin())
+        public_session = self.client.get("/api/v1/session").json()
+        self.assertTrue(public_session["default_credentials_available"])
+        login = self.client.post(
+            "/api/v1/session/login", headers=origin(),
+            json={"username": "admin", "password": "vhackintosh"},
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+        self.assertTrue(login.json()["must_change_password"])
+        blocked = self.client.get("/api/v1/host")
+        self.assertEqual(blocked.status_code, 403)
+        self.assertEqual(blocked.json()["code"], "password_change_required")
+
+        headers = {**origin(), "X-CSRF-Token": self.client.cookies.get("vh_csrf")}
+        changed = self.client.post(
+            "/api/v1/session/password", headers=headers,
+            json={"current_password": "vhackintosh", "new_password": "a new secure password"},
+        )
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertFalse(changed.json()["must_change_password"])
+        self.assertFalse(self.client.get("/api/v1/session").json()["default_credentials_available"])
+        self.assertEqual(self.client.get("/api/v1/host").status_code, 200)
 
     def test_activation_is_one_time_and_creates_protected_session(self) -> None:
         self.bootstrap()

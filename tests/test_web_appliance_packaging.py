@@ -397,7 +397,7 @@ class WebAppliancePackagingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "credential or TLS"):
                 validate_web_manager_payload(rootfs)
 
-    def test_bootstrap_helper_invalidates_legacy_code_and_shows_local_setup_command(self):
+    def test_bootstrap_helper_invalidates_legacy_code_and_announces_initial_credentials(self):
         helper = AIROOTFS / "usr/local/bin/vhackintosh-web-bootstrap"
         with tempfile.TemporaryDirectory(prefix="vhack-bootstrap-test-") as tmp:
             directory = Path(tmp)
@@ -409,13 +409,16 @@ class WebAppliancePackagingTests(unittest.TestCase):
             try:
                 command = [
                     sys.executable, str(helper), "--code-file", str(code_file),
+                    "--database", str(directory / "auth.sqlite"),
                     "--console", str(console),
                 ]
                 first = subprocess.run(command, capture_output=True, check=False, pass_fds=(slave,))
                 self.assertEqual(first.returncode, 0, first.stderr.decode(errors="replace"))
                 printed = os.read(master, 8192).decode("utf-8", errors="replace")
                 self.assertFalse(code_file.exists())
-                self.assertIn("vhackintosh-web-admin setup", printed)
+                self.assertIn("Usuário: admin", printed)
+                self.assertIn("Senha provisória: vhackintosh", printed)
+                self.assertIn("obrigatório definir uma nova senha", printed)
                 self.assertNotIn("legacy-secret-code", printed + first.stdout.decode() + first.stderr.decode())
             finally:
                 os.close(slave)

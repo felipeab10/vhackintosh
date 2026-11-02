@@ -960,7 +960,7 @@ function TasksPage() {
   </>;
 }
 
-function PasswordChangeForm() {
+function PasswordChangeForm({ onComplete }: { onComplete?: () => Promise<void> } = {}) {
   const notify = useToast();
   const summaryRef = useRef<HTMLDivElement>(null);
   const [currentPassword, setCurrentPassword] = useState('');
@@ -1010,6 +1010,7 @@ function PasswordChangeForm() {
       setFieldErrors({});
       setSuccess(translate("Senha atualizada. As outras sessões foram encerradas."));
       notify('Senha administrativa atualizada.', 'success');
+      await onComplete?.();
     } catch (error) {
       const message = error instanceof Error ? translate(error.message) : translate("Não foi possível atualizar a senha.");
       if (error instanceof ApiError && error.code === 'invalid_current_password') {
@@ -1401,8 +1402,9 @@ function Login({ session, sessionError, refreshSession }: { session: SessionView
     }
   };
   const bootstrapRequired = Boolean(session?.bootstrap_required);
+  const defaultCredentialsAvailable = Boolean(session?.default_credentials_available);
   const retrySession = async () => { await refreshSession(); };
-  return <div className="login-page"><div className="login-card"><div className="login-header"><Brand/><LanguageSelector/></div><div className="eyebrow"><span className="eyebrow-line"/>{translate('ACESSO AO APPLIANCE')}</div><h1>{translate('Entrar no painel')}</h1><p>{translate('Use as credenciais administrativas configuradas neste appliance.')}</p>{sessionError && <div className="inline-message error-message" role="alert">{translate("Serviço de sessão indisponível:")}{' '}{translate(sessionError.message)} <button type="button" className="inline-retry" onClick={retrySession}>{translate("Tentar novamente")}</button></div>}{loginError && <div className="inline-message error-message" role="alert">{translate(loginError)}</div>}{bootstrapRequired && <p className="setup-code-help">{translate('A primeira conta é configurada apenas no console local do appliance. Execute vhackintosh-web-admin setup e depois entre aqui com o usuário e a senha criados. A ativação do produto é opcional e fica disponível após o login.')}</p>}<form onSubmit={submit}>
+  return <div className="login-page"><div className="login-card"><div className="login-header"><Brand/><LanguageSelector/></div><div className="eyebrow"><span className="eyebrow-line"/>{translate('ACESSO AO APPLIANCE')}</div><h1>{translate('Entrar no painel')}</h1><p>{translate('Use as credenciais administrativas configuradas neste appliance.')}</p>{sessionError && <div className="inline-message error-message" role="alert">{translate("Serviço de sessão indisponível:")}{' '}{translate(sessionError.message)} <button type="button" className="inline-retry" onClick={retrySession}>{translate("Tentar novamente")}</button></div>}{loginError && <div className="inline-message error-message" role="alert">{translate(loginError)}</div>}{defaultCredentialsAvailable && <p className="setup-code-help">{translate('Primeiro acesso: usuário admin e senha vhackintosh. Será obrigatório criar uma nova senha após entrar.')}</p>}{bootstrapRequired && <p className="setup-code-help">{translate('A primeira conta é configurada apenas no console local do appliance. Execute vhackintosh-web-admin setup e depois entre aqui com o usuário e a senha criados. A ativação do produto é opcional e fica disponível após o login.')}</p>}<form onSubmit={submit}>
     <label htmlFor="username">{translate("Usuário administrador")}</label><input id="username" name="username" autoComplete="username" required minLength={1} maxLength={64} value={username} aria-invalid={Boolean(fieldErrors.username)} aria-describedby={fieldErrors.username ? 'username-error' : undefined} onChange={(event) => setUsername(event.target.value)}/>{fieldErrors.username && <small id="username-error" className="field-error">{translate(fieldErrors.username)}</small>}
     <label htmlFor="password">{translate("Senha")}</label><input id="password" name="password" type="password" autoComplete="current-password" required minLength={1} maxLength={1024} value={password} aria-invalid={Boolean(fieldErrors.password)} aria-describedby={fieldErrors.password ? 'password-error' : undefined} onChange={(event) => setPassword(event.target.value)}/>{fieldErrors.password && <small id="password-error" className="field-error">{translate(fieldErrors.password)}</small>}
     <button className="button button-primary login-submit" type="submit" disabled={submitting || !session || Boolean(sessionError)}><span>{submitting ? translate("Validando…") : translate("Entrar")}</span></button></form><div className="login-foot"><ShieldCheck size={15}/>{translate("Sessão protegida por cookie")}{' '}<span>·</span>{' '}{translate("Acesso local")}</div></div></div>;
@@ -1414,9 +1416,13 @@ function LoadingSession() {
 
 function AppContent() {
   const session = usePolling<SessionView>('/session', 20000);
+  const navigate = useNavigate();
   if (!session.data?.authenticated) {
     if (!session.data && !session.error) return <LoadingSession/>;
     return <Login session={session.data} sessionError={session.error} refreshSession={session.refresh}/>;
+  }
+  if (session.data.must_change_password) {
+    return <div className="login-page"><section className="login-card"><div className="login-header"><Brand/><LanguageSelector/></div><div className="eyebrow"><span className="eyebrow-line"/> {translate('PROTEÇÃO DA CONTA')}</div><h1>{translate('Crie uma nova senha')}</h1><p>{translate('A senha provisória só pode ser usada neste primeiro acesso. Defina uma senha nova para continuar.')}</p><PasswordChangeForm onComplete={async () => { await session.refresh(); navigate('/settings', { replace: true }); }}/></section></div>;
   }
   const vmEditorRoute = <Suspense fallback={<div className="data-state" role="status">{translate('Carregando configuração da VM…')}</div>}><VmEditor/></Suspense>;
   return <Routes><Route path="/login" element={<Navigate to="/" replace/>}/><Route element={<Shell username={session.data.username ?? 'Administrador'} onLogout={async () => { window.location.replace('/login'); }}/> }><Route index element={<Overview/>}/><Route path="host" element={<HostPage/>}/><Route path="vms" element={<Vms/>}/><Route path="vms/new" element={vmEditorRoute}/><Route path="vms/:vmId/edit" element={vmEditorRoute}/><Route path="vms/:vmId/*" element={<VmDetail/>}/><Route path="gpu" element={<ResourcePage page="GPU"/>}/><Route path="storage" element={<ResourcePage page="Armazenamento"/>}/><Route path="tasks" element={<TasksPage/>}/><Route path="settings" element={<SettingsPage/>}/><Route path="*" element={<Overview/>}/></Route></Routes>;

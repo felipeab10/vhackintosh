@@ -1,0 +1,70 @@
+name: Release vHackintosh Control
+
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - "core/**"
+      - "appliance/archiso/airootfs/etc/systemd/system/vhackintosh-*.service"
+      - "appliance/archiso/airootfs/etc/vhackintosh/sway.conf"
+      - "appliance/archiso/airootfs/usr/local/bin/vhackintosh-web-bootstrap"
+      - "appliance/archiso/airootfs/usr/local/bin/vhackintosh-waysession"
+      - "appliance/archiso/airootfs/usr/local/bin/vhackintosh-wait-wayland"
+      - "packaging/deb/**"
+      - "tests/test_web_api.py"
+      - "tests/test_web_appliance_packaging.py"
+  push:
+    tags:
+      - "control-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  ubuntu-package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/frontend/package-lock.json
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build Debian package
+        run: packaging/deb/build.sh "${GITHUB_REF_NAME#control-v}" dist
+      - name: Validate package metadata
+        run: dpkg-deb --info dist/vhackintosh-control_*_amd64.deb
+      - name: Install package and check first-run services
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./dist/vhackintosh-control_*_amd64.deb
+          sudo systemctl is-active vhackintosh-agent.service
+          sudo systemctl is-active vhackintosh-web.service
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error --insecure https://127.0.0.1:8443/api/v1/session -o /tmp/vh-session.json; then break; fi
+            sleep 1
+          done
+          python3 -c 'import json; s=json.load(open("/tmp/vh-session.json")); assert s["bootstrap_required"] is False and s["default_credentials_available"] is True'
+          curl --fail --silent --show-error --insecure -c /tmp/vh-cookies.txt \
+            -H 'Origin: https://127.0.0.1:8443' -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"vhackintosh"}' \
+            https://127.0.0.1:8443/api/v1/session/login -o /tmp/vh-login.json
+          python3 -c 'import json; assert json.load(open("/tmp/vh-login.json"))["must_change_password"] is True'
+          code=$(curl --silent --insecure -b /tmp/vh-cookies.txt -o /tmp/vh-blocked.json -w '%{http_code}' https://127.0.0.1:8443/api/v1/host)
+          test "$code" = 403
+          python3 -c 'import json; assert json.load(open("/tmp/vh-blocked.json"))["code"] == "password_change_required"'
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/control-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          args=("$GITHUB_REF_NAME" dist/vhackintosh-control_*_amd64.deb dist/SHA256SUMS \
+            --title "vHackintosh Control ${GITHUB_REF_NAME#control-v}" --generate-notes)
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then args+=(--prerelease); fi
+          gh release create "${args[@]}"

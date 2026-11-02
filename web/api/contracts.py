@@ -150,6 +150,8 @@ class SessionView(Contract):
     username: str | None = None
     expires_at: datetime | None = None
     bootstrap_required: bool = False
+    must_change_password: bool = False
+    default_credentials_available: bool = False
     tls_fingerprint: str | None = None
 
 
