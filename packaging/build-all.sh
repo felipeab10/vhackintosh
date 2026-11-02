@@ -117,41 +117,53 @@ ROOT="$(realpath "$ROOT")"
 OUT="$(mkdir -p "$OUT" && realpath "$OUT")"
 WORK="$(mktemp -d)"
 trap 'rm -rf -- "$WORK"' EXIT
-PAYLOAD="${WORK}/payload"
-mkdir -p "$PAYLOAD"
+PAYLOAD_BASE="${WORK}/payload-base"
+mkdir -p "$PAYLOAD_BASE"
 
-echo "[1/4] Building the shared Control payload (${VERSION})"
-"${ROOT}/packaging/common/stage-app.sh" "$PAYLOAD"
+echo "[1/4] Building shared Control sources and frontend (${VERSION})"
+"${ROOT}/packaging/common/stage-app.sh" "$PAYLOAD_BASE"
 
 container_build() {
-  local image="$1"; shift
+  local image="$1" payload="$2"; shift 2
   "$ENGINE" run --rm \
     --volume "${ROOT}:/src:ro" \
-    --volume "${PAYLOAD}:/payload:ro" \
+    --volume "${payload}:/payload:ro" \
     --volume "${OUT}:/out:rw" \
     --env "VHACK_CONTROL_VERSION=${VERSION}" \
     "$image" "$@"
 }
 
-echo "[2/4] Building Ubuntu 24.04 package"
-container_build "${VHACK_UBUNTU_IMAGE:-ubuntu:24.04}" bash -euc '
+echo "[2/4] Building Ubuntu 24.04 package with Ubuntu Python dependencies"
+PAYLOAD_UBUNTU="${WORK}/payload-ubuntu"
+cp -a "$PAYLOAD_BASE" "$PAYLOAD_UBUNTU"
+container_build "${VHACK_UBUNTU_IMAGE:-ubuntu:24.04}" "$PAYLOAD_UBUNTU" bash -euc '
   apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dpkg-dev
-  bash /src/packaging/deb/build-package.sh "$VHACK_CONTROL_VERSION" /payload /out
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dpkg-dev python3-venv
+  cp -a /payload /tmp/vhackintosh-package-payload
+  bash /src/packaging/common/install-python-deps.sh /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current/requirements.lock
+  bash /src/packaging/deb/build-package.sh "$VHACK_CONTROL_VERSION" /tmp/vhackintosh-package-payload /out
   dpkg-deb --info "/out/vhackintosh-control_${VHACK_CONTROL_VERSION}_amd64.deb" >/dev/null
 '
 
-echo "[3/4] Building Fedora 44 RPM"
-container_build "${VHACK_FEDORA_IMAGE:-fedora:44}" bash -euc '
-  dnf -y install rpm-build
-  bash /src/packaging/fedora/build-package.sh "$VHACK_CONTROL_VERSION" /payload /out
+echo "[3/4] Building Fedora 44 RPM with Fedora Python dependencies"
+PAYLOAD_FEDORA="${WORK}/payload-fedora"
+cp -a "$PAYLOAD_BASE" "$PAYLOAD_FEDORA"
+container_build "${VHACK_FEDORA_IMAGE:-fedora:44}" "$PAYLOAD_FEDORA" bash -euc '
+  dnf -y install rpm-build python3-pip
+  cp -a /payload /tmp/vhackintosh-package-payload
+  bash /src/packaging/common/install-python-deps.sh /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current/requirements.lock
+  bash /src/packaging/fedora/build-package.sh "$VHACK_CONTROL_VERSION" /tmp/vhackintosh-package-payload /out
   rpm -qp --info "/out/vhackintosh-control-${VHACK_CONTROL_VERSION//-/.}-1"*.rpm >/dev/null
 '
 
-echo "[4/4] Building Arch Linux package"
-container_build "${VHACK_ARCH_IMAGE:-archlinux:latest}" bash -euc '
-  pacman -Syu --noconfirm --needed base-devel
-  bash /src/packaging/arch/build-package.sh "$VHACK_CONTROL_VERSION" /payload /out
+echo "[4/4] Building Arch Linux package with Arch Python dependencies"
+PAYLOAD_ARCH="${WORK}/payload-arch"
+cp -a "$PAYLOAD_BASE" "$PAYLOAD_ARCH"
+container_build "${VHACK_ARCH_IMAGE:-archlinux:latest}" "$PAYLOAD_ARCH" bash -euc '
+  pacman -Syu --noconfirm --needed base-devel python-pip
+  cp -a /payload /tmp/vhackintosh-package-payload
+  bash /src/packaging/common/install-python-deps.sh /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current/requirements.lock
+  bash /src/packaging/arch/build-package.sh "$VHACK_CONTROL_VERSION" /tmp/vhackintosh-package-payload /out
   pacman -Qp "/out/vhackintosh-control-${VHACK_CONTROL_VERSION//-/.}-1-x86_64.pkg.tar.zst" >/dev/null
 '
 

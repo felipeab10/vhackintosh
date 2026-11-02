@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DESTDIR="${1:?usage: stage-app.sh DESTDIR}"
 
-for tool in npm uv rsync python3; do
+for tool in npm rsync; do
   command -v "$tool" >/dev/null || { echo "missing build dependency: $tool" >&2; exit 1; }
 done
 
@@ -26,9 +26,6 @@ rsync -a --exclude=__pycache__/ --exclude='*.pyc' "${ROOT}/web/api/" "${APP}/web
 rsync -a "${FRONTEND}/dist/" "${APP}/web/frontend/dist/"
 install -m 0644 "${ROOT}/web/frontend/THIRD_PARTY_NOTICES.md" "${APP}/web/frontend/THIRD_PARTY_NOTICES.md"
 install -m 0644 "${ROOT}/web/requirements.lock" "${APP}/requirements.lock"
-uv pip install --python "$(command -v python3)" --target "${APP}/vendor" \
-  --require-hashes --link-mode=copy --python-platform x86_64-unknown-linux-gnu \
-  -r "${ROOT}/web/requirements.lock"
 
 install -d "${DESTDIR}/usr/lib/systemd/system" "${DESTDIR}/etc/vhackintosh" \
   "${DESTDIR}/usr/local/bin" "${DESTDIR}/usr/lib/sysusers.d" "${DESTDIR}/usr/lib/tmpfiles.d"
