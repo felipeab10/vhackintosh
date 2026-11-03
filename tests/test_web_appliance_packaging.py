@@ -19,6 +19,10 @@ AIROOTFS = ROOT / "appliance/archiso/airootfs"
 
 
 class WebAppliancePackagingTests(unittest.TestCase):
+    def test_python_dependency_installer_can_be_invoked_by_iso_packager(self):
+        installer = ROOT / "packaging/common/install-python-deps.sh"
+        self.assertTrue(os.access(installer, os.X_OK), "packager executes this helper directly")
+
     def test_vm_template_is_packaged_without_being_enabled(self):
         unit = AIROOTFS / "etc/systemd/system/vhackintosh-vm@.service"
         text = unit.read_text(encoding="utf-8")
@@ -39,7 +43,8 @@ class WebAppliancePackagingTests(unittest.TestCase):
         )
         self.assertIn("Environment=VHACKINTOSH_VM_ID=%i", text)
         self.assertIn("Environment=XDG_RUNTIME_DIR=/run/vhackintosh-display", text)
-        self.assertIn("Environment=WAYLAND_DISPLAY=wayland-0", text)
+        self.assertIn("Environment=XDG_RUNTIME_DIR=/run/vhackintosh-display", text)
+        self.assertNotIn("Environment=WAYLAND_DISPLAY=wayland-0", text)
         self.assertIn("vhackintosh-display.service", parser["Unit"].get("Requires", ""))
         self.assertEqual(service["User"], "root")
         self.assertFalse(
@@ -71,17 +76,26 @@ class WebAppliancePackagingTests(unittest.TestCase):
         display = configparser.ConfigParser(strict=False, interpolation=None)
         display.read_string(display_text)
         service = display["Service"]
+        self.assertEqual(
+            service["ExecStart"],
+            "/usr/local/bin/vhackintosh-waysession /usr/bin/python3 -m core.display_session_guard",
+        )
         self.assertEqual(service["TTYPath"], "/dev/tty2")
         self.assertEqual(service["StandardInput"], "tty-force")
         self.assertEqual(service["ExecStartPre"], "/usr/bin/chvt 2")
+        self.assertEqual(service["TTYVTDisallocate"], "no")
+        self.assertEqual(service["ExecStopPost"], "-/usr/bin/chvt 1")
         self.assertNotIn("openvt --switch --wait", display_text)
         self.assertIn("vhackintosh-waysession", service["ExecStart"])
         self.assertIn("core.display_session_guard", service["ExecStart"])
         self.assertEqual(service["RuntimeDirectory"], "vhackintosh-display")
         self.assertIn("seatd.service", display["Unit"].get("Requires", ""))
         self.assertIn("seatd.service", display["Unit"].get("After", ""))
+        self.assertIn("getty@tty2.service", display["Unit"].get("Conflicts", ""))
+        self.assertIn("getty@tty2.service", display["Unit"].get("After", ""))
         self.assertIn("WLR_BACKENDS=drm,libinput", service["Environment"])
         self.assertNotIn("Environment=WAYLAND_DISPLAY=wayland-0", display_text)
+        self.assertNotIn("WAYLAND_DISPLAY=wayland-0", service["Environment"])
         self.assertIn("ExecStartPost=/usr/bin/bash /usr/local/bin/vhackintosh-wait-wayland", display_text)
         self.assertEqual(service["KillMode"], "control-group")
         if shutil.which("systemd-analyze"):
@@ -190,7 +204,8 @@ class WebAppliancePackagingTests(unittest.TestCase):
         self.assertEqual(vm["Service"]["KillMode"], "control-group")
         self.assertIn("vhackintosh-display.service", vm["Unit"].get("Requires", ""))
         self.assertIn("vhackintosh-display.service", vm["Unit"].get("After", ""))
-        self.assertEqual(vm["Service"]["Environment"].split("\\n")[-1], "WAYLAND_DISPLAY=wayland-0")
+        self.assertIn("XDG_RUNTIME_DIR=/run/vhackintosh-display", vm["Service"]["Environment"])
+        self.assertNotIn("WAYLAND_DISPLAY=wayland-0", vm["Service"]["Environment"])
         self.assertIn("Environment=VHACKINTOSH_VM_ID=%i", vm_text)
         self.assertIn("Environment=VHACKINTOSH_VM_CONTROL_BASE=%t", vm_text)
         self.assertIn("Environment=VHACKINTOSH_VM_SUPERVISOR=1", vm_text)
@@ -418,14 +433,15 @@ class WebAppliancePackagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="vhack-bootstrap-test-") as tmp:
             directory = Path(tmp)
             code_file = directory / "run/bootstrap-code"
+            database = directory / "web/auth.sqlite"
             code_file.parent.mkdir()
             code_file.write_text("legacy-secret-code", encoding="ascii")
             master, slave = os.openpty()
             console = Path(f"/proc/self/fd/{slave}")
             try:
                 command = [
-                    sys.executable, str(helper), "--code-file", str(code_file),
-                    "--database", str(directory / "auth.sqlite"),
+                    sys.executable, str(helper), "--database", str(database),
+                    "--code-file", str(code_file),
                     "--console", str(console),
                 ]
                 first = subprocess.run(command, capture_output=True, check=False, pass_fds=(slave,))
@@ -436,6 +452,15 @@ class WebAppliancePackagingTests(unittest.TestCase):
                 self.assertIn("Senha provisória: vhackintosh", printed)
                 self.assertIn("obrigatório definir uma nova senha", printed)
                 self.assertNotIn("legacy-secret-code", printed + first.stdout.decode() + first.stderr.decode())
+                from web.api.app import SQLiteAuthStore
+
+                auth = SQLiteAuthStore(database)
+                self.assertTrue(auth.authenticate("admin", "vhackintosh"))
+                token, _, _ = auth.create_session("admin")
+                self.assertTrue(auth.get_session(token)["must_change_password"])
+                second = subprocess.run(command, capture_output=True, check=False)
+                self.assertEqual(second.returncode, 0, second.stderr.decode(errors="replace"))
+                self.assertTrue(auth.authenticate("admin", "vhackintosh"))
             finally:
                 os.close(slave)
                 os.close(master)

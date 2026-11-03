@@ -1,14 +1,36 @@
 from __future__ import annotations
 
 import os
+import socket
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
 from core.vm_lifecycle import LaunchResult
-from core.vm_supervisor import run_vm
+from core.vm_supervisor import _resolve_wayland_display, run_vm
 
 
 class VmSupervisorEntrypointTests(unittest.TestCase):
+    def test_resolves_socket_name_published_by_sway(self):
+        with tempfile.TemporaryDirectory() as runtime_dir:
+            socket_path = os.path.join(runtime_dir, "wayland-1")
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.addCleanup(server.close)
+            server.bind(socket_path)
+            with open(os.path.join(runtime_dir, "wayland-display"), "w", encoding="utf-8") as marker:
+                marker.write("wayland-1\n")
+
+            self.assertEqual(_resolve_wayland_display(runtime_dir, "wayland-0"), "wayland-1")
+
+    def test_falls_back_to_first_live_wayland_socket_if_marker_is_missing(self):
+        with tempfile.TemporaryDirectory() as runtime_dir:
+            socket_path = os.path.join(runtime_dir, "wayland-2")
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.addCleanup(server.close)
+            server.bind(socket_path)
+
+            self.assertEqual(_resolve_wayland_display(runtime_dir, "wayland-0"), "wayland-2")
+
     def test_rejects_unsafe_instance_before_reading_catalog(self):
         store_factory = Mock(side_effect=AssertionError("catalog must not be opened"))
         for vm_id in ("../outside", "invalid-", "a" * 64):

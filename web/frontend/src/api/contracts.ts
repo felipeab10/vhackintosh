@@ -3,11 +3,11 @@ export interface SessionView {
   username: string | null;
   expires_at: string | null;
   bootstrap_required: boolean;
-  must_change_password?: boolean;
+  must_change_password: boolean;
   default_credentials_available?: boolean;
-  tls_fingerprint: string | null;
   reims_update_status?: 'queued' | 'unavailable' | null;
   reims_update_job_id?: string | null;
+  tls_fingerprint: string | null;
 }
 
 export interface WebActivationView {

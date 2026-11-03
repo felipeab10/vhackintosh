@@ -17,6 +17,8 @@ BUILD_ID="${BUILD_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 BUILD_WORK="${BUILD_WORK:-/var/tmp/vhackintosh-archiso-${BUILD_ID}}"
 PROFILE_WORK="${PROFILE_WORK:-/var/tmp/vhackintosh-profile-${BUILD_ID}}"
 ARCHISO_PROFILE="${PROFILE_WORK}"
+OUTPUT_DIR_EXPLICIT=0
+if [ -n "${OUTPUT_DIR:-}" ]; then OUTPUT_DIR_EXPLICIT=1; fi
 OUTPUT_DIR="${OUTPUT_DIR:-${SCRIPT_DIR}/out}"
 PROFILE_WORK_CREATED=0
 BUILD_WORK_CREATED=0
@@ -46,6 +48,7 @@ REIMS_REPO="${REIMS_REPO:-felipeab10/reims-vgpu}"
 RELEASE_ASSET_NAME="reims-vgpu-linux-x86_64.tar.gz"
 REIMS_UTIL_UPDATE=0
 REIMS_UTIL_REF="${REIMS_UTIL_REF:-master}"
+DEBUG_SSH=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -65,6 +68,10 @@ while [[ $# -gt 0 ]]; do
             REIMS_UTIL_REF="$2"
             shift 2
             ;;
+        --debug-ssh)
+            DEBUG_SSH=1
+            shift
+            ;;
         --keep-work)
             KEEP_WORK=1
             shift
@@ -78,6 +85,7 @@ while [[ $# -gt 0 ]]; do
             echo "                        (padrão: latest). Ex: --release v1.0.1"
             echo "      --update-reims-util  Compila e atualiza o reims-util oficial, sem construir a ISO."
             echo "      --reims-util-ref <REF> Branch/tag oficial do reims-util (padrão: master)."
+            echo "      --debug-ssh          Inclui acesso SSH temporário por chave e logs persistentes de diagnóstico."
             echo "  --keep-work           Preserva os diretórios temporários em /var/tmp após o build (útil para debug)."
             echo "  -h, --help            Exibe esta mensagem de ajuda"
             exit 0
@@ -94,6 +102,12 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Keep an existing regular ISO output intact. The one-flag diagnostics build
+# gets its own predictable directory unless the caller selected OUTPUT_DIR.
+if [ "${DEBUG_SSH}" -eq 1 ] && [ "${OUTPUT_DIR_EXPLICIT}" -eq 0 ]; then
+    OUTPUT_DIR="${SCRIPT_DIR}/out-debug"
+fi
 
 # Atualização do reims-util roda no host e é independente da ISO.
 if [ "${REIMS_UTIL_UPDATE}" -eq 1 ]; then
@@ -199,6 +213,35 @@ rm -rf "${ARCHISO_PROFILE}/airootfs/opt"
 mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh"
 mkdir -p "${ARCHISO_PROFILE}/airootfs/opt/reims-vgpu"
+
+# Debug access is opt-in and the private key never enters the repository or ISO.
+# Under sudo, locate the caller's dedicated public key unless an explicit path
+# was supplied. This keeps the same `--debug-ssh` build flow on every host.
+if [ "${DEBUG_SSH}" -eq 1 ]; then
+    DEBUG_SSH_PUBKEY_FILE="${VHACKINTOSH_DEBUG_SSH_PUBKEY_FILE:-}"
+    if [ -z "${DEBUG_SSH_PUBKEY_FILE}" ]; then
+        if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+            DEBUG_SSH_HOME="$(getent passwd "${SUDO_USER}" | cut -d: -f6)"
+        else
+            DEBUG_SSH_HOME="${HOME:-/root}"
+        fi
+        DEBUG_SSH_PUBKEY_FILE="${DEBUG_SSH_HOME}/.ssh/vhackintosh-appliance-debug.pub"
+    fi
+    if [ ! -r "${DEBUG_SSH_PUBKEY_FILE}" ]; then
+        echo -e "${RED}Erro: chave pública de diagnóstico não encontrada: ${DEBUG_SSH_PUBKEY_FILE}${NC}"
+        echo -e "Gere uma chave dedicada com: ssh-keygen -t ed25519 -f ~/.ssh/vhackintosh-appliance-debug -N ''"
+        exit 1
+    fi
+    echo -e "${YELLOW}⚠ ISO de diagnóstico: root SSH por chave, acesso limitado à chave dedicada, sem senha.${NC}"
+    python3 "${SCRIPT_DIR}/configure_debug_ssh.py" \
+        "${ARCHISO_PROFILE}/airootfs" "${DEBUG_SSH_PUBKEY_FILE}"
+    # mkarchiso normalizes payload modes; explicitly preserve strict SSH modes.
+    sed -i '/^)/i\  ["/root/.ssh"]="0:0:700"\
+  ["/root/.ssh/authorized_keys"]="0:0:600"\
+  ["/etc/ssh/sshd_config.d/00-vhackintosh-debug.conf"]="0:0:600"\
+  ["/etc/systemd/system/vhackintosh-display.service.d/10-vhackintosh-diagnostics.conf"]="0:0:644"\
+  ["/etc/systemd/journald.conf.d/90-vhackintosh-debug.conf"]="0:0:644"' "${ARCHISO_PROFILE}/profiledef.sh"
+fi
 
 # 4. Sincronização do código-fonte do vHackintosh para o rootfs
 echo -e "${BLUE}▶ Sincronizando módulos essenciais do vHackintosh em /opt/vhackintosh...${NC}"

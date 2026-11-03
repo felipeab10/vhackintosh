@@ -20,7 +20,6 @@ Environment=VHACKINTOSH_VM_ID=%i
 Environment=VHACKINTOSH_VM_CONTROL_BASE=%t
 Environment=VHACKINTOSH_VM_SUPERVISOR=1
 Environment=XDG_RUNTIME_DIR=/run/vhackintosh-display
-Environment=WAYLAND_DISPLAY=wayland-0
 RuntimeDirectory=vh-%i
 RuntimeDirectoryMode=0750
 ExecStart=/usr/bin/python3 -m core.vm_supervisor --vm-id %i

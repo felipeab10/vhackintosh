@@ -599,6 +599,9 @@ h1 { margin: 8px 0 5px; color: var(--text-primary); font-size: clamp(25px, 3vw, 
 .login-card > .eyebrow { margin-bottom: 7px; }
 .login-card h1 { margin: 0 0 7px; font-size: 26px; }
 .login-card > .notice { margin-top: 20px; }
+.login-card .first-password-user { margin-top: 10px; color: #aab7ca; font-size: 12px; }
+.login-card .first-password-user strong { color: #e3eaf4; }
+.login-card .vm-field-hint { color: #91a0b5; font-size: 10px; }
 .login-card form { display: grid; gap: 9px; margin-top: 22px; }
 .login-card label { margin-top: 5px; color: #e3eaf4; font-size: 11px; font-weight: 700; }
 .login-card input { width: 100%; min-height: 46px; border: 1px solid var(--control-border); border-radius: 8px; color: var(--text-primary); background: #0b0e15; padding: 0 12px; font-size: 12px; }

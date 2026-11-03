@@ -5,8 +5,8 @@ vHackintosh — Troca de idioma do appliance (task 2.5)
 instalação do ISO Live; `vhackintosh-lang pt|en` — valida a entrada, persiste em
 `~/.config/vhackintosh/settings.json` e vale na próxima abertura da TUI e em
 reboots (o settings sobrevive ao live). Sem argumentos, mostra o idioma atual
-e os suportados. Entrada inválida: recusa, mantém o atual e lista os aceitos
-(especificação de `specs/language-selection`).
+e os suportados. `--get-code` imprime somente o código atual para os menus de
+boot. Entrada inválida: recusa, mantém o atual e lista os aceitos.
 """
 
 from __future__ import annotations
@@ -29,6 +29,10 @@ def main() -> int:
     # The live ISO presents the choice before its installation menu. Keeping
     # the picker here lets the shell boot flow and the TUI share the same
     # persisted setting without starting the full VM manager.
+    if args == ["--get-code"]:
+        print(get_language())
+        return 0
+
     if args == ["--choose"]:
         if has_language_choice():
             return 0
@@ -38,11 +42,11 @@ def main() -> int:
             print(f"  {index} - {LANGUAGES[code]}")
         while True:
             try:
-                choice = input("Idioma / Language [1/2] (1): ").strip() or "1"
+                choice = input("Idioma / Language [1/2] (2): ").strip() or "2"
             except (EOFError, KeyboardInterrupt):
-                # Preserve the appliance's Portuguese default if input is
+                # Preserve the appliance's English default if input is
                 # unavailable, so unattended boots remain usable.
-                choice = "1"
+                choice = "2"
             if choice in {str(i) for i in range(1, len(options) + 1)}:
                 code = options[int(choice) - 1]
                 set_language(code)

@@ -625,6 +625,31 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/v1/session/login", headers=origin(),
             json={"username": "admin", "password": "correct horse battery"}).status_code, 200)
 
+    def test_default_appliance_account_must_rotate_password_before_using_dashboard(self) -> None:
+        auth = self.client.app.state.auth_store
+        self.assertTrue(auth.ensure_default_admin())
+        self.assertTrue(self.client.get("/api/v1/session").json()["default_credentials_available"])
+        response = self.client.post(
+            "/api/v1/session/login",
+            headers=origin(),
+            json={"username": "admin", "password": "vhackintosh"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["must_change_password"])
+        blocked = self.client.get("/api/v1/host")
+        self.assertEqual(blocked.status_code, 403)
+        self.assertEqual(blocked.json()["code"], "password_change_required")
+
+        changed = self.client.post(
+            "/api/v1/session/password",
+            headers={**origin(), "X-CSRF-Token": self.client.cookies.get("vh_csrf")},
+            json={"current_password": "vhackintosh", "new_password": "my permanent secure password"},
+        )
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertFalse(changed.json()["must_change_password"])
+        self.assertFalse(self.client.get("/api/v1/session").json()["default_credentials_available"])
+        self.assertEqual(self.client.get("/api/v1/host").status_code, 200)
+
     def test_telemetry_retention_settings_require_auth_csrf_and_are_audited(self) -> None:
         self.assertEqual(self.client.get("/api/v1/settings/telemetry").status_code, 401)
         self.bootstrap()

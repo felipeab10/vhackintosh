@@ -63,12 +63,14 @@ test('primary and mobile navigation labels are translated for the selected local
   }
 });
 
-test('appliance login never asks for the administrator bootstrap code', () => {
+test('appliance login explains the temporary account and forces password rotation', () => {
   const login = app.slice(app.indexOf('function Login('), app.indexOf('function LoadingSession('));
   assert.doesNotMatch(login, /activationCode|activation-code|session\/bootstrap|Código de configuração do administrador/);
-  assert.match(login, /vhackintosh-web-admin setup/);
+  assert.match(login, /Primeiro acesso: usuário admin e senha vhackintosh/);
   assert.match(login, /JSON\.stringify\(\{ username, password \}\)/);
   assert.match(login, /translate\("Entrar"\)/);
+  assert.match(app, /<PasswordChangeForm onComplete=/);
+  assert.match(app, /session\.data\.must_change_password/);
 });
 
 test('English dictionaries exist for the application, VM editor, and shared widgets', () => {

@@ -120,6 +120,45 @@ def validate_web_manager_payload(rootfs: Path) -> None:
         raise RuntimeError("web payload SHA-256 manifest does not cover every packaged file")
 
 
+def validate_debug_ssh_payload(rootfs: Path) -> bool:
+    """If debug SSH is present, require key-only auth and a boot-enabled sshd."""
+    config = rootfs / "etc/ssh/sshd_config.d/00-vhackintosh-debug.conf"
+    if not config.exists():
+        return False
+    required_files = (
+        rootfs / "root/.ssh/authorized_keys",
+        rootfs / "usr/lib/systemd/system/sshd.service",
+        rootfs / "usr/lib/systemd/system/sshdgenkeys.service",
+        rootfs / "etc/systemd/journald.conf.d/90-vhackintosh-debug.conf",
+        rootfs / "etc/systemd/system/vhackintosh-display.service.d/10-vhackintosh-diagnostics.conf",
+    )
+    for path in required_files:
+        if not path.is_file():
+            raise RuntimeError(f"debug ISO is missing required SSH/diagnostics payload: {path.relative_to(rootfs)}")
+    key_file = required_files[0]
+    key_line = key_file.read_text(encoding="ascii").strip()
+    if not key_line.startswith("restrict ssh-ed25519 "):
+        raise RuntimeError("debug ISO authorized_keys must contain a restricted Ed25519 key")
+    if key_file.stat().st_mode & 0o777 != 0o600:
+        raise RuntimeError("debug ISO authorized_keys must have mode 0600")
+    config_text = config.read_text(encoding="ascii")
+    for directive in (
+        "PermitRootLogin prohibit-password",
+        "PasswordAuthentication no",
+        "KbdInteractiveAuthentication no",
+        "PubkeyAuthentication yes",
+        "AuthenticationMethods publickey",
+    ):
+        if directive not in config_text:
+            raise RuntimeError(f"debug ISO SSH configuration is missing: {directive}")
+    enabled = rootfs / "etc/systemd/system/multi-user.target.wants/sshd.service"
+    if not enabled.is_symlink() or os.readlink(enabled) != "/usr/lib/systemd/system/sshd.service":
+        raise RuntimeError("debug ISO sshd.service is not enabled for boot")
+    if (rootfs / "root/.ssh").stat().st_mode & 0o777 != 0o700:
+        raise RuntimeError("debug ISO /root/.ssh must have mode 0700")
+    return True
+
+
 class Provenance(NamedTuple):
     """Release pré-compilada do fork empacotada e conferida."""
 
@@ -214,6 +253,7 @@ def main() -> int:
             command("unsquashfs", "-no-progress", "-no-xattrs", "-d", str(temp / "rootfs"), str(squashfs))
             rootfs = temp / "rootfs"
             validate_web_manager_payload(rootfs)
+            debug_ssh_enabled = validate_debug_ssh_payload(rootfs)
             for required_path in (
                 "opt/vhackintosh/core/smbios.py",
                 "opt/vhackintosh/core/reims_util.py",
@@ -321,7 +361,7 @@ def main() -> int:
                 "macserial_sha256": hashlib.sha256(macserial.read_bytes()).hexdigest(),
                 "reims_util_sha256": hashlib.sha256(reims_util.read_bytes()).hexdigest(),
                 "ovmf_vars_sha256": ovmf_vars_hash,
-                "checks": ["squashfs-extracted", "opencore-qcow2", "plist-neutral", "macserial-pinned", "reims-util-packaged", "ovmf-vars-match", "reims-release-packaged", "reims-ctl-packaged", "web-manager-packaged"],
+                "checks": ["squashfs-extracted", "opencore-qcow2", "plist-neutral", "macserial-pinned", "reims-util-packaged", "ovmf-vars-match", "reims-release-packaged", "reims-ctl-packaged", "web-manager-packaged"] + (["debug-ssh-key-only", "persistent-diagnostics"] if debug_ssh_enabled else []),
             }
         # Atomic metadata publication only after all checks complete.
         target = iso.with_suffix(iso.suffix + ".manifest.json")

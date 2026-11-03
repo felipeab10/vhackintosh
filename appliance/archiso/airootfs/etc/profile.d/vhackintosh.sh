@@ -80,6 +80,20 @@ vhack_flush_input() {
     while read -r -t 0.1 -n 10000 discard; do :; done 2>/dev/null || true
 }
 
+# The boot menus run before the Python TUI, so use the exact same persisted
+# language setting through the small packaged helper.
+vhack_get_language() {
+    local helper="/opt/vhackintosh/bin/vhackintosh-lang"
+    if [ -x "$helper" ]; then
+        local language
+        language="$("$helper" --get-code 2>/dev/null || true)"
+        case "$language" in
+            en|pt) printf '%s\n' "$language"; return ;;
+        esac
+    fi
+    printf 'en\n'
+}
+
 # O usuário pediu explicitamente para não bloquear no gate de Vulkan?
 #
 # Duas formas, porque as duas são necessárias em momentos diferentes:
@@ -271,44 +285,81 @@ if [ "$(tty)" = "/dev/tty1" ]; then
         if [ -x /opt/vhackintosh/bin/vhackintosh-lang ]; then
             /opt/vhackintosh/bin/vhackintosh-lang --choose
         fi
+        VHACK_LANGUAGE="$(vhack_get_language)"
 
         while true; do
             clear
             echo -e "\033[1;36m======================================================================\033[0m"
-            echo -e "\033[1;37m         Bem-vindo ao vHackintosh OS Appliance (Live USB)             \033[0m"
+            if [ "$VHACK_LANGUAGE" = "en" ]; then
+                echo -e "\033[1;37m              Welcome to vHackintosh OS Appliance (Live USB)           \033[0m"
+            else
+                echo -e "\033[1;37m         Bem-vindo ao vHackintosh OS Appliance (Live USB)             \033[0m"
+            fi
             echo -e "\033[1;36m======================================================================\033[0m\n"
 
             # Status de Internet em tempo real
             if vhack_has_internet; then
-                echo -e "  \033[1;32m● Conexão: CONECTADO À INTERNET\033[0m"
+                if [ "$VHACK_LANGUAGE" = "en" ]; then
+                    echo -e "  \033[1;32m● Network: CONNECTED TO THE INTERNET\033[0m"
+                else
+                    echo -e "  \033[1;32m● Conexão: CONECTADO À INTERNET\033[0m"
+                fi
             else
-                echo -e "  \033[1;33m● Conexão: SEM INTERNET (conecte via opção [3] abaixo)\033[0m"
+                if [ "$VHACK_LANGUAGE" = "en" ]; then
+                    echo -e "  \033[1;33m● Network: OFFLINE (connect using option [3] below)\033[0m"
+                else
+                    echo -e "  \033[1;33m● Conexão: SEM INTERNET (conecte via opção [3] abaixo)\033[0m"
+                fi
             fi
 
             # Status de Compatibilidade de Hardware (KVM e Reims vGPU)
             if command -v vhackintosh >/dev/null 2>&1 && vhackintosh check -q 2>/dev/null; then
-                echo -e "  \033[1;32m● Hardware: COMPATÍVEL (KVM e Reims vGPU prontos)\033[0m\n"
+                if [ "$VHACK_LANGUAGE" = "en" ]; then
+                    echo -e "  \033[1;32m● Hardware: COMPATIBLE (KVM and Reims vGPU ready)\033[0m\n"
+                else
+                    echo -e "  \033[1;32m● Hardware: COMPATÍVEL (KVM e Reims vGPU prontos)\033[0m\n"
+                fi
             else
-                echo -e "  \033[1;31m● Hardware: INCOMPATÍVEL (KVM na BIOS ou GPU sem Vulkan 1.2+)\033[0m\n"
+                if [ "$VHACK_LANGUAGE" = "en" ]; then
+                    echo -e "  \033[1;31m● Hardware: INCOMPATIBLE (enable KVM in BIOS or use a Vulkan 1.2+ GPU)\033[0m\n"
+                else
+                    echo -e "  \033[1;31m● Hardware: INCOMPATÍVEL (KVM na BIOS ou GPU sem Vulkan 1.2+)\033[0m\n"
+                fi
             fi
 
-            echo -e "Escolha o modo de operação:\n"
-            echo -e "  \033[1;32m[1]\033[0m \033[1;37m★ INSTALAR vHackintosh OS no SSD / Disco deste Computador (Recomendado)\033[0m"
-            echo -e "      Apaga o disco selecionado e instala o sistema operacional definitivo.\n"
-            echo -e "  \033[1;33m[2]\033[0m \033[1;37mExecutar em Modo Live / Demonstração (Memória RAM)\033[0m"
-            echo -e "      Testa o vHackintosh sem alterar os discos físicos do computador.\n"
-            echo -e "  \033[1;34m[3]\033[0m \033[1;37mConfigurar Conexão Wi-Fi / Rede (nmtui)\033[0m\n"
-            echo -e "  \033[1;31m[0]\033[0m \033[1;37mReiniciar o Computador\033[0m\n"
+            if [ "$VHACK_LANGUAGE" = "en" ]; then
+                echo -e "Choose an operation:\n"
+                echo -e "  \033[1;32m[1]\033[0m \033[1;37m★ INSTALL vHackintosh OS to this computer's SSD / disk (Recommended)\033[0m"
+                echo -e "      Erases the selected disk and installs the operating system permanently.\n"
+                echo -e "  \033[1;33m[2]\033[0m \033[1;37mRun in Live / Demo mode (RAM)\033[0m"
+                echo -e "      Try vHackintosh without changing the computer's physical disks.\n"
+                echo -e "  \033[1;34m[3]\033[0m \033[1;37mConfigure Wi-Fi / network (nmtui)\033[0m\n"
+                echo -e "  \033[1;31m[0]\033[0m \033[1;37mRestart the computer\033[0m\n"
+                boot_prompt="Choose [1, 2, 3 or 0]: "
+                installer_done="Installer finished. Press Enter to return to the menu..."
+                invalid_choice="Invalid option."
+            else
+                echo -e "Escolha o modo de operação:\n"
+                echo -e "  \033[1;32m[1]\033[0m \033[1;37m★ INSTALAR vHackintosh OS no SSD / Disco deste Computador (Recomendado)\033[0m"
+                echo -e "      Apaga o disco selecionado e instala o sistema operacional definitivo.\n"
+                echo -e "  \033[1;33m[2]\033[0m \033[1;37mExecutar em Modo Live / Demonstração (Memória RAM)\033[0m"
+                echo -e "      Testa o vHackintosh sem alterar os discos físicos do computador.\n"
+                echo -e "  \033[1;34m[3]\033[0m \033[1;37mConfigurar Conexão Wi-Fi / Rede (nmtui)\033[0m\n"
+                echo -e "  \033[1;31m[0]\033[0m \033[1;37mReiniciar o Computador\033[0m\n"
+                boot_prompt="Escolha [1, 2, 3 ou 0]: "
+                installer_done="Instalador finalizado. Pressione Enter para voltar ao menu..."
+                invalid_choice="Opção inválida."
+            fi
 
             # Encerra o menu em EOF (tty desconectado) em vez de girar em loop.
-            if ! read -r -p "Escolha [1, 2, 3 ou 0]: " boot_choice; then
+            if ! read -r -p "$boot_prompt" boot_choice; then
                 break
             fi
             case "$boot_choice" in
                 1)
                     if command -v vhackintosh-install >/dev/null 2>&1; then
                         vhackintosh-install
-                        echo -e "\n\033[1;33mInstalador finalizado. Pressione Enter para voltar ao menu...\033[0m"
+                        echo -e "\n\033[1;33m${installer_done}\033[0m"
                         read -r
                     fi
                     ;;
@@ -324,7 +375,7 @@ if [ "$(tty)" = "/dev/tty1" ]; then
                     reboot
                     ;;
                 *)
-                    echo -e "\033[1;31mOpção inválida.\033[0m"
+                    echo -e "\033[1;31m${invalid_choice}\033[0m"
                     sleep 1
                     ;;
             esac
@@ -338,24 +389,44 @@ if [ "$(tty)" = "/dev/tty1" ]; then
         # ==========================================================================
         if ! vhack_has_internet; then
             vhack_flush_input
+            VHACK_LANGUAGE="$(vhack_get_language)"
 
             while true; do
                 clear
                 echo -e "\033[1;36m======================================================================\033[0m"
-                echo -e "\033[1;37m            vHackintosh OS — Sistema Instalado em Disco               \033[0m"
+                if [ "$VHACK_LANGUAGE" = "en" ]; then
+                    echo -e "\033[1;37m              vHackintosh OS — Installed System                       \033[0m"
+                else
+                    echo -e "\033[1;37m            vHackintosh OS — Sistema Instalado em Disco               \033[0m"
+                fi
                 echo -e "\033[1;36m======================================================================\033[0m\n"
 
-                echo -e "  \033[1;33m● Status de Conexão: SEM INTERNET\033[0m"
-                echo -e "    Os downloads do macOS (Apple Recovery) ficarão indisponíveis"
-                echo -e "    até que uma rede seja configurada.\n"
-
-                echo -e "Escolha uma opção:\n"
-                echo -e "  \033[1;34m[1]\033[0m \033[1;37mConfigurar Conexão Wi-Fi / Rede (nmtui)\033[0m\n"
-                echo -e "  \033[1;32m[2]\033[0m \033[1;37mContinuar sem Internet (usar VMs já instaladas)\033[0m\n"
-                echo -e "  \033[1;31m[0]\033[0m \033[1;37mReiniciar o Computador\033[0m\n"
+                if [ "$VHACK_LANGUAGE" = "en" ]; then
+                    echo -e "  \033[1;33m● Network status: OFFLINE\033[0m"
+                    echo -e "    macOS downloads (Apple Recovery) will be unavailable"
+                    echo -e "    until a network is configured.\n"
+                    echo -e "Choose an option:\n"
+                    echo -e "  \033[1;34m[1]\033[0m \033[1;37mConfigure Wi-Fi / network (nmtui)\033[0m\n"
+                    echo -e "  \033[1;32m[2]\033[0m \033[1;37mContinue offline (use existing VMs)\033[0m\n"
+                    echo -e "  \033[1;31m[0]\033[0m \033[1;37mRestart the computer\033[0m\n"
+                    net_prompt="Choose [1, 2 or 0]: "
+                    nmtui_missing="'nmtui' not found. Use 'nmcli' manually."
+                    invalid_choice="Invalid option."
+                else
+                    echo -e "  \033[1;33m● Status de Conexão: SEM INTERNET\033[0m"
+                    echo -e "    Os downloads do macOS (Apple Recovery) ficarão indisponíveis"
+                    echo -e "    até que uma rede seja configurada.\n"
+                    echo -e "Escolha uma opção:\n"
+                    echo -e "  \033[1;34m[1]\033[0m \033[1;37mConfigurar Conexão Wi-Fi / Rede (nmtui)\033[0m\n"
+                    echo -e "  \033[1;32m[2]\033[0m \033[1;37mContinuar sem Internet (usar VMs já instaladas)\033[0m\n"
+                    echo -e "  \033[1;31m[0]\033[0m \033[1;37mReiniciar o Computador\033[0m\n"
+                    net_prompt="Escolha [1, 2 ou 0]: "
+                    nmtui_missing="'nmtui' não encontrado. Use 'nmcli' manualmente."
+                    invalid_choice="Opção inválida."
+                fi
 
                 # Encerra o menu em EOF (tty desconectado) em vez de girar em loop.
-                if ! read -r -p "Escolha [1, 2 ou 0]: " net_choice; then
+                if ! read -r -p "$net_prompt" net_choice; then
                     break
                 fi
                 case "$net_choice" in
@@ -363,7 +434,7 @@ if [ "$(tty)" = "/dev/tty1" ]; then
                         if command -v nmtui >/dev/null 2>&1; then
                             nmtui
                         else
-                            echo -e "\033[1;31m'nmtui' não encontrado. Use 'nmcli' manualmente.\033[0m"
+                            echo -e "\033[1;31m${nmtui_missing}\033[0m"
                             sleep 2
                         fi
                         # Se conectou durante a configuração, prossegue direto.
@@ -379,7 +450,7 @@ if [ "$(tty)" = "/dev/tty1" ]; then
                         reboot
                         ;;
                     *)
-                        echo -e "\033[1;31mOpção inválida.\033[0m"
+                        echo -e "\033[1;31m${invalid_choice}\033[0m"
                         sleep 1
                         ;;
                 esac
