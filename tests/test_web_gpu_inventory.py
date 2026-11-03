@@ -7,7 +7,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.web_gpu import CachedGpuInventory, ReimsGpu, ReimsProbe, VulkanProbe, inventory_gpus, probe_reims_gpus, probe_vulkan
+from core.web_gpu import (
+    CachedGpuInventory,
+    ReimsGpu,
+    ReimsProbe,
+    VulkanProbe,
+    _MAX_VULKAN_OUTPUT,
+    inventory_gpus,
+    probe_reims_gpus,
+    probe_vulkan,
+)
 
 
 class GpuInventoryTests(unittest.TestCase):
@@ -146,20 +155,93 @@ class GpuInventoryTests(unittest.TestCase):
             }]
         }
 
-        def fake_bounded(argv: list[str], *, timeout: float, cwd: str | Path):
+        def fake_bounded(
+            argv: list[str], *, timeout: float, cwd: str | Path,
+            env_overrides: dict[str, str] | None = None,
+        ):
             self.assertEqual(argv[-1], "--json")
             self.assertEqual(timeout, 2.0)
+            self.assertEqual(env_overrides, {})
             Path(cwd, "VP_VULKANINFO_gpu.json").write_text(json.dumps(document))
             return subprocess.CompletedProcess(argv, 0, "", "")
 
         with patch("core.web_gpu.shutil.which", return_value="/usr/bin/vulkaninfo"), patch(
             "core.web_gpu._run_vulkan_bounded", side_effect=fake_bounded
         ):
-            probe = probe_vulkan()
+            probe = probe_vulkan(sysfs_root=self.sysfs)
 
         self.assertTrue(probe.available)
         self.assertEqual(probe.devices_by_bdf, {"0000:03:00.0": "gpu-uuid-file"})
         self.assertEqual(probe.pci_ids_by_bdf, {"0000:03:00.0": ("1002", "744c")})
+
+    def test_probe_merges_nvidia_prime_devices_with_default_gpu_inventory(self) -> None:
+        self.add_gpu("0000:00:02.0", vendor="0x8086", device="0x46a6")
+        self.add_gpu("0000:01:00.0", vendor="0x10de", device="0x25e2", render_node="renderD129", driver="nvidia")
+        calls: list[dict[str, str] | None] = []
+        documents = {
+            None: {
+                "devices": [{
+                    "deviceUUID": "intel-uuid",
+                    "pciBusInfo": {"pciDomain": 0, "pciBus": 0, "pciDevice": 2, "pciFunction": 0},
+                    "vendorID": 0x8086,
+                    "deviceID": 0x46A6,
+                }]
+            },
+            "nvidia": {
+                "devices": [{
+                    "deviceUUID": "nvidia-uuid",
+                    "pciBusInfo": {"pciDomain": 0, "pciBus": 1, "pciDevice": 0, "pciFunction": 0},
+                    "vendorID": 0x10DE,
+                    "deviceID": 0x25E2,
+                }]
+            },
+        }
+
+        def fake_bounded(
+            argv: list[str], *, timeout: float, cwd: str | Path,
+            env_overrides: dict[str, str] | None = None,
+        ):
+            self.assertEqual(argv, ["/usr/bin/vulkaninfo", "--json"])
+            self.assertEqual(timeout, 2.0)
+            calls.append(env_overrides)
+            key = "nvidia" if env_overrides else None
+            Path(cwd, "VP_VULKANINFO_gpu.json").write_text(json.dumps(documents[key]))
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with patch("core.web_gpu.shutil.which", return_value="/usr/bin/vulkaninfo"), patch(
+            "core.web_gpu._run_vulkan_bounded", side_effect=fake_bounded
+        ):
+            probe = probe_vulkan(sysfs_root=self.sysfs)
+
+        self.assertTrue(probe.available)
+        self.assertEqual(calls, [
+            {},
+            {"__NV_PRIME_RENDER_OFFLOAD": "1", "__VK_LAYER_NV_optimus": "NVIDIA_only"},
+        ])
+        self.assertEqual(probe.devices_by_bdf, {
+            "0000:00:02.0": "intel-uuid",
+            "0000:01:00.0": "nvidia-uuid",
+        })
+        self.assertEqual(probe.pci_ids_by_bdf, {
+            "0000:00:02.0": ("8086", "46a6"),
+            "0000:01:00.0": ("10de", "25e2"),
+        })
+
+        reims = ReimsProbe(True, (
+            ReimsGpu("8086", "46a6", "/usr/share/vulkan/icd.d/intel_icd.json"),
+            ReimsGpu("10de", "25e2", "/usr/share/vulkan/icd.d/nvidia_icd.json"),
+        ))
+        gpus = inventory_gpus(
+            sysfs_root=self.sysfs,
+            dev_root=self.dev,
+            vulkan_probe_result=probe,
+            reims_probe_result=reims,
+        )
+        self.assertEqual([gpu.selection_supported for gpu in gpus], [True, True])
+        self.assertEqual([gpu.driver_file for gpu in gpus], [
+            "/usr/share/vulkan/icd.d/intel_icd.json",
+            "/usr/share/vulkan/icd.d/nvidia_icd.json",
+        ])
 
     def test_probe_rejects_ambiguous_pci_uuid_mapping_and_oversized_output(self) -> None:
         one_gpu = {
@@ -174,7 +256,7 @@ class GpuInventoryTests(unittest.TestCase):
         self.assertFalse(ambiguous.devices_by_bdf)
 
         oversized = probe_vulkan(lambda argv, **_: subprocess.CompletedProcess(
-            argv, 0, " " * (256 * 1024 + 1), ""
+            argv, 0, " " * (_MAX_VULKAN_OUTPUT + 1), ""
         ))
         self.assertFalse(oversized.available)
         self.assertIn("limite seguro", oversized.limitation or "")
