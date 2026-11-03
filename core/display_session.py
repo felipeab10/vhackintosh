@@ -162,12 +162,16 @@ def _session_environment_for_uid(
         display = environment.get("DISPLAY", "")
         match = _LOCAL_X_DISPLAY.fullmatch(display)
         if match and (Path("/tmp/.X11-unix") / f"X{match.group(1)}").is_socket():
-            result["DISPLAY"] = display
             xauthority = environment.get("XAUTHORITY", "")
             if xauthority:
                 try:
                     authority_stat = Path(xauthority).stat()
                     if authority_stat.is_file() and authority_stat.st_uid == uid:
+                        # The VM supervisor runs as root. Forwarding DISPLAY without
+                        # its matching cookie makes Xlib/SDL attempt an unauthorized
+                        # X11 connection, even when a usable Wayland socket is also
+                        # available. Keep the pair atomic: no cookie, no DISPLAY.
+                        result["DISPLAY"] = display
                         result["XAUTHORITY"] = xauthority
                 except OSError:
                     pass
