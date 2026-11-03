@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from core.config import AdditionalDiskConfig, SMBIOSConfig, VMConfig, VMManagerStore
 from core.web_rpc import RpcRemoteError
-from core.web_agent import WebAgentService
+from core.web_agent import WebAgentService, _allowed_agent_client_uids
 
 
 class FakeTelemetry:
@@ -37,6 +37,9 @@ class FakeGpu:
 
 
 class WebAgentServiceTests(unittest.TestCase):
+    def test_agent_rpc_allows_web_worker_and_root_cli(self):
+        self.assertEqual(_allowed_agent_client_uids(946), {0, 946})
+
     def test_runtime_gpu_identity_requires_reported_effective_match(self):
         from core.config import VMConfig
 

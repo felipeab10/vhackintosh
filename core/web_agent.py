@@ -3690,6 +3690,11 @@ class WebAgentService:
             return None
 
 
+def _allowed_agent_client_uids(web_uid: int) -> set[int]:
+    """Authorize the web worker and the privileged local appliance CLI."""
+    return {int(web_uid), 0}
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the privileged, allowlisted local agent for the HTTPS service."""
     parser = argparse.ArgumentParser(description="vHackintosh appliance local web agent")
@@ -3718,7 +3723,10 @@ def main(argv: list[str] | None = None) -> int:
     server = UnixRpcServer(
         args.socket,
         service.handlers(),
-        allowed_uids={int(web_uid)},
+        # The HTTPS service connects as vhackintosh-web, while the supported
+        # local CLI/TUI runs as root to preserve the existing appliance
+        # privilege model. Both use the same allowlisted RPC methods.
+        allowed_uids=_allowed_agent_client_uids(web_uid),
         socket_gid=web_gid,
         socket_mode=0o660,
         max_clients=8,
