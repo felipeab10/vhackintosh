@@ -1,4 +1,5 @@
 post_install() {
+  ensure_control_current
   systemd-sysusers /usr/lib/sysusers.d/vhackintosh-web.conf || true
   systemd-tmpfiles --create /usr/lib/tmpfiles.d/vhackintosh-web.conf || true
   install -d -m 0700 /root/.config/vhackintosh /root/.config/reims-ctl /root/.local/share/vhackintosh
@@ -11,12 +12,36 @@ post_install() {
 }
 
 post_upgrade() {
+  ensure_control_current
   systemd-sysusers /usr/lib/sysusers.d/vhackintosh-web.conf || true
   systemd-tmpfiles --create /usr/lib/tmpfiles.d/vhackintosh-web.conf || true
   systemctl daemon-reload || true
   if [[ "${VHACKINTOSH_CONTROL_UPDATE_DEFER_RESTART:-0}" != "1" ]]; then
     systemctl restart vhackintosh-agent.service vhackintosh-web.service || true
     systemctl restart vhackintosh-http-redirect.service || true
+  fi
+}
+
+ensure_control_current() {
+  local web_root=/opt/vhackintosh/web
+  local bundle_id target legacy
+  bundle_id="$(< /usr/lib/vhackintosh/control-bundle-id)"
+  [[ "$bundle_id" =~ ^[a-f0-9]{64}$ ]] || return 1
+  target="bundles/${bundle_id}"
+  [[ -d "${web_root}/${target}" ]] || return 1
+
+  if [[ -L "${web_root}/current" ]]; then
+    ln -sfn "$target" "${web_root}/.current.pacman"
+    mv -Tf "${web_root}/.current.pacman" "${web_root}/current"
+  elif [[ -e "${web_root}/current" ]]; then
+    # Preserve any files left by older/unmanaged installs before activating
+    # the immutable package bundle. Pacman cannot replace such a directory
+    # with a packaged symlink during its conflict-check phase.
+    legacy="${web_root}/bundles/legacy-arch-$(date +%Y%m%d%H%M%S)"
+    mv "${web_root}/current" "$legacy"
+    ln -s "$target" "${web_root}/current"
+  else
+    ln -s "$target" "${web_root}/current"
   fi
 }
 
