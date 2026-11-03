@@ -26,6 +26,8 @@ from .contracts import (
     TelemetrySettingsView,
     ReimsReleaseList,
     ReimsReleaseUpdateRequest,
+    ControlReleaseList,
+    ControlReleaseUpdateRequest,
     VmProvisionRequest,
     VmBackupRequest,
     VmBackupRestoreRequest,
@@ -189,6 +191,14 @@ class RpcAgentClient:
     def update_reims_release(self, request: ReimsReleaseUpdateRequest) -> JobAccepted:
         return JobAccepted.model_validate(self.rpc.call(
             "reims.release.update", request.model_dump(mode="json"),
+        ))
+
+    def list_control_releases(self) -> ControlReleaseList:
+        return ControlReleaseList.model_validate(self.rpc.call("control.releases.list"))
+
+    def update_control_release(self, request: ControlReleaseUpdateRequest) -> JobAccepted:
+        return JobAccepted.model_validate(self.rpc.call(
+            "control.release.update", request.model_dump(mode="json"),
         ))
 
     def host_gpus(self) -> GpuInventoryResponse:

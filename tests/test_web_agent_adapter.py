@@ -3,7 +3,7 @@
 import unittest
 
 from web.api.agent import RpcAgentClient
-from web.api.contracts import AppleRecoveryDownloadRequest, MediaConvertRequest, Operation, VmActionRequest, VmBackupRequest, VmConfigCreate, VmConfigUpdate, VmOpenCorePickerRequest, VmSmbiosDiagnosticRequest
+from web.api.contracts import AppleRecoveryDownloadRequest, ControlReleaseUpdateRequest, MediaConvertRequest, Operation, VmActionRequest, VmBackupRequest, VmConfigCreate, VmConfigUpdate, VmOpenCorePickerRequest, VmSmbiosDiagnosticRequest
 
 
 class FakeRpc:
@@ -28,6 +28,18 @@ class FakeRpc:
             return {"runtime_fingerprint": "a" * 64, "generated_at": "2026-10-30T00:00:00Z", "items": []}
         if method == "storage.inventory":
             return {"items": [], "free_bytes": 1024, "managed_volume": "Volume das VMs gerenciadas"}
+        if method == "control.releases.list":
+            return {
+                "repository": "felipeab10/vhackintosh", "package_format": "arch",
+                "current_release": "control-v1.0.0-beta.13",
+                "items": [{
+                    "tag": "control-v1.0.0-beta.14", "name": "vHackintosh Control 1.0.0-beta.14",
+                    "published_at": "2026-11-03T00:00:00Z", "asset_size_bytes": 1024,
+                    "prerelease": True,
+                }],
+            }
+        if method == "control.release.update":
+            return {"job_id": "control-update-1", "events_url": "/api/v1/jobs/control-update-1"}
         if method == "storage.media.import":
             return {"job_id": "media-import-1", "events_url": "/api/v1/jobs/media-import-1"}
         if method in {"storage.media.convert", "storage.apple.download"}:
@@ -78,6 +90,28 @@ class FakeRpc:
 
 
 class RpcAgentAdapterTests(unittest.TestCase):
+    def test_control_release_catalog_and_update_are_exposed_over_typed_rpc(self):
+        rpc = FakeRpc()
+        agent = RpcAgentClient(rpc)
+
+        releases = agent.list_control_releases()
+        self.assertEqual(releases.current_release, "control-v1.0.0-beta.13")
+        self.assertEqual(releases.items[0].tag, "control-v1.0.0-beta.14")
+
+        request = ControlReleaseUpdateRequest(
+            tag="control-v1.0.0-beta.14",
+            idempotency_key="12345678-1234-4234-8234-123456789abc",
+        )
+        accepted = agent.update_control_release(request)
+        self.assertEqual(accepted.job_id, "control-update-1")
+        self.assertEqual(rpc.calls, [
+            ("control.releases.list", {}),
+            ("control.release.update", {
+                "tag": "control-v1.0.0-beta.14",
+                "idempotency_key": "12345678-1234-4234-8234-123456789abc",
+            }),
+        ])
+
     def test_reads_are_validated_as_typed_contracts(self):
         rpc = FakeRpc()
         agent = RpcAgentClient(rpc)
