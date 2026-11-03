@@ -2,6 +2,33 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
+
+# The installed Control agent owns /root/.config/vhackintosh and deliberately
+# exposes its RPC socket only to the web service account and root. Run the
+# secondary CLI/TUI as root when it must use that shared catalog; never start a
+# second agent or fall back to a private per-user catalog.
+agent_required=0
+required_env="${VHACKINTOSH_AGENT_REQUIRED:-}"
+required_env="${required_env,,}"
+if [[ "$required_env" == "1" || "$required_env" == "true" || "$required_env" == "yes" ]] || \
+   [[ -f /etc/systemd/system/vhackintosh-agent.service ]] || \
+   [[ -f /usr/lib/systemd/system/vhackintosh-agent.service ]]; then
+    agent_required=1
+fi
+
+needs_agent=0
+case "${1:-}" in
+    ""|list|start) needs_agent=1 ;;
+esac
+
+if [[ "$agent_required" == "1" && "$needs_agent" == "1" && "$EUID" != "0" ]]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+        echo "A TUI precisa de privilégios de administrador para acessar o agente do vHackintosh Control. Instale sudo ou execute como root." >&2
+        exit 1
+    fi
+    exec sudo -- /usr/bin/env "PYTHONPATH=$SCRIPT_DIR" /usr/bin/python3 "$SCRIPT_DIR/cli/main.py" "$@"
+fi
+
+export PYTHONPATH="$SCRIPT_DIR"
 
 exec /usr/bin/python3 "$SCRIPT_DIR/cli/main.py" "$@"
