@@ -186,6 +186,7 @@ class WebAgentService:
         self._smbios_factory = smbios_factory
         self.job_store = None
         self.job_runner = job_runner
+        self.force_stop_job_runner = None
         self.media_job_runner = None
         self.backup_root = Path(os.environ.get("VHACKINTOSH_VM_BACKUP_DIR", str(self.store.config_dir / "backups")))
         self.provisioning_service = provisioning_service
@@ -197,7 +198,15 @@ class WebAgentService:
             self.job_store = JobStore(jobs_db_path)
             self.job_runner = self.job_runner or WebJobRunner(
                 self.job_store, workers=1, queue_size=8, checkpoint_timeout=3600,
-                reconcile_kinds={"vm.provision", "vm.shutdown", "vm.backup", "vm.backup.verify", "vm.backup.restore", "vm.clone", "vm.start", "vm.force_stop", "vm.restart", "vm.opencore.picker", "vm.smbios.diagnose", "reims.release.update"},
+                reconcile_kinds={"vm.provision", "vm.shutdown", "vm.backup", "vm.backup.verify", "vm.backup.restore", "vm.clone", "vm.start", "vm.restart", "vm.opencore.picker", "vm.smbios.diagnose", "reims.release.update"},
+            )
+            # Graceful shutdown jobs intentionally wait for macOS to exit and
+            # may occupy the normal VM worker for up to three minutes. Forced
+            # stops must remain responsive during that wait, so dispatch them
+            # through an isolated worker pool while sharing durable job state.
+            self.force_stop_job_runner = WebJobRunner(
+                self.job_store, workers=1, queue_size=8, checkpoint_timeout=3600,
+                reconcile_kinds={"vm.force_stop"},
             )
             self.media_job_runner = WebJobRunner(
                 self.job_store, workers=1, queue_size=8, checkpoint_timeout=3600,
@@ -207,7 +216,7 @@ class WebAgentService:
             self.job_runner.register("vm.provision", self._run_provision_job)
             self.job_runner.register("vm.shutdown", self._run_vm_shutdown_job)
             self.job_runner.register("vm.start", self._run_vm_start_job)
-            self.job_runner.register("vm.force_stop", self._run_vm_force_stop_job)
+            self.force_stop_job_runner.register("vm.force_stop", self._run_vm_force_stop_job)
             self.job_runner.register("vm.restart", self._run_vm_restart_job)
             self.job_runner.register("vm.backup", self._run_vm_backup_job)
             self.job_runner.register("vm.backup.verify", self._run_vm_backup_verify_job)
@@ -2030,7 +2039,10 @@ class WebAgentService:
         if kind is None:
             raise RpcRemoteError("capability_unavailable", "A ação solicitada ainda não está disponível.")
         try:
-            job, _created = self.job_runner.submit(
+            runner = self._runner_for_kind(kind)
+            if runner is None:
+                raise RpcRemoteError("capability_unavailable", "O serviço de tarefas de VM não está configurado.")
+            job, _created = runner.submit(
                 idempotency_key=action.idempotency_key,
                 kind=kind,
                 payload={"vm_id": vm_id, "operation": action.operation.value},
@@ -2124,18 +2136,19 @@ class WebAgentService:
         """Wait for QEMU and its supervisor after systemd starts a Type=simple unit."""
         deadline = time.monotonic() + VM_START_READY_TIMEOUT_SECONDS
         while True:
-            running = self._get_running_vms()
             try:
                 status = self.vm_unit_manager.query(vm_id)
             except Exception as exc:
-                if vm_id in running:
+                running, _problem = self._read_running_vms()
+                if running is not None and vm_id in running:
                     raise RuntimeError(
                         "O QEMU foi localizado, mas não foi possível confirmar a unidade de supervisão; "
                         "não tente iniciar outra instância até conferir o estado da VM."
                     ) from exc
                 raise RuntimeError("Não foi possível confirmar o supervisor durante a inicialização da VM.") from exc
 
-            if vm_id in running:
+            running, problem = self._read_running_vms()
+            if running is not None and vm_id in running:
                 if status.active_state in {"active", "activating", "reloading"}:
                     return {"vm_id": vm_id, "state": "running"}
                 raise RuntimeError(
@@ -2166,13 +2179,32 @@ class WebAgentService:
                     "a tarefa não será marcada como iniciada."
                 )
 
-            now = time.monotonic()
-            if now >= deadline:
-                raise TimeoutError(
-                    f"O supervisor permaneceu ativo por {VM_START_READY_TIMEOUT_SECONDS} segundos "
-                    "sem confirmar o processo QEMU."
-                )
-            time.sleep(0.25)
+            if running is None:
+                # Process discovery can briefly be incomplete while systemd has
+                # just spawned QEMU (before its pidfile and /proc metadata are
+                # visible). Keep polling while this VM's unit remains alive.
+                now = time.monotonic()
+                if now >= deadline:
+                    raise TimeoutError(
+                        problem or (
+                            f"O supervisor permaneceu ativo por {VM_START_READY_TIMEOUT_SECONDS} segundos "
+                            "sem confirmar o processo QEMU."
+                        )
+                    )
+                time.sleep(0.25)
+                continue
+
+            if status.active_state in {"active", "activating", "reloading"}:
+                now = time.monotonic()
+                if now >= deadline:
+                    raise TimeoutError(
+                        f"O supervisor permaneceu ativo por {VM_START_READY_TIMEOUT_SECONDS} segundos "
+                        "sem confirmar o processo QEMU."
+                    )
+                time.sleep(0.25)
+                continue
+
+            raise RuntimeError("Não foi possível confirmar o estado da VM após iniciar o supervisor.")
 
     def _run_vm_shutdown_job(self, payload: dict[str, Any], context: Any) -> dict[str, Any]:
         """Send ACPI shutdown over the managed QMP client and never force-stop."""
@@ -2244,12 +2276,16 @@ class WebAgentService:
     def start_jobs(self) -> None:
         if self.job_runner is not None:
             self.job_runner.start()
+        if self.force_stop_job_runner is not None:
+            self.force_stop_job_runner.start()
         if self.media_job_runner is not None:
             self.media_job_runner.start()
 
     def close_jobs(self) -> None:
         if self.media_job_runner is not None:
             self.media_job_runner.close()
+        if self.force_stop_job_runner is not None:
+            self.force_stop_job_runner.close()
         if self.job_runner is not None:
             self.job_runner.close()
 
@@ -3355,7 +3391,11 @@ class WebAgentService:
         return any(item["name"] in irreversible_checkpoints for item in self.job_store.get_checkpoints(job["id"]))
 
     def _runner_for_kind(self, kind: str) -> Any | None:
-        return self.media_job_runner if kind in {"media.import", "media.convert", "media.apple.download"} else self.job_runner
+        if kind in {"media.import", "media.convert", "media.apple.download"}:
+            return self.media_job_runner
+        if kind == "vm.force_stop" and self.force_stop_job_runner is not None:
+            return self.force_stop_job_runner
+        return self.job_runner
 
     @staticmethod
     def _job_id(payload: dict[str, Any]) -> str:
@@ -3723,9 +3763,10 @@ def main(argv: list[str] | None = None) -> int:
     server = UnixRpcServer(
         args.socket,
         service.handlers(),
-        # The HTTPS service connects as vhackintosh-web, while the supported
-        # local CLI/TUI runs as root to preserve the existing appliance
-        # privilege model. Both use the same allowlisted RPC methods.
+        # The HTTPS service connects as vhackintosh-web, while the appliance's
+        # supported local CLI/TUI runs as root. Both use the same allowlisted
+        # RPC methods; rejecting UID 0 made VM creation from `vhackintosh`
+        # fail with peer_denied before provisioning could start.
         allowed_uids=_allowed_agent_client_uids(web_uid),
         socket_gid=web_gid,
         socket_mode=0o660,

@@ -301,6 +301,30 @@ SHARED_DISPLAY_UNIT_CANDIDATES = (
     Path("/usr/lib/systemd/system/vhackintosh-display.service"),
     Path("/lib/systemd/system/vhackintosh-display.service"),
 )
+SHARED_DISPLAY_RUNTIME = Path("/run/vhackintosh-display")
+
+
+def _published_shared_display(runtime: Path) -> tuple[str, Path] | None:
+    """Resolve the actual Wayland socket chosen by Sway for this boot."""
+    marker = runtime / "wayland-display"
+    try:
+        published = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        published = ""
+    if published:
+        path = Path(published) if published.startswith("/") else runtime / published
+        if path.is_socket():
+            return published, path
+
+    try:
+        candidates = sorted(runtime.glob("wayland-[0-9]*"), key=lambda path: path.name)
+    except OSError:
+        candidates = []
+    for path in candidates:
+        if path.is_socket():
+            return path.name, path
+    return None
+
 
 
 def find_waysession() -> Optional[str]:
@@ -318,7 +342,7 @@ def session_argv(argv: list[str], env: dict) -> tuple[list[str], bool]:
     Outside an installed appliance, retain the development kiosk fallback.
     """
     shared_unit = SHARED_DISPLAY_UNIT
-    shared_runtime = "/run/vhackintosh-display"
+    shared_runtime = str(SHARED_DISPLAY_RUNTIME)
     display_name = env.get("WAYLAND_DISPLAY")
     runtime_dir = env.get("XDG_RUNTIME_DIR")
     socket_path = (
@@ -359,9 +383,10 @@ def session_argv(argv: list[str], env: dict) -> tuple[list[str], bool]:
                 + (f": {detail}" if detail else ".")
             )
         env["XDG_RUNTIME_DIR"] = shared_runtime
-        env["WAYLAND_DISPLAY"] = "wayland-0"
-        if not (Path(shared_runtime) / "wayland-0").is_socket():
+        display = _published_shared_display(Path(shared_runtime))
+        if display is None:
             raise RuntimeError("O compositor compartilhado iniciou sem publicar o socket Wayland.")
+        env["WAYLAND_DISPLAY"] = display[0]
         return argv, False
 
     if display_name and socket_path.exists():

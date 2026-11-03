@@ -26,7 +26,7 @@ from core.config import VMConfig, VMManagerStore, ExclusiveVMLock, CONFIG_DIR, S
 from core import i18n
 from core.reims_build import evaluate as evaluate_reims_release, find_reims_dir, install_prebuilt
 from core import reims_ctl
-from core.web_access import access_details
+from core.web_access import access_details, default_admin_password_pending
 from core.web_client import agent_is_required, call_agent, read_agent_catalog, WebAgentUnavailable
 from core.hardware import HardwareAdvisor
 from core.gpu import GPUChecker
@@ -110,9 +110,12 @@ class VMTUI:
             # Só mostra o card no appliance que realmente empacota o serviço;
             # o projeto também roda em ambientes de desenvolvimento sem systemd.
             if Path("/etc/systemd/system/vhackintosh-web.service").is_file():
+                panel_access_details = access_details()
+                if default_admin_password_pending():
+                    panel_access_details.append(i18n.t("web.initial_credentials"))
                 console.print(
                     Panel(
-                        "\n".join(access_details()),
+                        "\n".join(panel_access_details),
                         title="Painel de gerenciamento",
                         border_style="#168bd2",
                         box=box.ROUNDED,
@@ -420,7 +423,7 @@ class VMTUI:
         choice = Prompt.ask(
             "\n" + i18n.t("lang.choice"),
             choices=[str(i) for i in range(1, len(options) + 1)],
-            default="1",
+            default="2",
         )
         i18n.set_language(options[int(choice) - 1])
         console.print(f"[green]{i18n.t('lang.set', language=i18n.LANGUAGES[i18n.get_language()])}[/green]")

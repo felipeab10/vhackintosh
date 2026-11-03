@@ -7,8 +7,7 @@ para dois idiomas o peso e o toolchain não se pagam.
 
 O idioma fica em `~/.config/vhackintosh/settings.json` (campo `language`):
 gravado pela primeira tela da instalação (quando ausente) e trocável depois
-pelo script `vhackintosh-lang pt|en`. O default é `pt`: um appliance sem
-registro nenhum continua falando português, que era o status quo.
+pelo script `vhackintosh-lang pt|en`. O default é `en`.
 
 Contrato de `t()`:
 - idioma atual → catálogo daquele idioma → catálogo `pt` → a própria chave;
@@ -29,13 +28,13 @@ from core.config import CONFIG_DIR
 
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 
-# Códigos internos → rótulo mostrado na tela de idioma. Ordem: o primeiro é o
-# default do appliance (pt-BR).
+# Códigos internos → rótulo mostrado na tela de idioma. A ordem mantém os
+# números conhecidos (1=português, 2=inglês); o default do appliance é English.
 LANGUAGES: dict[str, str] = {
     "pt": "Português (Brasil)",
     "en": "English (US)",
 }
-DEFAULT_LANGUAGE = "pt"
+DEFAULT_LANGUAGE = "en"
 
 _lock = threading.Lock()
 _cache: dict = {}
@@ -62,7 +61,7 @@ def save_settings(settings: dict) -> None:
 
 
 def get_language() -> str:
-    """Idioma atual; 'pt' quando não registrado (default do appliance)."""
+    """Idioma atual; English quando ainda não há preferência registrada."""
     lang = str(_load_settings().get("language", DEFAULT_LANGUAGE))
     return lang if lang in LANGUAGES else DEFAULT_LANGUAGE
 
@@ -104,6 +103,7 @@ PT: dict[str, str] = {
     "tui.main.attention": "[bold red]⚠ ATENÇÃO: {name} ({status})[/bold red]",
     "tui.main.attention_gpu": "[bold red]⚠ ATENÇÃO: Hardware Gráfico Incompatível com o Reims vGPU ({status})[/bold red]",
     "tui.main.no_internet": "[yellow]⚠ Aviso de Rede: Sem conexão com a Internet (downloads Apple e AI indisponíveis).[/yellow]\n",
+    "web.initial_credentials": "Primeiro acesso ao painel: usuário admin · senha vhackintosh. Troque a senha quando solicitado.",
     "tui.menu.title": "\n[bold cyan]Opções do Gerenciador:[/bold cyan]",
     "tui.menu.vm_shortcuts": " [dim]Durante a VM em tela cheia: Ctrl+Alt+F2 → terminal Linux (VM continua ativa); Ctrl+Alt+F1 → voltar.[/dim]",
     "tui.menu.install_locked": " [dim]★ [I][/dim] - [dim]INSTALAR vHackintosh OS no SSD/Disco (Bloqueado: Hardware Incompatível)[/dim]",
@@ -469,6 +469,7 @@ EN: dict[str, str] = {
     "tui.main.attention": "[bold red]⚠ WARNING: {name} ({status})[/bold red]",
     "tui.main.attention_gpu": "[bold red]⚠ WARNING: Graphics Hardware Incompatible with Reims vGPU ({status})[/bold red]",
     "tui.main.no_internet": "[yellow]⚠ Network warning: No Internet connection (Apple and AI downloads unavailable).[/yellow]\n",
+    "web.initial_credentials": "First dashboard sign-in: username admin · password vhackintosh. Change the password when prompted.",
     "tui.menu.title": "\n[bold cyan]Manager Options:[/bold cyan]",
     "tui.menu.vm_shortcuts": " [dim]While the VM is fullscreen: Ctrl+Alt+F2 → Linux terminal (VM keeps running); Ctrl+Alt+F1 → return.[/dim]",
     "tui.menu.install_locked": " [dim]★ [I][/dim] - [dim]INSTALL vHackintosh OS to SSD/Disk (Blocked: Incompatible Hardware)[/dim]",

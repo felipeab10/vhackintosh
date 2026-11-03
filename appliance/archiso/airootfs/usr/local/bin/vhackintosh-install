@@ -411,6 +411,16 @@ ln -sfn ../vhackintosh-agent.service "${SYSTEMD_WANTS_DIR}/vhackintosh-agent.ser
 ln -sfn ../vhackintosh-web.service "${SYSTEMD_WANTS_DIR}/vhackintosh-web.service"
 ln -sfn ../vhackintosh-http-redirect.service "${SYSTEMD_WANTS_DIR}/vhackintosh-http-redirect.service"
 
+# A debug ISO carries the temporary SSH public key and a key-only sshd config.
+# Preserve remote diagnostics on the installed appliance as well as in live mode.
+if [ -f "/mnt/etc/ssh/sshd_config.d/00-vhackintosh-debug.conf" ]; then
+    if [ ! -f "/mnt/usr/lib/systemd/system/sshd.service" ]; then
+        echo -e "${RED}Erro: a ISO de diagnóstico não contém a unidade sshd.service.${NC}"
+        exit 1
+    fi
+    ln -sfn /usr/lib/systemd/system/sshd.service "${SYSTEMD_WANTS_DIR}/sshd.service"
+fi
+
 echo -e "\n${CYAN}▶ 4/5 Gerando /etc/fstab e configurações de sistema...${NC}"
 if command -v genfstab >/dev/null 2>&1; then
     genfstab -U /mnt > /mnt/etc/fstab
@@ -523,6 +533,11 @@ for service in vhackintosh-agent.service vhackintosh-web.service vhackintosh-htt
         exit 1
     fi
 done
+if [ -f "/mnt/etc/ssh/sshd_config.d/00-vhackintosh-debug.conf" ] && \
+   [ "$(readlink "${SYSTEMD_WANTS_DIR}/sshd.service" 2>/dev/null || true)" != "/usr/lib/systemd/system/sshd.service" ]; then
+    echo -e "${RED}Erro: não foi possível habilitar o acesso SSH temporário de diagnóstico.${NC}"
+    exit 1
+fi
 
 echo -e "\n${BLUE}▶ Sincronizando dados pendentes no disco...${NC}"
 sync

@@ -22,7 +22,7 @@
 ## 2. i18n (language-selection)
 
 - [x] 2.1 Módulo `core/i18n.py` com catálogos `pt`/`en` e `t()`; campo
-      `language` no config do appliance (default pt-BR)
+      `language` no config do appliance (default en-US)
       — settings em ~/.config/vhackintosh/settings.json; t() com fallback
       pt → chave
 - [x] 2.2 Tela de idioma como primeira tela da instalação (antes de qualquer

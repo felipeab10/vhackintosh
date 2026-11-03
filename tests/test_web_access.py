@@ -8,7 +8,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from core.web_access import access_details, certificate_fingerprint, lan_addresses
+from core.web_access import (
+    access_details,
+    certificate_fingerprint,
+    default_admin_password_pending,
+    lan_addresses,
+)
 
 
 class WebAccessTests(unittest.TestCase):
@@ -61,6 +66,23 @@ class WebAccessTests(unittest.TestCase):
                 lines = access_details(addresses=[], fingerprint=None, auth_database=root / "missing.sqlite")
             self.assertTrue(any("vhackintosh-web-admin setup" in line for line in lines))
             self.assertFalse(any("código" in line.lower() or "secret" in line.lower() for line in lines))
+
+    def test_default_password_pending_is_detected_until_rotation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "auth.sqlite"
+            with sqlite3.connect(database) as connection:
+                connection.execute(
+                    "CREATE TABLE administrator (id INTEGER PRIMARY KEY, username TEXT, must_change_password INTEGER)"
+                )
+                connection.execute(
+                    "INSERT INTO administrator VALUES (1, 'admin', 1)"
+                )
+
+            self.assertTrue(default_admin_password_pending(database))
+
+            with sqlite3.connect(database) as connection:
+                connection.execute("UPDATE administrator SET must_change_password=0 WHERE id=1")
+            self.assertFalse(default_admin_password_pending(database))
 
     def test_only_active_physical_or_lan_interfaces_are_reported(self):
         import psutil

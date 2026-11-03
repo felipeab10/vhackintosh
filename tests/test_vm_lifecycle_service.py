@@ -459,6 +459,7 @@ class SharedLifecycleServiceTests(unittest.TestCase):
         with mock.patch("ui.tui.console.clear"), \
              mock.patch("ui.tui.console.print"), \
              mock.patch("ui.tui.centered_banner", return_value="banner"), \
+             mock.patch("ui.tui.agent_is_required", return_value=False), \
              mock.patch("ui.tui.sys.stdin.isatty", return_value=False):
             tui._launch_vm(vm, is_installation=True)
         service.start.assert_called_once()

@@ -96,6 +96,7 @@ class MaintenanceGuardTests(unittest.TestCase):
             root = Path(temp)
             marker = root / "run/maintenance.json"
             with patch("core.config.VM_MAINTENANCE_MARKER", marker), \
+                 patch("core.config.VM_RESERVATIONS_LOCK", root / "reservations.lock"), \
                  patch.object(ExclusiveVMLock, "_running_reims_vms", return_value=({}, True)):
                 with maintenance_window(marker=marker, lock_path=root / "lock",
                                         reservations_dir=root / "reservations"):

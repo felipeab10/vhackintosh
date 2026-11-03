@@ -46,7 +46,6 @@ class WaySessionRuntimeIsolationTests(unittest.TestCase):
             fake_swaymsg = fake_bin / "swaymsg"
             fake_swaymsg.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             fake_swaymsg.chmod(0o755)
-
             base_conf = root / "sway.conf"
             base_conf.write_text("xwayland disable\nexec /run/vhackintosh/sway-app.sh\n", encoding="utf-8")
             sessions = [root / "vm-a", root / "vm-b"]
@@ -83,19 +82,30 @@ class WaySessionRuntimeIsolationTests(unittest.TestCase):
             pipewire.close()
 
     def test_appliance_starts_and_reuses_the_shared_display_service(self):
-        env = {}
-        with (
-            mock.patch.object(reims_ctl, "SHARED_DISPLAY_UNIT") as unit,
-            mock.patch.object(reims_ctl.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run,
-            mock.patch.object(Path, "is_socket", return_value=True),
-        ):
-            unit.is_file.return_value = True
-            argv, missing = reims_ctl.session_argv(["reims-ctl", "start", "vm-a"], env)
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary)
+            (runtime / "wayland-display").write_text("wayland-1\n", encoding="utf-8")
+            socket_path = runtime / "wayland-1"
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(socket_path))
+            self.addCleanup(server.close)
+            env = {}
+            with (
+                mock.patch.object(reims_ctl, "SHARED_DISPLAY_UNIT") as unit,
+                mock.patch.object(reims_ctl, "SHARED_DISPLAY_RUNTIME", runtime),
+                mock.patch.object(
+                    reims_ctl.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0),
+                ) as run,
+            ):
+                unit.is_file.return_value = True
+                argv, missing = reims_ctl.session_argv(["reims-ctl", "start", "vm-a"], env)
 
         self.assertEqual(argv, ["reims-ctl", "start", "vm-a"])
         self.assertFalse(missing)
-        self.assertEqual(env["XDG_RUNTIME_DIR"], "/run/vhackintosh-display")
-        self.assertEqual(env["WAYLAND_DISPLAY"], "wayland-0")
+        self.assertEqual(env["XDG_RUNTIME_DIR"], str(runtime))
+        self.assertEqual(env["WAYLAND_DISPLAY"], "wayland-1")
         run.assert_called_once_with(
             ["/usr/bin/systemctl", "start", "vhackintosh-display.service"],
             capture_output=True,

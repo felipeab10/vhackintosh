@@ -17,6 +17,15 @@
 # falha seria silenciosa: o sway sobe, nada aparece e a tela fica preta.
 set -u
 
+vhack_log() {
+    printf 'vhackintosh-waysession: %s\n' "$*" >&2
+}
+
+vhack_diag() {
+    [ "${VHACKINTOSH_DIAGNOSTICS:-0}" = "1" ] || return 0
+    vhack_log "diagnostic: $*"
+}
+
 if [ "$#" -eq 0 ]; then
     echo "vhackintosh-waysession: nenhum comando informado" >&2
     echo "uso: vhackintosh-waysession <comando> [args...]" >&2
@@ -30,6 +39,9 @@ if [ ! -d "$XDG_RUNTIME_DIR" ]; then
     mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
 fi
 chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+vhack_log "starting compositor session uid=$(id -u) tty=$(readlink /proc/self/fd/0 2>/dev/null || printf unknown) runtime=$XDG_RUNTIME_DIR config=${VHACK_SWAY_CONF:-/etc/vhackintosh/sway.conf}"
+vhack_diag "kernel=$(uname -r) cmdline=$(cat /proc/cmdline 2>/dev/null)"
+vhack_diag "foreground_vt=$(fgconsole 2>/dev/null || printf unknown); drm_nodes=$(printf '%s ' /dev/dri/card* /dev/dri/renderD*)"
 
 # ---------------------------------------------------------------------------
 # Sobe o PipeWire antes do compositor.
@@ -112,11 +124,17 @@ vhack_sobe_pipewire() {
 
 vhack_sobe_pipewire
 
+# wlroots escolhe o nome automaticamente (wayland-0, wayland-1, ...). Limpa
+# o marcador do serviço anterior; o cliente iniciado pelo Sway publicará o
+# nome real antes de iniciar o supervisor da VM.
+rm -f "$XDG_RUNTIME_DIR/wayland-display"
+
 BASE_CONF="${VHACK_SWAY_CONF:-/etc/vhackintosh/sway.conf}"
 if [ ! -f "$BASE_CONF" ]; then
     echo "vhackintosh-waysession: config do sway nao encontrada: $BASE_CONF" >&2
     exit 1
 fi
+vhack_diag "sway_config=$BASE_CONF; sway=$(command -v sway 2>/dev/null || printf missing); seat=$(printf '%s' "${XDG_SEAT:-unset}")"
 
 # Extrai o caminho do cliente primário da linha `exec` da config (primeira
 # ocorrência). É esta leitura que mantém config e script em acordo.
@@ -164,6 +182,7 @@ rm -f "$STATUS_FILE"
     printf '#!/usr/bin/env bash\n'
     printf '# Gerado por vhackintosh-waysession — nao editar.\n'
     printf 'set -u\n'
+    printf 'if [ -n "${WAYLAND_DISPLAY:-}" ]; then printf "%%s\\n" "$WAYLAND_DISPLAY" > %q; fi\n' "$XDG_RUNTIME_DIR/wayland-display"
     printf 'VHACK_STATUS_FILE=%q\n' "$STATUS_FILE"
     printf '%q ' "$@"
     printf '\n__vhack_status=$?\n'
@@ -280,6 +299,7 @@ if [ -n "$primary_card_node" ]; then
         export WLR_DRM_DEVICES="$primary_card_node"
     fi
 fi
+vhack_log "DRM selection primary=${primary_card_node:-none} secondary=${secondary_card_nodes:-none} WLR_DRM_DEVICES=${WLR_DRM_DEVICES:-unset}"
 
 # Força o renderizador gles2 estável do wlroots para evitar fallback falho para Vulkan no DRM
 export WLR_RENDERER="${WLR_RENDERER:-gles2}"
@@ -301,14 +321,33 @@ fi
 # roda dentro de QEMU sem GPU Vulkan física. No uso normal mantemos o renderer
 # por software desabilitado para que o caminho nativo Reims vGPU continue estrito.
 # wlroots aceita `1`; valores como `true` encerram o compositor como opção inválida.
+if [ -z "${VHACK_TEST_GRAPHICS_BACKEND:-}" ]; then
+    if grep -qw 'vhack_graphics=vmware-svga' /proc/cmdline 2>/dev/null; then
+        VHACK_TEST_GRAPHICS_BACKEND=vmware-svga
+    else
+        for dmi_raw in /sys/firmware/dmi/entries/11-*/raw; do
+            if [ -r "$dmi_raw" ] && grep -aqF 'vhack_graphics=vmware-svga' "$dmi_raw"; then
+                VHACK_TEST_GRAPHICS_BACKEND=vmware-svga
+                break
+            fi
+        done
+    fi
+fi
+
 if [ "${VHACK_TEST_GRAPHICS_BACKEND:-}" = "vmware-svga" ]; then
     export WLR_RENDERER_ALLOW_SOFTWARE=1
 else
     unset WLR_RENDERER_ALLOW_SOFTWARE
 fi
 
-sway -c "$CONF"
+if [ "${VHACKINTOSH_DIAGNOSTICS:-0}" = "1" ]; then
+    vhack_log "starting sway with debug logging; config=$CONF renderer=$WLR_RENDERER"
+    sway -d -c "$CONF"
+else
+    sway -c "$CONF"
+fi
 SWAY_STATUS=$?
+vhack_log "sway exited status=$SWAY_STATUS app_status=$(cat "$STATUS_FILE" 2>/dev/null || printf unavailable) wayland_socket=${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY:-wayland-0}"
 
 # O cliente registrou o status da VM; essa e a resposta que interessa ao
 # chamador. Se o sway morreu antes (falha do compositor), cai no status do sway.

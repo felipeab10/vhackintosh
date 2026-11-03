@@ -18,8 +18,7 @@ Environment=XDG_CONFIG_HOME=/root/.config
 Environment=XDG_DATA_HOME=/root/.local/share
 Environment=CARGO_HOME=/root/.cargo
 Environment=XDG_RUNTIME_DIR=/run/vhackintosh-display
-# Sway é o compositor raiz desta sessão; não herde WAYLAND_DISPLAY e não tente
-# iniciar um compositor aninhado apontando para um socket ainda inexistente.
+# Sway é o compositor raiz desta sessão. Não herde WAYLAND_DISPLAY nem inicie um compositor aninhado: isso faria o wlroots selecionar o backend Wayland em vez da GPU física via DRM. O nome do socket criado pelo Sway é publicado pelo cliente.
 Environment=WLR_BACKENDS=drm,libinput
 RuntimeDirectory=vhackintosh-display
 RuntimeDirectoryMode=0700

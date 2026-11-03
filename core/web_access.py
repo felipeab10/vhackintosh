@@ -96,6 +96,29 @@ def administrator_is_activated(database: str | Path = AUTH_DATABASE) -> bool | N
         return None
 
 
+def default_admin_password_pending(database: str | Path = AUTH_DATABASE) -> bool:
+    """Return whether the appliance's initial admin password still needs rotation."""
+    path = Path(database)
+    if not path.is_file():
+        return False
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)
+        try:
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(administrator)")
+            }
+            if "must_change_password" not in columns:
+                return False
+            return connection.execute(
+                "SELECT 1 FROM administrator "
+                "WHERE id=1 AND username='admin' AND must_change_password=1"
+            ).fetchone() is not None
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        return False
+
+
 def access_details(
     *,
     port: int | None = None,

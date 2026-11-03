@@ -28,19 +28,6 @@ def _print_local_console(console_path: Path, text: str) -> bool:
         os.close(descriptor)
 
 
-def _has_admin(database: Path) -> bool:
-    if not database.is_file():
-        return False
-    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=2)
-    try:
-        table = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='administrator'"
-        ).fetchone()
-        return bool(table and connection.execute("SELECT 1 FROM administrator WHERE id=1").fetchone())
-    finally:
-        connection.close()
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", default="/var/lib/vhackintosh/web/auth.sqlite")

@@ -277,7 +277,7 @@ class SQLiteAuthStore:
                     username TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    must_change_password INTEGER NOT NULL DEFAULT 0
+                    must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))
                 );
                 CREATE TABLE IF NOT EXISTS web_session (
                     token_hash TEXT PRIMARY KEY,
@@ -302,6 +302,13 @@ class SQLiteAuthStore:
     def has_admin(self) -> bool:
         with self._db() as db:
             return db.execute("SELECT 1 FROM administrator WHERE id=1").fetchone() is not None
+
+    def default_admin_password_pending(self) -> bool:
+        with self._db() as db:
+            row = db.execute(
+                "SELECT 1 FROM administrator WHERE id=1 AND username='admin' AND must_change_password=1"
+            ).fetchone()
+        return row is not None
 
     def create_admin(self, username: str, password: str, *, must_change_password: bool = False) -> None:
         password_hash = self._hasher.hash(password)
@@ -381,12 +388,6 @@ class SQLiteAuthStore:
             "expires_at": row["expires_at"],
             "must_change_password": bool(row["must_change_password"]),
         }
-
-    def default_admin_password_pending(self) -> bool:
-        with self._db() as db:
-            return db.execute(
-                "SELECT 1 FROM administrator WHERE id=1 AND username='admin' AND must_change_password=1"
-            ).fetchone() is not None
 
     def revoke_session(self, token: str | None) -> None:
         if token:
@@ -804,8 +805,17 @@ def create_app(
         session = await current_session(request)
         if session is None:
             raise HTTPException(status_code=401, detail={"code": "authentication_required", "message": "Autentique-se para continuar."})
-        if session.get("must_change_password"):
-            raise HTTPException(status_code=403, detail={"code": "password_change_required", "message": "Defina uma nova senha antes de continuar."})
+        if session.get("must_change_password") and request.url.path not in {
+            "/api/v1/session/password",
+            "/api/v1/session/logout",
+        }:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "password_change_required",
+                    "message": "Defina uma nova senha antes de continuar.",
+                },
+            )
         request.state.actor = session["username"]
         return session
 

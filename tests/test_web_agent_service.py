@@ -4,6 +4,7 @@ import tempfile
 import time
 import hashlib
 import os
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -976,6 +977,77 @@ class WebAgentServiceTests(unittest.TestCase):
             finally:
                 service.close_jobs()
 
+    def test_forced_stop_bypasses_a_blocked_graceful_vm_job(self):
+        import os
+        from core.config import VMConfig, VMManagerStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "vms.json"
+            VMManagerStore(catalog).add_vm(VMConfig(id="vm-1", name="Studio", macos_version="tahoe"))
+            running = {"vm-1": os.getpid()}
+            blocker_started = threading.Event()
+            release_blocker = threading.Event()
+
+            class FakeQmp:
+                def command(self, name):
+                    if name == "query-status":
+                        return {"running": True}
+                    if name == "quit":
+                        running.clear()
+                        return {}
+                    raise AssertionError(f"unexpected QMP command: {name}")
+
+                def close(self):
+                    pass
+
+            service = WebAgentService(
+                catalog,
+                jobs_db_path=Path(directory) / "jobs.sqlite",
+                running_vms=lambda: dict(running),
+                qmp_factory=lambda _vm: FakeQmp(),
+                vm_unit_manager=SimpleNamespace(),
+            )
+
+            def block_normal_vm_lane(_payload, _context):
+                blocker_started.set()
+                if not release_blocker.wait(timeout=5):
+                    raise TimeoutError("test did not release the normal VM worker")
+                return {"state": "released"}
+
+            service.job_runner.register("test.blocking_vm_job", block_normal_vm_lane)
+            service.start_jobs()
+            try:
+                blocked, _ = service.job_runner.submit(
+                    idempotency_key="blocking-job-0001",
+                    kind="test.blocking_vm_job",
+                    payload={},
+                    target_vm_id="vm-1",
+                )
+                self.assertTrue(blocker_started.wait(timeout=2))
+
+                accepted = service.vm_action({
+                    "vm_id": "vm-1",
+                    "action": {
+                        "operation": "force_stop",
+                        "confirmation": "vm-1",
+                        "idempotency_key": "force-stop-job-0001",
+                    },
+                })
+                deadline = time.monotonic() + 2
+                forced = None
+                while time.monotonic() < deadline:
+                    forced = service.get_job({"job_id": accepted["job_id"]})
+                    if forced["state"] in {"succeeded", "failed"}:
+                        break
+                    time.sleep(0.01)
+
+                self.assertEqual(forced["state"], "succeeded")
+                self.assertEqual(forced["result"]["state"], "stopped")
+                self.assertEqual(service.job_store.get_job(blocked["id"])["state"], "running")
+            finally:
+                release_blocker.set()
+                service.close_jobs()
+
     def test_vm_start_uses_only_the_allowlisted_systemd_vm_unit(self):
         import time
         import os
@@ -1032,6 +1104,63 @@ class WebAgentServiceTests(unittest.TestCase):
                 self.assertEqual(job["state"], "succeeded")
                 self.assertEqual(job["result"]["state"], "running")
                 self.assertEqual(calls, [("start", "vm-1")])
+            finally:
+                service.close_jobs()
+
+    def test_vm_start_retries_temporarily_unavailable_runtime_inventory(self):
+        import os
+        import time
+        from types import SimpleNamespace
+        from core.config import VMConfig, VMManagerStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "vms.json"
+            VMManagerStore(catalog).add_vm(VMConfig(id="vm-1", name="Studio", macos_version="tahoe"))
+            inventory_calls = 0
+
+            def runtime_inventory():
+                nonlocal inventory_calls
+                inventory_calls += 1
+                if inventory_calls == 2:
+                    raise OSError("QEMU has not appeared in process inventory yet")
+                return {"vm-1": os.getpid()} if inventory_calls >= 3 else {}
+
+            class Units:
+                started = False
+
+                def query(self, _vm_id):
+                    return SimpleNamespace(
+                        unit="vhackintosh-vm@vm-1.service",
+                        active_state="active" if self.started else "inactive",
+                        result="",
+                    )
+
+                def start(self, _vm_id):
+                    self.started = True
+                    return SimpleNamespace(unit="vhackintosh-vm@vm-1.service", active_state="active")
+
+            service = WebAgentService(
+                catalog,
+                jobs_db_path=Path(directory) / "jobs.sqlite",
+                running_vms=runtime_inventory,
+                vm_unit_manager=Units(),
+            )
+            service.start_jobs()
+            try:
+                accepted = service.vm_action({
+                    "vm_id": "vm-1",
+                    "action": {"operation": "start", "idempotency_key": "start-vm-inventory-race-0001"},
+                })
+                deadline = time.monotonic() + 2
+                job = None
+                while time.monotonic() < deadline:
+                    job = service.get_job({"job_id": accepted["job_id"]})
+                    if job["state"] in {"succeeded", "failed"}:
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(job["state"], "succeeded")
+                self.assertEqual(job["result"]["state"], "running")
+                self.assertGreaterEqual(inventory_calls, 3)
             finally:
                 service.close_jobs()
 
@@ -1327,6 +1456,8 @@ class WebAgentServiceTests(unittest.TestCase):
             )
             service.start_jobs()
             self.assertTrue(service.job_runner._started)
+            self.assertTrue(service.force_stop_job_runner._started)
+            self.assertIsNot(service.force_stop_job_runner, service.job_runner)
             service.close_jobs()
 
     def test_reims_release_inventory_reports_bundled_and_active_tags(self):

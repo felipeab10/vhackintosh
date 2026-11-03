@@ -4,18 +4,28 @@
 set -u
 
 : "${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set}"
-: "${WAYLAND_DISPLAY:?WAYLAND_DISPLAY must be set}"
-
-if [[ "$WAYLAND_DISPLAY" = /* ]]; then
-    socket_path="$WAYLAND_DISPLAY"
-else
-    socket_path="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
-fi
+display_marker="$XDG_RUNTIME_DIR/wayland-display"
+display_name=""
+socket_path=""
 
 for _ in {1..600}; do
-    [[ -S "$socket_path" ]] && exit 0
+    if [[ -r "$display_marker" ]]; then
+        IFS= read -r display_name < "$display_marker" || true
+        if [[ "$display_name" = /* ]]; then
+            socket_path="$display_name"
+        elif [[ -n "$display_name" ]]; then
+            socket_path="$XDG_RUNTIME_DIR/$display_name"
+        fi
+        [[ -S "$socket_path" ]] && exit 0
+    fi
     sleep 0.05
 done
 
-echo "vhackintosh-wait-wayland: Wayland socket did not become ready: $socket_path" >&2
+echo "vhackintosh-wait-wayland: Wayland socket did not become ready after 30s: display=${display_name:-unpublished} path=${socket_path:-unknown}" >&2
+echo "vhackintosh-wait-wayland: runtime=$XDG_RUNTIME_DIR marker=$display_marker uid=$(id -u) tty=$(readlink /proc/self/fd/0 2>/dev/null || printf unknown) foreground_vt=$(fgconsole 2>/dev/null || printf unknown)" >&2
+echo "vhackintosh-wait-wayland: DRM nodes: $(printf '%s ' /dev/dri/card* /dev/dri/renderD*)" >&2
+echo "vhackintosh-wait-wayland: compositor processes:" >&2
+ps -eo pid,ppid,stat,comm,args | grep -E '[s]way|[w]lroots' >&2 || true
+echo "vhackintosh-wait-wayland: runtime directory:" >&2
+ls -la "$XDG_RUNTIME_DIR" >&2 || true
 exit 1

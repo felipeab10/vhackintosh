@@ -273,9 +273,11 @@ inicia uma VM cadastrada pelo nome.
 ## 🌐 Recursos do Appliance (pt-BR)
 
 - **Idioma**: no ISO Live, a escolha aparece antes do menu de instalação em
-  disco; no primeiro início da TUI também aparece caso ainda não tenha sido
-  escolhida. Selecione **Português (Brasil)** ou **English (US)**. A escolha é
-  copiada para o sistema instalado e persiste nos reboots. Para trocar depois:
+  disco, com **English (US)** como padrão; no primeiro início da TUI também
+  aparece caso ainda não tenha sido escolhida. Selecione **English (US)** ou
+  **Português (Brasil)**. A escolha é copiada para o sistema instalado e
+  persiste nos reboots. Pressione Enter para aceitar inglês ou escolha 1 para
+  português. Para trocar depois:
   ```bash
   ./bin/vhackintosh-lang pt   # ou: en
   ```
@@ -302,10 +304,11 @@ inicia uma VM cadastrada pelo nome.
 
 ## 🌐 Appliance Features (English)
 
-- **Language**: on the Live ISO, the choice appears before the disk installer
-  menu; the TUI also asks on first start if no choice exists yet. Pick
-  **English (US)** or **Português (Brasil)**. The choice is copied to the
-  installed system and survives reboots. To switch later:
+- **Language**: English (US) is the default. On the Live ISO, the choice
+  appears before the disk installer menu; the TUI also asks on first start if
+  no choice exists yet. Pick **Português (Brasil)** or **English (US)**. The
+  choice is copied to the installed system and survives reboots. Press Enter
+  to accept English or choose 1 for Portuguese. To switch later:
   `./bin/vhackintosh-lang en` (or `pt`).
   Invalid input is rejected with the supported list.
 - **Laptop hotkeys**: XF86 brightness and volume/mute keys work appliance-wide

@@ -494,6 +494,9 @@ class EsperarPorPidTemFimTests(unittest.TestCase):
             "bin" / "vhackintosh-waysession"
         ).read_text(encoding="utf-8")
         self.assertIn("export WLR_RENDERER_ALLOW_SOFTWARE=1", script)
+        self.assertIn("vhack_graphics=vmware-svga", script)
+        self.assertIn("/sys/firmware/dmi/entries/11-*/raw", script)
+        self.assertIn("wayland-display", script)
         self.assertNotIn("export WLR_RENDERER_ALLOW_SOFTWARE=true", script)
         bloco = re.search(
             r'if \[ "\$\{VHACK_TEST_GRAPHICS_BACKEND:-\}" = "vmware-svga" \]; then\n'
