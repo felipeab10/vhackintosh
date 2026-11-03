@@ -26,7 +26,7 @@ from typing import Callable, Iterable, Mapping
 
 
 _BDF = re.compile(r"^(?P<domain>[0-9a-fA-F]{4}):(?P<bus>[0-9a-fA-F]{2}):(?P<slot>[0-9a-fA-F]{2})\.(?P<function>[0-7])$")
-_MAX_VULKAN_OUTPUT = 256 * 1024
+_MAX_VULKAN_OUTPUT = 2 * 1024 * 1024
 _VULKAN_TIMEOUT_SECONDS = 2.0
 _MAX_REIMS_OUTPUT = 64 * 1024
 _REIMS_TIMEOUT_SECONDS = 2.0
@@ -253,13 +253,17 @@ def _vulkan_devices(value: object) -> Iterable[tuple[str, str, str | None, str |
 def _run_vulkan_bounded(
     argv: list[str], *, timeout: float, cwd: str | os.PathLike[str] | None = None,
     max_output: int = _MAX_VULKAN_OUTPUT,
+    env_overrides: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Collect at most the configured cap from a process before terminating it."""
+    environment = {"PATH": "/usr/bin:/bin", "HOME": "/", "LANG": "C", "LC_ALL": "C"}
+    if env_overrides:
+        environment.update(env_overrides)
     process = subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env={"PATH": "/usr/bin:/bin", "HOME": "/", "LANG": "C", "LC_ALL": "C"},
+        env=environment,
         cwd=cwd,
         start_new_session=True,
         close_fds=True,
@@ -322,12 +326,68 @@ def _run_vulkan_bounded(
     )
 
 
-def probe_vulkan(runner: Runner | None = None) -> VulkanProbe:
-    """Run one bounded, non-shell Vulkan inventory probe.
+def _has_nvidia_display_device(sysfs_root: str | os.PathLike[str]) -> bool:
+    """Return whether sysfs lists an NVIDIA display controller."""
+    try:
+        entries = sorted((Path(sysfs_root) / "bus/pci/devices").iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if not _BDF.fullmatch(entry.name):
+            continue
+        if _read_text(entry / "vendor") != "0x10de":
+            continue
+        class_id = _read_text(entry / "class")
+        if class_id and class_id.lower().startswith("0x03"):
+            return True
+    return False
+
+
+def _merge_vulkan_probes(probes: Iterable[VulkanProbe]) -> VulkanProbe:
+    """Union independently enumerated GPUs, rejecting conflicting identities."""
+    devices: dict[str, str] = {}
+    pci_ids: dict[str, tuple[str | None, str | None]] = {}
+    ambiguous: set[str] = set()
+    limitations: list[str] = []
+    for probe in probes:
+        if not probe.available:
+            if probe.limitation and probe.limitation not in limitations:
+                limitations.append(probe.limitation)
+            continue
+        for bdf, uuid in probe.devices_by_bdf.items():
+            ids = (probe.pci_ids_by_bdf or {}).get(bdf)
+            if bdf in ambiguous:
+                continue
+            prior_uuid = devices.get(bdf)
+            prior_ids = pci_ids.get(bdf)
+            if (prior_uuid is not None and prior_uuid != uuid) or (
+                prior_ids is not None and ids is not None and prior_ids != ids
+            ):
+                devices.pop(bdf, None)
+                pci_ids.pop(bdf, None)
+                ambiguous.add(bdf)
+                continue
+            devices[bdf] = uuid
+            if ids is not None:
+                pci_ids[bdf] = ids
+    if not devices:
+        limitation = "; ".join(limitations) or "A sonda Vulkan não forneceu UUID associado a endereço PCI"
+        return VulkanProbe(False, {}, limitation)
+    return VulkanProbe(True, devices, "; ".join(limitations) or None, pci_ids)
+
+
+def probe_vulkan(
+    runner: Runner | None = None,
+    *,
+    sysfs_root: str | os.PathLike[str] = "/sys",
+) -> VulkanProbe:
+    """Run bounded Vulkan probes for the default GPU and NVIDIA PRIME offload.
 
     Missing tools, timeout, failed probes, oversized output, and JSON without
     PCI identity all produce explicit unavailability. Names and IDs alone do
-    not establish a physical-device mapping.
+    not establish a physical-device mapping. On hybrid laptops the desktop
+    often exposes only the integrated GPU unless NVIDIA PRIME offload is
+    requested; probe that path separately and merge only exact PCI identities.
     """
     try:
         if runner is None:
@@ -338,11 +398,28 @@ def probe_vulkan(runner: Runner | None = None) -> VulkanProbe:
             # of emitting JSON to stdout on current Vulkan SDK releases. Isolate
             # that output from the appliance state/project and discard it once
             # the bounded probe finishes.
-            with tempfile.TemporaryDirectory(prefix="vhackintosh-vulkan-") as temp_dir:
-                result = _run_vulkan_bounded(
-                    [executable, "--json"], timeout=_VULKAN_TIMEOUT_SECONDS, cwd=temp_dir
-                )
-                return _parse_vulkan_result(result, output_dir=Path(temp_dir))
+            probes: list[VulkanProbe] = []
+            environments = [{}]
+            if _has_nvidia_display_device(sysfs_root):
+                # NVIDIA's Optimus layer selects the dGPU on PRIME systems.
+                # Its JSON is larger than Mesa's, so the bounded cap is 2 MiB.
+                environments.append({
+                    "__NV_PRIME_RENDER_OFFLOAD": "1",
+                    "__VK_LAYER_NV_optimus": "NVIDIA_only",
+                })
+            for overrides in environments:
+                try:
+                    with tempfile.TemporaryDirectory(prefix="vhackintosh-vulkan-") as temp_dir:
+                        result = _run_vulkan_bounded(
+                            [executable, "--json"],
+                            timeout=_VULKAN_TIMEOUT_SECONDS,
+                            cwd=temp_dir,
+                            env_overrides=overrides,
+                        )
+                        probes.append(_parse_vulkan_result(result, output_dir=Path(temp_dir)))
+                except (OSError, subprocess.SubprocessError) as exc:
+                    probes.append(VulkanProbe(False, {}, f"Sonda Vulkan indisponível: {type(exc).__name__}"))
+            return _merge_vulkan_probes(probes)
         result = runner(
             ["vulkaninfo", "--json"],
             capture_output=True,
