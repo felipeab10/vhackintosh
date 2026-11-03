@@ -124,6 +124,15 @@ class VMProvisioningServiceTests(unittest.TestCase):
         self.assertEqual([event.progress for event in events], [10, 30, 45, 50, 90, 100])
         self.assertTrue(result.bundle.hdd_path.is_file())
 
+    def test_automatic_identifier_retries_if_generated_candidate_is_already_reserved(self):
+        (self.root / "macos-lab-a1b2c3d4").mkdir()
+        generated = iter(("a1b2c3d4", "d4e5f607"))
+        self.service.id_factory = lambda: next(generated)
+
+        vm_id = self.service._reserve_id(None, "macOS Lab")
+
+        self.assertEqual(vm_id, "macos-lab-d4e5f607")
+
     def test_persists_display_preferences_from_provisioning_request(self):
         result = self.service.provision(make_request(
             display_resolution="2560x1440", display_hidpi=True, display_refresh_hz=144,

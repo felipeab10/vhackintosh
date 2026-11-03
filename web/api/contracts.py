@@ -153,6 +153,8 @@ class SessionView(Contract):
     must_change_password: bool = False
     default_credentials_available: bool = False
     tls_fingerprint: str | None = None
+    reims_update_status: Literal["queued", "unavailable"] | None = None
+    reims_update_job_id: str | None = None
 
 
 class WebActivationView(Contract):
@@ -604,7 +606,7 @@ class VmProvisionRequest(Contract):
     )
 
     idempotency_key: str = Field(min_length=8, max_length=128)
-    id: str = Field(min_length=1, max_length=63, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    id: str | None = Field(default=None, min_length=1, max_length=63, pattern=r"^[a-z0-9][a-z0-9-]*$")
     name: str = Field(min_length=1, max_length=100)
     macos_version: str = Field(min_length=1, max_length=32)
     vcpus: int = Field(ge=1, le=256)

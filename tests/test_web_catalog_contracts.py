@@ -102,6 +102,9 @@ class WebCatalogContractTests(unittest.TestCase):
 
     def test_vm_display_count_is_limited_by_reims_schema_range(self):
         payload = VmProvisionRequest.model_json_schema()["examples"][0]
+        payload.pop("id")
+        self.assertIsNone(VmProvisionRequest.model_validate(payload).id)
+        payload["id"] = "macos-tahoe"
         payload["display_count"] = 8
         self.assertEqual(VmProvisionRequest.model_validate(payload).display_count, 8)
         payload["display_count"] = 9
