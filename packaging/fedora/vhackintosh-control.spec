@@ -56,10 +56,12 @@ systemctl daemon-reload || :
 systemctl enable seatd.service >/dev/null 2>&1 || :
 systemctl start seatd.service >/dev/null 2>&1 || :
 systemctl enable vhackintosh-agent.service vhackintosh-web.service >/dev/null 2>&1 || :
-systemctl restart vhackintosh-agent.service >/dev/null 2>&1 || systemctl start vhackintosh-agent.service >/dev/null 2>&1 || :
-systemctl restart vhackintosh-web.service >/dev/null 2>&1 || systemctl start vhackintosh-web.service >/dev/null 2>&1 || :
+if [ "${VHACKINTOSH_CONTROL_UPDATE_DEFER_RESTART:-0}" != 1 ]; then
+    systemctl restart vhackintosh-agent.service >/dev/null 2>&1 || systemctl start vhackintosh-agent.service >/dev/null 2>&1 || :
+    systemctl restart vhackintosh-web.service >/dev/null 2>&1 || systemctl start vhackintosh-web.service >/dev/null 2>&1 || :
+    systemctl restart vhackintosh-http-redirect.service >/dev/null 2>&1 || systemctl start vhackintosh-http-redirect.service >/dev/null 2>&1 || :
+fi
 systemctl enable vhackintosh-http-redirect.service >/dev/null 2>&1 || :
-systemctl restart vhackintosh-http-redirect.service >/dev/null 2>&1 || systemctl start vhackintosh-http-redirect.service >/dev/null 2>&1 || :
 
 %preun
 if [ "$1" -eq 0 ]; then
@@ -71,6 +73,7 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 
 %files
 /opt/vhackintosh/web/current
+/opt/vhackintosh/web/bundles
 /opt/vhackintosh/resources/macserial
 /opt/vhackintosh/resources/reims-util
 /usr/lib/systemd/system/vhackintosh-agent.service
@@ -81,6 +84,8 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %config(noreplace) /etc/vhackintosh/sway.conf
 /usr/lib/sysusers.d/vhackintosh-web.conf
 /usr/lib/tmpfiles.d/vhackintosh-web.conf
+/usr/lib/vhackintosh/control-version
+/usr/lib/vhackintosh/control-bundle-id
 /usr/local/bin/vhackintosh-web-bootstrap
 /usr/local/bin/vhackintosh-waysession
 /usr/local/bin/vhackintosh-wait-wayland

@@ -396,7 +396,7 @@ chmod 1777 /mnt/tmp
 # Os dois arquivos de unidade fazem parte da ISO e precisam existir no destino;
 # links relativos são resolvidos pelo systemd no boot instalado.
 SYSTEMD_WANTS_DIR="/mnt/etc/systemd/system/multi-user.target.wants"
-for service in vhackintosh-agent.service vhackintosh-web.service; do
+for service in vhackintosh-agent.service vhackintosh-web.service vhackintosh-http-redirect.service; do
     if [ ! -f "/mnt/etc/systemd/system/${service}" ]; then
         echo -e "${RED}Erro: unidade obrigatória ausente no sistema copiado: ${service}${NC}"
         exit 1
@@ -409,6 +409,7 @@ fi
 mkdir -p "${SYSTEMD_WANTS_DIR}"
 ln -sfn ../vhackintosh-agent.service "${SYSTEMD_WANTS_DIR}/vhackintosh-agent.service"
 ln -sfn ../vhackintosh-web.service "${SYSTEMD_WANTS_DIR}/vhackintosh-web.service"
+ln -sfn ../vhackintosh-http-redirect.service "${SYSTEMD_WANTS_DIR}/vhackintosh-http-redirect.service"
 
 echo -e "\n${CYAN}▶ 4/5 Gerando /etc/fstab e configurações de sistema...${NC}"
 if command -v genfstab >/dev/null 2>&1; then
@@ -512,11 +513,11 @@ $CHROOT_EXEC /bin/bash -c "
 
     # systemctl enable confirma o estado no gerenciador quando disponível;
     # os links foram criados diretamente em /etc antes do chroot acima.
-    systemctl enable vhackintosh-agent.service vhackintosh-web.service || true
+    systemctl enable vhackintosh-agent.service vhackintosh-web.service vhackintosh-http-redirect.service || true
 "
 
 # Não conclua uma instalação que ficou sem auto-start do painel.
-for service in vhackintosh-agent.service vhackintosh-web.service; do
+for service in vhackintosh-agent.service vhackintosh-web.service vhackintosh-http-redirect.service; do
     if [ "$(readlink -f "${SYSTEMD_WANTS_DIR}/${service}" 2>/dev/null || true)" != "/mnt/etc/systemd/system/${service}" ]; then
         echo -e "${RED}Erro: não foi possível habilitar o início automático de ${service}.${NC}"
         exit 1

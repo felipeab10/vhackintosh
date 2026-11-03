@@ -78,6 +78,8 @@ from .contracts import (
     HostAlertList,
     ReimsReleaseList,
     ReimsReleaseUpdateRequest,
+    ControlReleaseList,
+    ControlReleaseUpdateRequest,
     ReimsImportCandidateList,
     ReimsImportRequest,
     VmConfigUpdate,
@@ -117,6 +119,8 @@ class AgentClient(Protocol):
     def list_vm_backups(self, vm_id: str) -> VmBackupListResponse: ...
     def list_reims_releases(self) -> ReimsReleaseList: ...
     def update_reims_release(self, request: ReimsReleaseUpdateRequest) -> JobAccepted: ...
+    def list_control_releases(self) -> ControlReleaseList: ...
+    def update_control_release(self, request: ControlReleaseUpdateRequest) -> JobAccepted: ...
     def list_vms(self) -> VmListResponse: ...
     def list_reims_import_candidates(self) -> ReimsImportCandidateList: ...
     def import_reims_vm(self, request: ReimsImportRequest, expected_revision: str) -> VmConfigEnvelope: ...
@@ -1684,6 +1688,31 @@ def create_app(
             raise _dependency_unavailable("O agente ainda não oferece atualização controlada do runtime Reims.")
         accepted = JobAccepted.model_validate(await _call(method, payload))
         request.state.audit_action = "reims.release.update"
+        request.state.operation_id = accepted.job_id
+        return accepted
+
+    @app.get("/api/v1/settings/control/releases", response_model=ControlReleaseList)
+    async def list_control_runtime_releases(
+        _: dict[str, Any] = Depends(require_session),
+        svc: AgentClient = Depends(get_agent),
+    ) -> ControlReleaseList:
+        method = getattr(svc, "list_control_releases", None)
+        if method is None:
+            raise _dependency_unavailable("O agente ainda não consulta releases do Control.")
+        return ControlReleaseList.model_validate(await _call(method))
+
+    @app.post("/api/v1/settings/control/releases", response_model=JobAccepted, status_code=202)
+    async def update_control_runtime_release(
+        payload: ControlReleaseUpdateRequest,
+        request: Request,
+        _: dict[str, Any] = Depends(require_csrf),
+        svc: AgentClient = Depends(get_agent),
+    ) -> JobAccepted:
+        method = getattr(svc, "update_control_release", None)
+        if method is None:
+            raise _dependency_unavailable("O agente ainda não oferece atualização controlada do Control.")
+        accepted = JobAccepted.model_validate(await _call(method, payload))
+        request.state.audit_action = "control.release.update"
         request.state.operation_id = accepted.job_id
         return accepted
 

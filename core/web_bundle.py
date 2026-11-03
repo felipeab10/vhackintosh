@@ -205,7 +205,7 @@ def validate_bundle(
             f"jobs schema {jobs_schema} is outside supported range "
             f"{metadata.jobs_schema_min}..{metadata.jobs_schema_max}"
         )
-    if metadata.runtime_release != runtime_release:
+    if metadata.runtime_release not in {runtime_release, "control-independent"}:
         raise BundleCompatibilityError(
             f"bundle expects Reims runtime {metadata.runtime_release}, found {runtime_release}"
         )

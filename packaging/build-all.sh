@@ -121,7 +121,7 @@ PAYLOAD_BASE="${WORK}/payload-base"
 mkdir -p "$PAYLOAD_BASE"
 
 echo "[1/4] Building shared Control sources and frontend (${VERSION})"
-"${ROOT}/packaging/common/stage-app.sh" "$PAYLOAD_BASE"
+"${ROOT}/packaging/common/stage-app.sh" "$PAYLOAD_BASE" "$VERSION"
 
 echo "[1.5/4] Building the pinned official reims-util with APV support"
 UTIL_BUILD="${WORK}/reims-util-build"
@@ -161,6 +161,7 @@ container_build "${VHACK_UBUNTU_IMAGE:-ubuntu:24.04}" "$PAYLOAD_UBUNTU" bash -eu
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dpkg-dev python3-venv
   cp -a /payload /tmp/vhackintosh-package-payload
   bash /src/packaging/common/install-python-deps.sh /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current/requirements.lock
+  PYTHONPATH=/src python3 /src/packaging/common/refresh-control-bundle.py /tmp/vhackintosh-package-payload
   bash /src/packaging/deb/build-package.sh "$VHACK_CONTROL_VERSION" /tmp/vhackintosh-package-payload /out
   dpkg-deb --info "/out/vhackintosh-control_${VHACK_CONTROL_VERSION}_amd64.deb" >/dev/null
 '
@@ -172,6 +173,7 @@ container_build "${VHACK_FEDORA_IMAGE:-fedora:44}" "$PAYLOAD_FEDORA" bash -euc '
   dnf -y install rpm-build python3-pip
   cp -a /payload /tmp/vhackintosh-package-payload
   bash /src/packaging/common/install-python-deps.sh /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current/requirements.lock
+  PYTHONPATH=/src python3 /src/packaging/common/refresh-control-bundle.py /tmp/vhackintosh-package-payload
   bash /src/packaging/fedora/build-package.sh "$VHACK_CONTROL_VERSION" /tmp/vhackintosh-package-payload /out
   rpm -qp --info "/out/vhackintosh-control-${VHACK_CONTROL_VERSION//-/.}-1"*.rpm >/dev/null
 '
@@ -183,6 +185,7 @@ container_build "${VHACK_ARCH_IMAGE:-archlinux:latest}" "$PAYLOAD_ARCH" bash -eu
   pacman -Syu --noconfirm --needed base-devel python-pip
   cp -a /payload /tmp/vhackintosh-package-payload
   bash /src/packaging/common/install-python-deps.sh /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current/requirements.lock
+  PYTHONPATH=/src python3 /src/packaging/common/refresh-control-bundle.py /tmp/vhackintosh-package-payload
   bash /src/packaging/arch/build-package.sh "$VHACK_CONTROL_VERSION" /tmp/vhackintosh-package-payload /out
   package="/out/vhackintosh-control-${VHACK_CONTROL_VERSION//-/.}-1-x86_64.pkg.tar.zst"
   pacman -Qp "$package" >/dev/null

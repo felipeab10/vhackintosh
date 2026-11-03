@@ -48,6 +48,8 @@ from web.api.contracts import (
     JobListResponse,
     ReimsReleaseList,
     ReimsReleaseUpdateRequest,
+    ControlReleaseList,
+    ControlReleaseUpdateRequest,
     ReimsImportCandidateList,
     ReimsImportRequest,
     Capability,
@@ -214,6 +216,7 @@ class WebAgentService:
             self.job_runner.register("vm.opencore.picker", self._run_vm_opencore_picker_job)
             self.job_runner.register("vm.smbios.diagnose", self._run_vm_smbios_diagnostic_job)
             self.job_runner.register("reims.release.update", self._run_reims_release_update_job)
+            self.job_runner.register("control.release.update", self._run_control_release_update_job)
             self.media_job_runner.register("media.import", self._run_media_import_job)
             self.media_job_runner.register("media.convert", self._run_media_convert_job)
             self.media_job_runner.register("media.apple.download", self._run_apple_recovery_download_job)
@@ -229,6 +232,8 @@ class WebAgentService:
             "telemetry.settings.set": self.set_telemetry_settings,
             "reims.releases.list": self.list_reims_releases,
             "reims.release.update": self.submit_reims_release_update,
+            "control.releases.list": self.list_control_releases,
+            "control.release.update": self.submit_control_release_update,
             "host.gpus": self.host_gpus,
             "host.usb": self.host_usb_inventory,
             "storage.inventory": self.storage_inventory,
@@ -339,6 +344,50 @@ class WebAgentService:
             job, _created = self.job_runner.submit(
                 idempotency_key=f"reims-release:{request.tag}:{request.idempotency_key}",
                 kind="reims.release.update",
+                payload={"tag": request.tag},
+            )
+            return JobAccepted(job_id=job["id"], events_url=f"/api/v1/jobs/{job['id']}").model_dump(mode="json")
+        except Exception as exc:
+            from core.web_job_runner import QueueFullError
+
+            if isinstance(exc, QueueFullError):
+                raise RpcRemoteError("job_queue_full", "A fila de tarefas está cheia; tente novamente mais tarde.") from exc
+            raise
+
+    def list_control_releases(self, _payload: dict[str, Any]) -> dict[str, Any]:
+        from core.control_release import CONTROL_REPO, ControlReleaseError, current_version, is_current_release, list_releases, package_kind
+
+        try:
+            kind = package_kind()
+            releases = list_releases(kind=kind)
+        except ControlReleaseError as exc:
+            raise RpcRemoteError("control_release_catalog_unavailable", str(exc)) from exc
+        installed = current_version()
+        installed_tag = next((release.tag for release in releases if is_current_release(release.tag, installed)), installed)
+        return ControlReleaseList(
+            repository=CONTROL_REPO,
+            package_format=kind,
+            current_release=installed_tag,
+            items=[{
+                "tag": item.tag,
+                "name": item.name,
+                "published_at": item.published_at or None,
+                "asset_size_bytes": item.asset_size,
+                "prerelease": item.prerelease,
+            } for item in releases],
+        ).model_dump(mode="json")
+
+    def submit_control_release_update(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.job_runner is None:
+            raise RpcRemoteError("capability_unavailable", "O serviço de tarefas não está configurado.")
+        try:
+            request = ControlReleaseUpdateRequest.model_validate(payload)
+        except ValueError as exc:
+            raise RpcRemoteError("invalid_request", "A tag da release ou a chave da operação é inválida.") from exc
+        try:
+            job, _created = self.job_runner.submit(
+                idempotency_key=f"control-release:{request.tag}:{request.idempotency_key}",
+                kind="control.release.update",
                 payload={"tag": request.tag},
             )
             return JobAccepted(job_id=job["id"], events_url=f"/api/v1/jobs/{job['id']}").model_dump(mode="json")
@@ -3104,6 +3153,32 @@ class WebAgentService:
             "changed": result.changed,
             "message": result.message,
             "activation": "next-vm-start",
+        }
+
+    def _run_control_release_update_job(self, payload: dict[str, Any], context: Any) -> dict[str, Any]:
+        from core.control_release import ControlReleaseError, install_release, list_releases
+
+        tag = payload.get("tag")
+        if not isinstance(tag, str) or not re.fullmatch(r"control-v[0-9A-Za-z.+_-]{1,120}", tag):
+            raise ValueError("Tag da release Control inválida.")
+        context.check_cancelled()
+        context.phase("Consultando a release Control selecionada", 0)
+        context.checkpoint("control_release_update_started", {"tag": tag})
+        try:
+            release = next((item for item in list_releases() if item.tag == tag), None)
+            if release is None:
+                raise ControlReleaseError("A release selecionada não oferece um pacote compatível com este Linux.")
+            context.phase(f"Baixando e validando Control {tag}", 10)
+            result = install_release(release, log=context.log, schedule_restart=True)
+        except ControlReleaseError as exc:
+            raise RuntimeError(str(exc)) from exc
+        context.phase(f"Control {tag} instalado; serviços serão reiniciados", 100)
+        return {
+            "tag": result.tag,
+            "previous": result.previous,
+            "changed": result.changed,
+            "package_name": result.package_name,
+            "restart": "scheduled",
         }
 
     def get_job(self, payload: dict[str, Any]) -> dict[str, Any] | None:

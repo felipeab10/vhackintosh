@@ -62,6 +62,7 @@ class WebAppliancePackagingTests(unittest.TestCase):
         self.assertIn('"etc/systemd/system/vhackintosh-vm@.service"', validator)
         self.assertIn("vhackintosh-display.service", build)
         self.assertIn("vhackintosh-wait-wayland", build)
+        self.assertIn("vhackintosh-http-redirect.service", build)
         self.assertIn('"etc/systemd/system/vhackintosh-display.service"', validator)
 
     def test_shared_display_unit_owns_one_compositor_for_all_vm_windows(self):
@@ -224,12 +225,17 @@ class WebAppliancePackagingTests(unittest.TestCase):
             self.assertIn(f"--exclude='{excluded}'", build)
         self.assertIn("multi-user.target.wants", build)
         packager = (ROOT / "appliance/lib/package_web_manager.sh").read_text(encoding="utf-8")
-        self.assertIn("npm ci", packager)
-        self.assertIn("--ignore-scripts", packager)
-        self.assertIn("--require-hashes", packager)
+        self.assertIn("packaging/common/stage-app.sh", packager)
+        self.assertIn("packaging/common/install-python-deps.sh", packager)
+        self.assertIn("packaging/common/refresh-control-bundle.py", packager)
+        self.assertIn("packaging/arch/build-package.sh", packager)
+        self.assertIn("bsdtar -xf", packager)
+        shared_stager = (ROOT / "packaging/common/stage-app.sh").read_text(encoding="utf-8")
+        self.assertIn("npm ci", shared_stager)
+        self.assertIn("--ignore-scripts", shared_stager)
         self.assertIn("requirements.lock", packager)
-        self.assertIn("node_modules", packager)
-        self.assertIn(".npmrc", packager)
+        self.assertIn("node_modules", shared_stager)
+        self.assertIn(".npmrc", shared_stager)
         lock = (ROOT / "web/requirements.lock").read_text(encoding="utf-8")
         for package in ("argon2-cffi", "fastapi", "psutil", "uvicorn"):
             self.assertRegex(lock, rf"(?m)^{re.escape(package)}==[^\\\s]+")
@@ -272,10 +278,11 @@ class WebAppliancePackagingTests(unittest.TestCase):
             "systemctl enable vhackintosh-agent.service vhackintosh-web.service",
             installer,
         )
+        self.assertIn("vhackintosh-http-redirect.service", installer)
         self.assertIn('SYSTEMD_WANTS_DIR="/mnt/etc/systemd/system/multi-user.target.wants"', installer)
         self.assertIn('ln -sfn ../vhackintosh-agent.service "${SYSTEMD_WANTS_DIR}/vhackintosh-agent.service"', installer)
         self.assertIn('ln -sfn ../vhackintosh-web.service "${SYSTEMD_WANTS_DIR}/vhackintosh-web.service"', installer)
-        self.assertIn('systemctl enable vhackintosh-agent.service vhackintosh-web.service || true', installer)
+        self.assertIn('systemctl enable vhackintosh-agent.service vhackintosh-web.service vhackintosh-http-redirect.service || true', installer)
         # Both copy paths exclude the live image's disposable credentials and
         # certificates while rsync's exclusion protects existing target data.
         self.assertIn("/var/lib/vhackintosh/web/***", copier)
@@ -312,10 +319,13 @@ class WebAppliancePackagingTests(unittest.TestCase):
         for path in (
             "/etc/systemd/system/vhackintosh-agent.service",
             "/etc/systemd/system/vhackintosh-web.service",
+            "/etc/systemd/system/vhackintosh-http-redirect.service",
             "/etc/systemd/system/vhackintosh-vm@.service",
             "/etc/systemd/system/vhackintosh-display.service",
             "/usr/lib/sysusers.d/vhackintosh-web.conf",
             "/usr/lib/tmpfiles.d/vhackintosh-web.conf",
+            "/usr/lib/vhackintosh/control-version",
+            "/usr/lib/vhackintosh/control-bundle-id",
         ):
             with self.subTest(path=path):
                 self.assertIn(f'["{path}"]="0:0:644"', profile)
@@ -344,6 +354,7 @@ class WebAppliancePackagingTests(unittest.TestCase):
             "opt/vhackintosh/web/current/vendor/psutil/__init__.py",
             "etc/systemd/system/vhackintosh-agent.service",
             "etc/systemd/system/vhackintosh-web.service",
+            "etc/systemd/system/vhackintosh-http-redirect.service",
             "etc/systemd/system/vhackintosh-vm@.service",
             "etc/systemd/system/vhackintosh-display.service",
             "usr/local/bin/vhackintosh-wait-wayland",
@@ -354,6 +365,7 @@ class WebAppliancePackagingTests(unittest.TestCase):
             "usr/lib/tmpfiles.d/vhackintosh-web.conf",
             "etc/systemd/system/multi-user.target.wants/vhackintosh-agent.service",
             "etc/systemd/system/multi-user.target.wants/vhackintosh-web.service",
+            "etc/systemd/system/multi-user.target.wants/vhackintosh-http-redirect.service",
         )
         with tempfile.TemporaryDirectory(prefix="vhack-iso-web-test-") as tmp:
             rootfs = Path(tmp)

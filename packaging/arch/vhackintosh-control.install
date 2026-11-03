@@ -4,16 +4,20 @@ post_install() {
   install -d -m 0700 /root/.config/vhackintosh /root/.config/reims-ctl /root/.local/share/vhackintosh
   systemctl daemon-reload || true
   systemctl enable seatd.service vhackintosh-agent.service vhackintosh-web.service vhackintosh-http-redirect.service || true
-  systemctl start seatd.service vhackintosh-agent.service vhackintosh-web.service || true
-  systemctl start vhackintosh-http-redirect.service || true
+  if [[ "${VHACKINTOSH_CONTROL_UPDATE_DEFER_RESTART:-0}" != "1" ]]; then
+    systemctl start seatd.service vhackintosh-agent.service vhackintosh-web.service || true
+    systemctl start vhackintosh-http-redirect.service || true
+  fi
 }
 
 post_upgrade() {
   systemd-sysusers /usr/lib/sysusers.d/vhackintosh-web.conf || true
   systemd-tmpfiles --create /usr/lib/tmpfiles.d/vhackintosh-web.conf || true
   systemctl daemon-reload || true
-  systemctl restart vhackintosh-agent.service vhackintosh-web.service || true
-  systemctl restart vhackintosh-http-redirect.service || true
+  if [[ "${VHACKINTOSH_CONTROL_UPDATE_DEFER_RESTART:-0}" != "1" ]]; then
+    systemctl restart vhackintosh-agent.service vhackintosh-web.service || true
+    systemctl restart vhackintosh-http-redirect.service || true
+  fi
 }
 
 pre_remove() {

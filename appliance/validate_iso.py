@@ -53,6 +53,7 @@ def validate_web_manager_payload(rootfs: Path) -> None:
         "opt/vhackintosh/web/current/vendor/psutil/__init__.py",
         "etc/systemd/system/vhackintosh-agent.service",
         "etc/systemd/system/vhackintosh-web.service",
+        "etc/systemd/system/vhackintosh-http-redirect.service",
         "etc/systemd/system/vhackintosh-vm@.service",
         "etc/systemd/system/vhackintosh-display.service",
         "usr/local/bin/vhackintosh-wait-wayland",
@@ -71,7 +72,7 @@ def validate_web_manager_payload(rootfs: Path) -> None:
             "vhackintosh-wait-wayland is not executable in ISO rootfs "
             '(declare ["/usr/local/bin/vhackintosh-wait-wayland"]="0:0:755" in profiledef.sh)'
         )
-    for service in ("vhackintosh-agent.service", "vhackintosh-web.service"):
+    for service in ("vhackintosh-agent.service", "vhackintosh-web.service", "vhackintosh-http-redirect.service"):
         enabled = rootfs / "etc/systemd/system/multi-user.target.wants" / service
         expected_target = f"../{service}"
         if not enabled.is_symlink() or os.readlink(enabled) != expected_target:
