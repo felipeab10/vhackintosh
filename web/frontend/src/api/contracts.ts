@@ -153,6 +153,19 @@ export interface ReimsReleaseList {
   items: ReimsRelease[];
 }
 
+export interface ControlReleaseList {
+  repository: string;
+  package_format: 'arch' | 'deb' | 'rpm';
+  current_release: string;
+  items: Array<{
+    tag: string;
+    name: string;
+    published_at: string | null;
+    asset_size_bytes: number;
+    prerelease: boolean;
+  }>;
+}
+
 export interface TelemetryHistoryPoint {
   timestamp: string;
   resolution_seconds: 10 | 60;

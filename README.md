@@ -111,10 +111,15 @@ Atalhos de linha de comando:
 ./bin/vhackintosh doctor
 ./bin/vhackintosh start "macOS Sequoia"
 ./bin/vhackintosh update
+sudo ./bin/vhackintosh update-control
 ```
 
-`update` atualiza as fontes locais do vHackintosh. A atualização do motor
-`reims-vgpu` é uma ação separada no menu do gerenciador.
+`update` atualiza as fontes locais do vHackintosh. `update-control` lista as
+releases nativas compatíveis com a distribuição e instala a selecionada; o
+mesmo catálogo está disponível em **Configurações → Atualização do Control**.
+O pacote verifica o checksum publicado, aguarda uma janela sem VMs ativas e
+reinicia os serviços do Control após instalar. A atualização do motor
+`reims-vgpu` continua sendo uma ação separada no menu do gerenciador.
 
 ### Clonar o projeto e executar no Linux
 

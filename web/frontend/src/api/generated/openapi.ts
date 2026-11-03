@@ -61,6 +61,23 @@ export interface components {
   "description"?: (string) | (null);
   "limitation"?: (string) | (null);
 };
+    "ControlRelease": {
+  "tag": string;
+  "name": string;
+  "published_at"?: (string) | (null);
+  "asset_size_bytes": number;
+  "prerelease"?: boolean;
+};
+    "ControlReleaseList": {
+  "repository": string;
+  "package_format": "arch" | "deb" | "rpm";
+  "current_release": string;
+  "items": Array<components["schemas"]["ControlRelease"]>;
+};
+    "ControlReleaseUpdateRequest": {
+  "idempotency_key": string;
+  "tag": string;
+};
     "CpuTopology": {
   "sockets": number;
   "cores": number;
@@ -1283,6 +1300,30 @@ export interface operations {
     };
   };
 };
+  "list_control_runtime_releases_api_v1_settings_control_releases_get": {
+  responses: {
+    "200": {
+      content: components["schemas"]["ControlReleaseList"];
+    };
+    "500": {
+      content: components["schemas"]["ApiError"];
+    };
+  };
+};
+  "update_control_runtime_release_api_v1_settings_control_releases_post": {
+  requestBody: components["schemas"]["ControlReleaseUpdateRequest"];
+  responses: {
+    "202": {
+      content: components["schemas"]["JobAccepted"];
+    };
+    "422": {
+      content: components["schemas"]["ApiError"];
+    };
+    "500": {
+      content: components["schemas"]["ApiError"];
+    };
+  };
+};
   "import_transfer_api_v1_transfers__transfer_id__import_post": {
   path: {
     "transfer_id": string;
@@ -1606,6 +1647,10 @@ export interface paths {
   "/api/v1/settings/reims/releases": {
     get: operations["list_reims_runtime_releases_api_v1_settings_reims_releases_get"];
     post: operations["update_reims_runtime_release_api_v1_settings_reims_releases_post"];
+  };
+  "/api/v1/settings/control/releases": {
+    get: operations["list_control_runtime_releases_api_v1_settings_control_releases_get"];
+    post: operations["update_control_runtime_release_api_v1_settings_control_releases_post"];
   };
   "/api/v1/transfers/{transfer_id}/import": {
     post: operations["import_transfer_api_v1_transfers__transfer_id__import_post"];

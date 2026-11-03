@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DESTDIR="${1:?usage: stage-app.sh DESTDIR}"
+VERSION="${2:-${VHACK_CONTROL_VERSION:-1.0.0}}"
 
 for tool in npm rsync sha256sum cut; do
   command -v "$tool" >/dev/null || { echo "missing build dependency: $tool" >&2; exit 1; }
@@ -11,7 +12,7 @@ done
 WORK="$(mktemp -d)"
 trap 'rm -rf -- "$WORK"' EXIT
 FRONTEND="${WORK}/frontend"
-APP="${DESTDIR}/opt/vhackintosh/web/current"
+APP="${WORK}/control-bundle"
 mkdir -p "$FRONTEND" "${APP}/core" "${APP}/web/api" "${APP}/web/frontend" "${APP}/vendor" "${APP}/templates"
 
 rsync -a --delete \
@@ -29,6 +30,11 @@ rsync -a "${FRONTEND}/dist/" "${APP}/web/frontend/dist/"
 install -m 0644 "${ROOT}/web/frontend/THIRD_PARTY_NOTICES.md" "${APP}/web/frontend/THIRD_PARTY_NOTICES.md"
 install -m 0644 "${ROOT}/web/requirements.lock" "${APP}/requirements.lock"
 
+WEB_ROOT="${DESTDIR}/opt/vhackintosh/web"
+install -d "${WEB_ROOT}/bundles"
+cp -a "${APP}" "${WEB_ROOT}/bundles/.control-staging"
+ln -s "bundles/.control-staging" "${WEB_ROOT}/current"
+
 MACSERIAL_DIR="${DESTDIR}/opt/vhackintosh/resources/macserial"
 mkdir -p "$MACSERIAL_DIR"
 install -m 0755 "${ROOT}/resources/macserial/macserial" "${MACSERIAL_DIR}/macserial"
@@ -45,7 +51,9 @@ MACSERIAL_VERSION="$("${MACSERIAL_DIR}/macserial" -v 2>&1)"
   exit 1
 }
 install -d "${DESTDIR}/usr/lib/systemd/system" "${DESTDIR}/etc/vhackintosh" \
-  "${DESTDIR}/usr/local/bin" "${DESTDIR}/usr/lib/sysusers.d" "${DESTDIR}/usr/lib/tmpfiles.d"
+  "${DESTDIR}/usr/local/bin" "${DESTDIR}/usr/lib/sysusers.d" "${DESTDIR}/usr/lib/tmpfiles.d" \
+  "${DESTDIR}/usr/lib/vhackintosh"
+printf '%s\n' "$VERSION" > "${DESTDIR}/usr/lib/vhackintosh/control-version"
 install -m 0644 "${ROOT}/packaging/systemd/vhackintosh-http-redirect.service" \
   "${DESTDIR}/usr/lib/systemd/system/vhackintosh-http-redirect.service"
 for unit in vhackintosh-web.service vhackintosh-agent.service vhackintosh-display.service; do

@@ -378,6 +378,9 @@ bash "${SCRIPT_DIR}/lib/package_web_manager.sh" \
     "${PROJECT_ROOT}" \
     "${ARCHISO_PROFILE}/airootfs" \
     "${ARCHISO_PROFILE}/.web-package-staging"
+install -m 0644 \
+    "${PROJECT_ROOT}/packaging/systemd/vhackintosh-http-redirect.service" \
+    "${ARCHISO_PROFILE}/airootfs/etc/systemd/system/vhackintosh-http-redirect.service"
 
 # Enable both services in live and installed appliances; no desktop login
 # hook is involved in starting the management plane.
@@ -394,6 +397,7 @@ install -m 0755 \
     "${ARCHISO_PROFILE}/airootfs/usr/local/bin/vhackintosh-wait-wayland"
 ln -sfn ../vhackintosh-agent.service "${SYSTEMD_WANTS}/vhackintosh-agent.service"
 ln -sfn ../vhackintosh-web.service "${SYSTEMD_WANTS}/vhackintosh-web.service"
+ln -sfn ../vhackintosh-http-redirect.service "${SYSTEMD_WANTS}/vhackintosh-http-redirect.service"
 
 # 6. Permissões de execução dos scripts da appliance
 chmod +x "${ARCHISO_PROFILE}/airootfs/usr/local/bin/"* || true

@@ -36,6 +36,8 @@ from web.api.contracts import (
     VmListResponse,
     ReimsReleaseList,
     ReimsReleaseUpdateRequest,
+    ControlReleaseList,
+    ControlReleaseUpdateRequest,
     ReimsImportCandidateList,
     ReimsImportRequest,
 )
@@ -68,6 +70,19 @@ class FakeAgent:
     def update_reims_release(self, request: ReimsReleaseUpdateRequest):
         self.last_reims_release_request = request
         return JobAccepted(job_id="release-job", events_url="/api/v1/jobs/release-job")
+
+    def list_control_releases(self):
+        return ControlReleaseList(
+            repository="felipeab10/vhackintosh", package_format="arch",
+            current_release="control-v1.0.0-beta.10",
+            items=[{"tag": "control-v1.0.0-beta.11", "name": "Control 1.0.0-beta.11",
+                    "published_at": "2026-11-03T00:00:00Z", "asset_size_bytes": 1024,
+                    "prerelease": True}],
+        )
+
+    def update_control_release(self, request: ControlReleaseUpdateRequest):
+        self.last_control_release_request = request
+        return JobAccepted(job_id="control-release-job", events_url="/api/v1/jobs/control-release-job")
 
     def host_overview(self) -> HostOverview:
         return HostOverview(
@@ -977,8 +992,23 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(self.client.app.state.agent.last_reims_release_request.tag, "v1.1.0")
         event = self.client.app.state.audit_store.recent(1)[0]
         self.assertEqual(event["action"], "reims.release.update")
+
+    def test_control_release_settings_are_authenticated_csrf_protected_and_audited(self):
+        self.assertEqual(self.client.get("/api/v1/settings/control/releases").status_code, 401)
+        self.bootstrap()
+        response = self.client.get("/api/v1/settings/control/releases")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["package_format"], "arch")
+        payload = {"tag": "control-v1.0.0-beta.11", "idempotency_key": "12345678-1234-4234-8234-123456789abc"}
+        self.assertEqual(self.client.post("/api/v1/settings/control/releases", json=payload).status_code, 403)
+        headers = {**origin(), "X-CSRF-Token": self.client.cookies.get("vh_csrf")}
+        updated = self.client.post("/api/v1/settings/control/releases", headers=headers, json=payload)
+        self.assertEqual(updated.status_code, 202)
+        self.assertEqual(self.client.app.state.agent.last_control_release_request.tag, "control-v1.0.0-beta.11")
+        event = self.client.app.state.audit_store.recent(1)[0]
+        self.assertEqual(event["action"], "control.release.update")
         self.assertEqual(event["outcome"], 202)
-        self.assertEqual(event["operation_id"], "release-job")
+        self.assertEqual(event["operation_id"], "control-release-job")
 
     def test_vm_provisioning_requires_explicit_policy_and_returns_async_job(self):
         self.bootstrap()

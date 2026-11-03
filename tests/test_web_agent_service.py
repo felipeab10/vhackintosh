@@ -531,7 +531,7 @@ class WebAgentServiceTests(unittest.TestCase):
             )
             handlers = service.handlers()
             self.assertEqual(set(handlers), {
-                "agent.health", "host.overview", "host.metrics", "host.metrics.history", "telemetry.settings.get", "telemetry.settings.set", "reims.releases.list", "reims.release.update", "host.gpus", "host.usb", "host.capabilities", "vms.list",
+                "agent.health", "host.overview", "host.metrics", "host.metrics.history", "telemetry.settings.get", "telemetry.settings.set", "reims.releases.list", "reims.release.update", "control.releases.list", "control.release.update", "host.gpus", "host.usb", "host.capabilities", "vms.list",
                 "storage.inventory",
                 "storage.media.import",
                 "storage.media.convert",
@@ -1386,6 +1386,40 @@ class WebAgentServiceTests(unittest.TestCase):
             self.assertEqual(update.call_args.kwargs["tag"], "v1.2.3")
             self.assertIn(("reims_release_update_started", {"tag": "v1.2.3"}), context.events)
             self.assertEqual(context.events[-1], ("Reims v1.2.3 disponível; será ativado no próximo boot", 100))
+
+    def test_control_release_catalog_and_update_job_are_allowlisted(self):
+        from core.control_release import ControlRelease
+
+        release = ControlRelease(
+            tag="control-v1.0.0-beta.11", name="Control beta.11",
+            published_at="2026-11-03T00:00:00Z", prerelease=True,
+            asset_name="vhackintosh-control-1.0.0.beta.11-1-x86_64.pkg.tar.zst",
+            asset_url="https://example.invalid/control.pkg", asset_size=1024,
+            checksum_url="https://example.invalid/SHA256SUMS",
+        )
+
+        class Runner:
+            def submit(self, **kwargs):
+                self.kwargs = kwargs
+                return ({"id": "control-release-job"}, True)
+
+        with tempfile.TemporaryDirectory() as directory:
+            runner = Runner()
+            service = WebAgentService(Path(directory) / "vms.json", job_runner=runner)
+            with patch("core.control_release.package_kind", return_value="arch"), \
+                 patch("core.control_release.list_releases", return_value=[release]), \
+                 patch("core.control_release.current_version", return_value="1.0.0-beta.10"):
+                catalog = service.list_control_releases({})
+            self.assertEqual(catalog["package_format"], "arch")
+            self.assertEqual(catalog["items"][0]["tag"], release.tag)
+            accepted = service.submit_control_release_update({
+                "idempotency_key": "12345678-1234-4234-8234-123456789abc",
+                "tag": release.tag,
+            })
+            self.assertEqual(accepted["job_id"], "control-release-job")
+            self.assertEqual(runner.kwargs["kind"], "control.release.update")
+            self.assertEqual(runner.kwargs["payload"], {"tag": release.tag})
+            self.assertIn("control.release.update", service.handlers())
 
     def test_provision_rpc_is_durable_async_and_reports_checkpoints(self):
         observed_cpu_models = []

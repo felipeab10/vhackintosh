@@ -178,6 +178,7 @@ class VMTUI:
             console.print(i18n.t("tui.menu.diagnostics"))
             console.print(i18n.t("tui.menu.update_upstream"))
             console.print(i18n.t("tui.menu.reims_release"))
+            console.print(i18n.t("tui.menu.control_release"))
             console.print(i18n.t("tui.menu.download_images"))
             console.print(i18n.t("tui.menu.restart"))
             console.print(i18n.t("tui.menu.build_iso"))
@@ -185,7 +186,7 @@ class VMTUI:
             console.print(i18n.t("tui.menu.smbios_diagnostics"))
             console.print(i18n.t("tui.menu.exit"))
 
-            choices = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "a"]
+            choices = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "a", "C", "c"]
             if installer_available:
                 choices.extend(["I", "i"])
 
@@ -216,6 +217,8 @@ class VMTUI:
                 self._update_upstream()
             elif choice in ("A", "a"):
                 self._menu_reims_release()
+            elif choice in ("C", "c"):
+                self._menu_control_release()
             elif choice == "9":
                 self._view_smbios_diagnostics(vms)
             elif choice == "5":
@@ -1788,6 +1791,64 @@ class VMTUI:
                 console.print(i18n.t("tui.release.session_only"))
         finally:
             # Pausa no estilo da casa: o laço principal limpa a tela na volta.
+            Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))
+
+    def _menu_control_release(self) -> None:
+        """Install a published native Control package from the terminal."""
+        console.clear()
+        console.print(centered_banner(console))
+        console.print(i18n.t("tui.control_release.menu_title"))
+        try:
+            from core.control_release import (
+                CONTROL_REPO,
+                ControlReleaseError,
+                current_version,
+                is_current_release,
+                install_release,
+                list_releases,
+            )
+            if os.geteuid() != 0:
+                console.print(i18n.t("tui.control_release.not_root"))
+                return
+            installed = current_version()
+            console.print(i18n.t("tui.control_release.menu_desc", repo=CONTROL_REPO, installed=installed))
+            with console.status(i18n.t("tui.control_release.checking")):
+                releases = list_releases()
+            if not releases:
+                console.print(i18n.t("tui.control_release.none"))
+                return
+            for number, release in enumerate(releases, 1):
+                marker = f" [green]{i18n.t('tui.release.current_marker')}[/green]" if is_current_release(release.tag, installed) else ""
+                suffix = " · pré-lançamento" if release.prerelease else ""
+                console.print(f" [bold cyan]{number}[/bold cyan] - [bold]{release.tag}[/bold]{suffix}{marker}")
+            selected_number = Prompt.ask(
+                i18n.t("tui.control_release.select_prompt"),
+                choices=[str(index) for index in range(0, len(releases) + 1)],
+                default="0",
+            )
+            if selected_number == "0":
+                return
+            selected = releases[int(selected_number) - 1]
+            if not Confirm.ask(i18n.t("tui.control_release.confirm_update", tag=selected.tag), default=True):
+                return
+            try:
+                with console.status(i18n.t("tui.control_release.installing", tag=selected.tag)):
+                    result = install_release(selected, log=lambda message: console.print(f"[dim]{message}[/dim]"))
+            except ControlReleaseError as exc:
+                console.print(i18n.t("tui.control_release.failed", error=str(exc)))
+                return
+            restart = subprocess.run(
+                ["systemctl", "restart", "vhackintosh-agent.service", "vhackintosh-web.service"],
+                capture_output=True, text=True, check=False, timeout=45,
+            )
+            if restart.returncode:
+                detail = (restart.stderr or restart.stdout).strip()[:512]
+                console.print(i18n.t("tui.control_release.restart_failed", error=detail or "systemctl falhou"))
+                return
+            console.print(i18n.t("tui.control_release.updated", tag=result.tag))
+        except ControlReleaseError as exc:
+            console.print(i18n.t("tui.control_release.failed", error=str(exc)))
+        finally:
             Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))
 
     def _menu_build_iso(self) -> None:

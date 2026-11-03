@@ -6,7 +6,7 @@ import {
   LogOut, Monitor, MoreHorizontal, Network, Plus, Power, Settings2, ShieldCheck, Thermometer, Wifi, X,
 } from 'lucide-react';
 import { ApiError, api } from './api/client';
-import type { AuditListResponse, CapabilitiesResponse, GpuInventoryResponse, HealthView, HostOverview, JobAccepted, JobListResponse, JobView, PasswordChangeRequest, PrivateTransferListResponse, ReimsImportCandidateList, ReimsReleaseList, SessionView, StorageInventory, TelemetryResponse, TelemetrySample, TelemetrySettingsView, VmBackupListResponse, VmConfigEnvelope, VmListResponse, VmRuntime, VmRuntimeList, VmSerialConsole, WebActivationView, WebActivationSubmitResponse } from './api/contracts';
+import type { AuditListResponse, CapabilitiesResponse, ControlReleaseList, GpuInventoryResponse, HealthView, HostOverview, JobAccepted, JobListResponse, JobView, PasswordChangeRequest, PrivateTransferListResponse, ReimsImportCandidateList, ReimsReleaseList, SessionView, StorageInventory, TelemetryResponse, TelemetrySample, TelemetrySettingsView, VmBackupListResponse, VmConfigEnvelope, VmListResponse, VmRuntime, VmRuntimeList, VmSerialConsole, WebActivationView, WebActivationSubmitResponse } from './api/contracts';
 import { usePolling } from './api/usePolling';
 import { useEventStream } from './api/useEventStream';
 import VmDeleteAction from './VmDeleteAction';
@@ -1159,6 +1159,59 @@ function ReimsReleaseSettings() {
   </article>;
 }
 
+function ControlReleaseSettings() {
+  const notify = useToast();
+  const navigate = useNavigate();
+  const releases = usePolling<ControlReleaseList>('/settings/control/releases', 300000);
+  const [selectedTag, setSelectedTag] = useState('');
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (selectedTag || !releases.data?.items.length) return;
+    setSelectedTag(releases.data.items[0].tag);
+  }, [releases.data, selectedTag]);
+
+  const selected = releases.data?.items.find((release) => release.tag === selectedTag) ?? null;
+  const update = async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await api.request<JobAccepted>('/settings/control/releases', {
+        method: 'POST',
+        body: JSON.stringify({ tag: selected.tag, idempotency_key: crypto.randomUUID() }),
+      });
+      setConfirmOpen(false);
+      notify(`Atualização do Control ${selected.tag} adicionada às tarefas.`, 'success');
+      navigate('/tasks');
+    } catch (error) {
+      notify(error instanceof Error ? translate(error.message) : translate("Não foi possível atualizar o vHackintosh Control."), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <article className="panel settings-card settings-reims-card">
+    <div className="settings-card-heading"><span className="settings-icon"><ArrowDownToLine size={18}/></span><div><span className="section-kicker">{translate("PAINEL DE CONTROLE")}</span><h2>vHackintosh Control</h2></div><button className="icon-button settings-refresh" type="button" aria-label={translate("Atualizar lista de releases do Control")} title={translate("Atualizar lista")} disabled={releases.loading} onClick={() => void releases.refresh()}><RefreshCw size={16} className={releases.loading ? 'spin' : undefined}/></button></div>
+    <p className="settings-password-help">{translate("Consulte e instale uma release do Control compatível com esta distribuição Linux. Os serviços serão reiniciados após a instalação.")}</p>
+    {releases.error && !releases.data && <div className="settings-empty" role="status">{translate(releases.error.message)}{' '}{translate("Verifique a conexão e tente atualizar a lista.")}</div>}
+    {releases.data && <>
+      <dl className="settings-status-list settings-reims-status"><div><dt>{translate("Versão instalada")}</dt><dd>{releases.data.current_release}</dd></div><div><dt>{translate("Formato do pacote")}</dt><dd>{releases.data.package_format.toUpperCase()}</dd></div><div><dt>{translate("Repositório")}</dt><dd>{releases.data.repository}</dd></div></dl>
+      {releases.error && <p className="settings-card-foot" role="status">{translate("A última lista carregada foi mantida.")}{' '}{translate(releases.error.message)}</p>}
+      {releases.data.items.length ? <div className="settings-reims-form">
+        <label htmlFor="control-release-tag">{translate("Release disponível")}</label>
+        <select id="control-release-tag" value={selectedTag} onChange={(event) => setSelectedTag(event.target.value)}>
+          {releases.data.items.map((release) => <option key={release.tag} value={release.tag}>{release.name} · {release.tag}{release.prerelease ? translate(" · pré-lançamento") : ''}</option>)}
+        </select>
+        {selected && <p className="settings-card-foot">{selected.published_at ? `${translate("Publicada em")} ${formatTimestamp(selected.published_at)} · ` : ''}{formatBytes(selected.asset_size_bytes)}{selected.tag === releases.data.current_release ? translate(" · já está instalado") : ''}</p>}
+        <button className="button button-primary" type="button" disabled={!selected || busy || selected.tag === releases.data.current_release} onClick={() => setConfirmOpen(true)}>{translate("Atualizar Control")}</button>
+      </div> : <div className="settings-empty">{translate("Nenhuma release compatível com esta distribuição foi encontrada.")}</div>}
+      <p className="settings-card-foot">{translate("O pacote e seu checksum são verificados antes da instalação. A operação exige a janela de manutenção livre e reinicia a API e o agente ao terminar.")}</p>
+    </>}
+    {!releases.data && !releases.error && <div className="settings-empty">{translate("Consultando releases do Control…")}</div>}
+    <ConfirmationDialog open={confirmOpen} title={`${translate("Atualizar vHackintosh Control para")} ${selected?.tag ?? ''}?`} description={translate("O pacote nativo desta distribuição será baixado, validado por SHA-256 e instalado pelo gerenciador de pacotes do sistema. A API e o agente locais serão reiniciados após a instalação.")} confirmLabel={translate("Enfileirar atualização")} busy={busy} confirmDisabled={!selected} onClose={() => setConfirmOpen(false)} onConfirm={() => void update()}/>
+  </article>;
+}
+
 function SettingsPage() {
   const notify = useToast();
   const host = usePolling<HostOverview>('/host', 10000);
@@ -1185,7 +1238,7 @@ function SettingsPage() {
   const expires = session.data?.expires_at ? formatTimestamp(session.data.expires_at) : translate("Não informado");
   return <>
     <PageHeading eyebrow="SISTEMA DO APPLIANCE" title={translate("Configurações")} description="Acesso, segurança e estado dos serviços do vHackintosh Control."/>
-    <div className="settings-readonly-note" role="note"><ShieldCheck size={18}/><div><strong>{translate("Acesso administrativo")}</strong><p>{translate("Senha, retenção do histórico e release do Reims podem ser gerenciadas aqui. Rede e certificados continuam somente para consulta.")}</p></div></div>
+    <div className="settings-readonly-note" role="note"><ShieldCheck size={18}/><div><strong>{translate("Acesso administrativo")}</strong><p>{translate("Senha, retenção do histórico e releases do Control e Reims podem ser gerenciadas aqui. Rede e certificados continuam somente para consulta.")}</p></div></div>
     <DataState data={health.data} error={health.error} loading={health.loading} updatedAt={health.updatedAt} staleAfter={20000}/>
     <DataState data={host.data} error={host.error} loading={host.loading} updatedAt={host.updatedAt} staleAfter={20000}/>
     <section className="settings-card-grid" aria-label={translate("Estado e acesso do appliance")}>
@@ -1213,6 +1266,7 @@ function SettingsPage() {
         <p className="settings-card-foot">{translate("Para encerrar a sessão, use a opção de sair no menu do perfil.")}</p>
       </article>
       <TelemetryRetentionSettings/>
+      <ControlReleaseSettings/>
       <ReimsReleaseSettings/>
     </section>
     <section className="settings-password-section" aria-label={translate("Segurança da conta")}><PasswordChangeForm/></section>

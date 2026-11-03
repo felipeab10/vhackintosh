@@ -933,6 +933,26 @@ class ReimsReleaseUpdateRequest(Contract):
     tag: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 
 
+class ControlRelease(Contract):
+    tag: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=160)
+    published_at: datetime | None = None
+    asset_size_bytes: int = Field(ge=0)
+    prerelease: bool = False
+
+
+class ControlReleaseList(Contract):
+    repository: str
+    package_format: Literal["arch", "deb", "rpm"]
+    current_release: str
+    items: list[ControlRelease]
+
+
+class ControlReleaseUpdateRequest(Contract):
+    idempotency_key: str = Field(pattern=r"^[0-9a-f-]{36}$")
+    tag: str = Field(min_length=1, max_length=128, pattern=r"^control-v[0-9A-Za-z.+_-]+$")
+
+
 class VmTelemetry(Contract):
     model_config = ConfigDict(
         extra="forbid", frozen=True,

@@ -24,7 +24,7 @@ def main():
     if len(sys.argv) > 1:
         cmd = sys.argv[1].lower()
         if cmd in ["--help", "-h"]:
-            print("Uso: vhackintosh [start <vm> | list | doctor | update | test-install]")
+            print("Uso: vhackintosh [start <vm> | list | doctor | update | update-control | test-install]")
             return
         elif cmd == "list":
             if agent_is_required():
@@ -42,6 +42,9 @@ def main():
             return
         elif cmd == "update":
             tui._update_upstream()
+            return
+        elif cmd in ["update-control", "control-update"]:
+            tui._menu_control_release()
             return
         elif cmd in ["check", "check-hardware", "preflight"]:
             quiet = "-q" in sys.argv or "--quiet" in sys.argv
