@@ -1798,6 +1798,7 @@ class VMTUI:
         console.clear()
         console.print(centered_banner(console))
         console.print(i18n.t("tui.control_release.menu_title"))
+        wait_for_continue = True
         try:
             from core.control_release import (
                 CONTROL_REPO,
@@ -1806,12 +1807,29 @@ class VMTUI:
                 is_current_release,
                 install_release,
                 list_releases,
+                package_architecture,
+                package_kind,
             )
             if os.geteuid() != 0:
-                console.print(i18n.t("tui.control_release.not_root"))
+                sudo = shutil.which("sudo")
+                if not sudo:
+                    console.print(i18n.t("tui.control_release.not_root"))
+                    return
+                root = Path(__file__).resolve().parent.parent
+                wait_for_continue = False
+                subprocess.run(
+                    [sudo, "--", sys.executable, str(root / "cli" / "main.py"), "update-control"],
+                    check=False,
+                )
                 return
             installed = current_version()
-            console.print(i18n.t("tui.control_release.menu_desc", repo=CONTROL_REPO, installed=installed))
+            console.print(i18n.t(
+                "tui.control_release.menu_desc",
+                repo=CONTROL_REPO,
+                installed=installed,
+                package=package_kind(),
+                architecture=package_architecture(),
+            ))
             with console.status(i18n.t("tui.control_release.checking")):
                 releases = list_releases()
             if not releases:
@@ -1849,7 +1867,8 @@ class VMTUI:
         except ControlReleaseError as exc:
             console.print(i18n.t("tui.control_release.failed", error=str(exc)))
         finally:
-            Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))
+            if wait_for_continue:
+                Prompt.ask(i18n.t("tui.prompt.enter_continue_nl"))
 
     def _menu_build_iso(self) -> None:
         console.clear()

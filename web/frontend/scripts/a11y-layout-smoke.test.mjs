@@ -48,6 +48,21 @@ test('language selector exposes both locales with an accessible native control',
   assert.match(css, /\.login-header\s*\{[^}]*justify-content:\s*space-between/);
 });
 
+test('primary and mobile navigation labels are translated for the selected locale', () => {
+  assert.match(app, /<span>\{translate\(label\)\}<\/span>/);
+  assert.match(app, /aria-label=\{translate\(label\)\}/);
+  assert.match(app, /translate\(navItems\.find\(\(item\) => item\.to === location\.pathname\)\?\.label \?\? 'Gerenciamento'\)/);
+  for (const [source, english] of [
+    ["'Visão geral'", "'Visão geral': 'Overview'"],
+    ["'Máquinas virtuais'", "'Máquinas virtuais': 'Virtual machines'"],
+    ["'Armazenamento'", "'Armazenamento': 'Storage'"],
+    ["'Tarefas'", "'Tarefas': 'Tasks'"],
+  ]) {
+    assert.ok(app.includes(source), `missing navigation source label ${source}`);
+    assert.ok(localeApp.includes(english), `missing English translation ${english}`);
+  }
+});
+
 test('appliance login never asks for the administrator bootstrap code', () => {
   const login = app.slice(app.indexOf('function Login('), app.indexOf('function LoadingSession('));
   assert.doesNotMatch(login, /activationCode|activation-code|session\/bootstrap|Código de configuração do administrador/);

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -58,6 +59,23 @@ def package_kind(os_release: dict[str, str] | None = None) -> str:
     raise ControlReleaseError("A distribuição Linux não tem um pacote Control compatível.")
 
 
+def package_architecture(machine: str | None = None) -> str:
+    """Resolve the native package architecture from the running host."""
+    value = (machine or platform.machine()).strip().lower()
+    architectures = {
+        "x86_64": "x86_64",
+        "amd64": "x86_64",
+        "aarch64": "aarch64",
+        "arm64": "aarch64",
+    }
+    try:
+        return architectures[value]
+    except KeyError as exc:
+        raise ControlReleaseError(
+            f"A arquitetura {value or 'desconhecida'} deste host não tem pacote Control compatível."
+        ) from exc
+
+
 def _os_release() -> dict[str, str]:
     result: dict[str, str] = {}
     try:
@@ -70,14 +88,20 @@ def _os_release() -> dict[str, str]:
     return result
 
 
-def _asset_for(release: dict, kind: str) -> dict | None:
+def _asset_for(release: dict, kind: str, architecture: str | None = None) -> dict | None:
     assets = release.get("assets")
     if not isinstance(assets, list):
         return None
+    architecture = architecture or package_architecture()
+    architecture = architecture.strip().lower()
+    architecture = {"amd64": "x86_64", "arm64": "aarch64"}.get(architecture, architecture)
+    if architecture not in {"x86_64", "aarch64"}:
+        raise ControlReleaseError(f"Arquitetura de pacote não suportada: {architecture}.")
+    deb_architecture = {"x86_64": "amd64", "aarch64": "arm64"}[architecture]
     pattern = {
-        "arch": re.compile(r"^vhackintosh-control-[0-9A-Za-z.+_~-]+-1-x86_64\.pkg\.tar\.zst$"),
-        "deb": re.compile(r"^vhackintosh-control_[0-9A-Za-z.+_~-]+_amd64\.deb$"),
-        "rpm": re.compile(r"^vhackintosh-control-[0-9A-Za-z.+_~-]+-1\.[^.]+\.x86_64\.rpm$"),
+        "arch": re.compile(rf"^vhackintosh-control-[0-9A-Za-z.+_~-]+-1-{re.escape(architecture)}\.pkg\.tar\.zst$"),
+        "deb": re.compile(rf"^vhackintosh-control_[0-9A-Za-z.+_~-]+_{deb_architecture}\.deb$"),
+        "rpm": re.compile(rf"^vhackintosh-control-[0-9A-Za-z.+_~-]+-1\.[^.]+\.{re.escape(architecture)}\.rpm$"),
     }[kind]
     for asset in assets:
         if isinstance(asset, dict) and pattern.fullmatch(str(asset.get("name", ""))):
@@ -110,8 +134,10 @@ def _release_version_key(tag: str) -> tuple:
 
 
 def list_releases(*, kind: str | None = None, os_release: dict[str, str] | None = None,
+                  architecture: str | None = None,
                   include_prerelease: bool = True) -> list[ControlRelease]:
     kind = kind or package_kind(os_release)
+    architecture = architecture or package_architecture()
     runner = shutil.which("curl") or shutil.which("wget")
     if not runner:
         raise ControlReleaseError("É necessário curl ou wget para consultar as releases.")
@@ -144,7 +170,7 @@ def list_releases(*, kind: str | None = None, os_release: dict[str, str] | None 
             prerelease = bool(item.get("prerelease"))
             if prerelease and not include_prerelease:
                 continue
-            asset = _asset_for(item, kind)
+            asset = _asset_for(item, kind, architecture)
             checksum = next((candidate for candidate in item.get("assets", [])
                              if isinstance(candidate, dict) and candidate.get("name") == "SHA256SUMS"), None)
             if not asset or not checksum:
