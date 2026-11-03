@@ -85,6 +85,30 @@ def _asset_for(release: dict, kind: str) -> dict | None:
     return None
 
 
+def _release_version_key(tag: str) -> tuple:
+    """Sort tagged releases by SemVer instead of GitHub publication order."""
+    match = re.fullmatch(
+        r"control-v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?",
+        tag,
+    )
+    if match is None:
+        return (0, 0, 0, 0, 0, ())
+
+    major, minor, patch, prerelease = match.groups()
+    prerelease_key = tuple(
+        (0, int(part)) if part.isdigit() else (1, part)
+        for part in (prerelease or "").split(".") if part
+    )
+    return (
+        1,
+        int(major),
+        int(minor),
+        int(patch),
+        1 if prerelease is None else 0,
+        prerelease_key,
+    )
+
+
 def list_releases(*, kind: str | None = None, os_release: dict[str, str] | None = None,
                   include_prerelease: bool = True) -> list[ControlRelease]:
     kind = kind or package_kind(os_release)
@@ -138,7 +162,7 @@ def list_releases(*, kind: str | None = None, os_release: dict[str, str] | None 
         if len(data) < 100:
             break
         page += 1
-    return releases
+    return sorted(releases, key=lambda release: _release_version_key(release.tag), reverse=True)
 
 
 def current_version(*, package: str | None = None, version_file: Path = VERSION_FILE) -> str:
