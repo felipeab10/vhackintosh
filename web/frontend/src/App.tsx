@@ -100,7 +100,7 @@ function Shell({ username, onLogout }: { username: string; onLogout: () => Promi
   const title = location.pathname === '/' ? translate("Visão geral")
     : location.pathname === '/host' ? translate("Telemetria do host")
       : location.pathname.startsWith('/vms/') ? translate("Máquina virtual")
-      : navItems.find((item) => item.to === location.pathname)?.label ?? 'Gerenciamento';
+      : translate(navItems.find((item) => item.to === location.pathname)?.label ?? 'Gerenciamento');
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">{translate("Pular para o conteúdo")}</a>
     {drawer && <button type="button" className="drawer-backdrop" aria-label={translate("Fechar navegação")} onClick={() => setDrawer(false)} />}
@@ -109,7 +109,7 @@ function Shell({ username, onLogout }: { username: string; onLogout: () => Promi
       <div className="nav-caption">{translate("APPLIANCE")}</div>
       <nav className="primary-nav">
         {navItems.map(({ label, to, icon: Icon }) => <NavLink key={to} to={to} end={to === '/'} onClick={() => setDrawer(false)} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-          <Icon aria-hidden="true" /><span>{label}</span>{label === 'Tarefas' && <span className="nav-count" aria-label={`${activeJobs.data?.total ?? 0} tarefas ativas`}>{activeJobs.data?.total ?? '—'}</span>}
+          <Icon aria-hidden="true" /><span>{translate(label)}</span>{label === 'Tarefas' && <span className="nav-count" aria-label={`${activeJobs.data?.total ?? 0} ${translate('tarefas ativas')}`}>{activeJobs.data?.total ?? '—'}</span>}
         </NavLink>)}
       </nav>
       <div className="nav-caption nav-caption-spaced">{translate("SISTEMA")}</div>
@@ -132,7 +132,7 @@ function Shell({ username, onLogout }: { username: string; onLogout: () => Promi
       <main id="main-content" tabIndex={-1} className="page-content"><Outlet context={{ username, host }} /></main>
       <footer className="app-footer"><span>{translate("vHackintosh Control")}</span><span>{translate("Gerenciamento local do appliance")}</span></footer>
     </section>
-    <nav className="mobile-nav" aria-label={translate("Navegação rápida")} aria-hidden={drawer || undefined} inert={drawer}>{navItems.slice(0, 4).map(({ label, to, icon: Icon }) => <NavLink key={to} to={to} end={to === '/'} aria-label={label} className={({ isActive }) => `mobile-nav-link ${isActive ? 'active' : ''}`}><Icon aria-hidden="true"/><span>{label === 'Máquinas virtuais' ? 'VMs' : label === 'Visão geral' ? translate("Início") : label}</span></NavLink>)}</nav>
+    <nav className="mobile-nav" aria-label={translate("Navegação rápida")} aria-hidden={drawer || undefined} inert={drawer}>{navItems.slice(0, 4).map(({ label, to, icon: Icon }) => <NavLink key={to} to={to} end={to === '/'} aria-label={translate(label)} className={({ isActive }) => `mobile-nav-link ${isActive ? 'active' : ''}`}><Icon aria-hidden="true"/><span>{label === 'Máquinas virtuais' ? 'VMs' : label === 'Visão geral' ? translate("Início") : translate(label)}</span></NavLink>)}</nav>
   </div>;
 }
 

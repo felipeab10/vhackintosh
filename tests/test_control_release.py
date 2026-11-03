@@ -14,6 +14,7 @@ from core.control_release import (
     _verify_checksum,
     is_current_release,
     list_releases,
+    package_architecture,
     package_kind,
 )
 
@@ -29,6 +30,14 @@ class ControlReleaseTests(unittest.TestCase):
         with patch("core.control_release._os_release", return_value={"ID": "cachyos"}):
             self.assertEqual(package_kind(), "arch")
 
+    def test_package_architecture_matches_host_and_rejects_unsupported_hosts(self):
+        self.assertEqual(package_architecture("x86_64"), "x86_64")
+        self.assertEqual(package_architecture("amd64"), "x86_64")
+        self.assertEqual(package_architecture("aarch64"), "aarch64")
+        self.assertEqual(package_architecture("arm64"), "aarch64")
+        with self.assertRaisesRegex(ControlReleaseError, "não tem pacote Control compatível"):
+            package_architecture("riscv64")
+
     def test_release_assets_are_selected_for_the_native_format(self):
         release = {"assets": [
             {"name": "vhackintosh-control_1.0.0-beta.11_amd64.deb"},
@@ -38,6 +47,16 @@ class ControlReleaseTests(unittest.TestCase):
         self.assertEqual(_asset_for(release, "deb")["name"], "vhackintosh-control_1.0.0-beta.11_amd64.deb")
         self.assertEqual(_asset_for(release, "rpm")["name"], "vhackintosh-control-1.0.0.beta.11-1.fc44.x86_64.rpm")
         self.assertEqual(_asset_for(release, "arch")["name"], "vhackintosh-control-1.0.0.beta.11-1-x86_64.pkg.tar.zst")
+
+    def test_release_assets_are_selected_for_the_host_architecture(self):
+        release = {"assets": [
+            {"name": "vhackintosh-control_1.0.0-beta.11_arm64.deb"},
+            {"name": "vhackintosh-control-1.0.0.beta.11-1.fc44.aarch64.rpm"},
+            {"name": "vhackintosh-control-1.0.0.beta.11-1-aarch64.pkg.tar.zst"},
+        ]}
+        self.assertEqual(_asset_for(release, "deb", "aarch64")["name"], "vhackintosh-control_1.0.0-beta.11_arm64.deb")
+        self.assertEqual(_asset_for(release, "rpm", "aarch64")["name"], "vhackintosh-control-1.0.0.beta.11-1.fc44.aarch64.rpm")
+        self.assertEqual(_asset_for(release, "arch", "aarch64")["name"], "vhackintosh-control-1.0.0.beta.11-1-aarch64.pkg.tar.zst")
 
     def test_current_release_matches_package_version_across_formats(self):
         self.assertTrue(is_current_release("control-v1.0.0-beta.11", "1.0.0-beta.11"))

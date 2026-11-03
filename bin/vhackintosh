@@ -17,13 +17,19 @@ if [[ "$required_env" == "1" || "$required_env" == "true" || "$required_env" == 
 fi
 
 needs_agent=0
+needs_root=0
 case "${1:-}" in
     ""|list|start) needs_agent=1 ;;
+    update-control|control-update) needs_root=1 ;;
 esac
 
-if [[ "$agent_required" == "1" && "$needs_agent" == "1" && "$EUID" != "0" ]]; then
+if [[ "$EUID" != "0" && ( "$needs_root" == "1" || ( "$agent_required" == "1" && "$needs_agent" == "1" ) ) ]]; then
     if ! command -v sudo >/dev/null 2>&1; then
-        echo "A TUI precisa de privilégios de administrador para acessar o agente do vHackintosh Control. Instale sudo ou execute como root." >&2
+        if [[ "$needs_root" == "1" ]]; then
+            echo "A atualização do vHackintosh Control precisa de privilégios de administrador. Instale sudo ou execute como root." >&2
+        else
+            echo "A TUI precisa de privilégios de administrador para acessar o agente do vHackintosh Control. Instale sudo ou execute como root." >&2
+        fi
         exit 1
     fi
     exec sudo -- /usr/bin/env "PYTHONPATH=$SCRIPT_DIR" /usr/bin/python3 "$SCRIPT_DIR/cli/main.py" "$@"
