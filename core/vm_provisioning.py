@@ -145,7 +145,7 @@ class VMProvisioningService:
         self.gpu_validator = gpu_validator or self._validate_gpu_selection
         self.storage_root = Path(storage_root) if storage_root is not None else CONFIG_DIR / "vms"
         self.clock = clock
-        self.id_factory = id_factory or (lambda: secrets.token_hex(4))
+        self.id_factory = id_factory or (lambda: secrets.token_hex(8))
         self.supported_versions = frozenset(supported_versions or self._VERSIONS)
 
     def provision(
@@ -343,7 +343,7 @@ class VMProvisioningService:
         for _ in range(16):
             # Use a stable readable prefix when possible, with a random suffix
             # large enough to avoid the wizard's former four-hex collision risk.
-            base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48].strip("-") or "vm"
+            base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:46].strip("-") or "vm"
             candidate = f"{base}-{self.id_factory()}".strip("-")
             if self._ID_RE.fullmatch(candidate) and candidate not in known and not (self.storage_root / candidate).exists():
                 return candidate

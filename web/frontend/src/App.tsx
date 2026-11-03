@@ -960,7 +960,7 @@ function TasksPage() {
   </>;
 }
 
-function PasswordChangeForm({ onComplete }: { onComplete?: () => Promise<void> } = {}) {
+function PasswordChangeForm({ onComplete }: { onComplete?: (result: SessionView) => Promise<void> } = {}) {
   const notify = useToast();
   const summaryRef = useRef<HTMLDivElement>(null);
   const [currentPassword, setCurrentPassword] = useState('');
@@ -1000,7 +1000,7 @@ function PasswordChangeForm({ onComplete }: { onComplete?: () => Promise<void> }
     }
     setBusy(true);
     try {
-      await api.request<SessionView>('/session/password', {
+      const result = await api.request<SessionView>('/session/password', {
         method: 'POST',
         body: JSON.stringify({ current_password: currentPassword, new_password: newPassword } satisfies PasswordChangeRequest),
       });
@@ -1008,9 +1008,16 @@ function PasswordChangeForm({ onComplete }: { onComplete?: () => Promise<void> }
       setNewPassword('');
       setConfirmation('');
       setFieldErrors({});
-      setSuccess(translate("Senha atualizada. As outras sessões foram encerradas."));
-      notify('Senha administrativa atualizada.', 'success');
-      await onComplete?.();
+      const reimsUpdateQueued = result.reims_update_status === 'queued';
+      const reimsUpdateUnavailable = result.reims_update_status === 'unavailable';
+      const message = reimsUpdateQueued
+        ? translate('Senha atualizada. A verificação do Reims foi adicionada às tarefas.')
+        : reimsUpdateUnavailable
+          ? translate('Senha atualizada. Não foi possível verificar o Reims automaticamente; confira Configurações → Reims vGPU.')
+          : translate('Senha atualizada. As outras sessões foram encerradas.');
+      setSuccess(message);
+      notify(message, reimsUpdateUnavailable ? 'error' : 'success');
+      await onComplete?.(result);
     } catch (error) {
       const message = error instanceof Error ? translate(error.message) : translate("Não foi possível atualizar a senha.");
       if (error instanceof ApiError && error.code === 'invalid_current_password') {
@@ -1422,7 +1429,7 @@ function AppContent() {
     return <Login session={session.data} sessionError={session.error} refreshSession={session.refresh}/>;
   }
   if (session.data.must_change_password) {
-    return <div className="login-page"><section className="login-card"><div className="login-header"><Brand/><LanguageSelector/></div><div className="eyebrow"><span className="eyebrow-line"/> {translate('PROTEÇÃO DA CONTA')}</div><h1>{translate('Crie uma nova senha')}</h1><p>{translate('A senha provisória só pode ser usada neste primeiro acesso. Defina uma senha nova para continuar.')}</p><PasswordChangeForm onComplete={async () => { await session.refresh(); navigate('/settings', { replace: true }); }}/></section></div>;
+    return <div className="login-page"><section className="login-card"><div className="login-header"><Brand/><LanguageSelector/></div><div className="eyebrow"><span className="eyebrow-line"/> {translate('PROTEÇÃO DA CONTA')}</div><h1>{translate('Crie uma nova senha')}</h1><p>{translate('A senha provisória só pode ser usada neste primeiro acesso. Defina uma senha nova para continuar.')}</p><PasswordChangeForm onComplete={async (result) => { await session.refresh(); navigate(result.reims_update_status === 'queued' ? '/tasks' : '/settings', { replace: true }); }}/></section></div>;
   }
   const vmEditorRoute = <Suspense fallback={<div className="data-state" role="status">{translate('Carregando configuração da VM…')}</div>}><VmEditor/></Suspense>;
   return <Routes><Route path="/login" element={<Navigate to="/" replace/>}/><Route element={<Shell username={session.data.username ?? 'Administrador'} onLogout={async () => { window.location.replace('/login'); }}/> }><Route index element={<Overview/>}/><Route path="host" element={<HostPage/>}/><Route path="vms" element={<Vms/>}/><Route path="vms/new" element={vmEditorRoute}/><Route path="vms/:vmId/edit" element={vmEditorRoute}/><Route path="vms/:vmId/*" element={<VmDetail/>}/><Route path="gpu" element={<ResourcePage page="GPU"/>}/><Route path="storage" element={<ResourcePage page="Armazenamento"/>}/><Route path="tasks" element={<TasksPage/>}/><Route path="settings" element={<SettingsPage/>}/><Route path="*" element={<Overview/>}/></Route></Routes>;

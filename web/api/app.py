@@ -1094,11 +1094,34 @@ def create_app(
             limiter.failed(key)
             raise HTTPException(status_code=401, detail={"code": "invalid_current_password", "message": "A senha atual está incorreta."})
         limiter.succeeded(key)
+        initial_password_rotation = bool(session.get("must_change_password"))
         changed = await _call(auth.change_password, session["username"], payload.new_password)
         if not changed:
             raise HTTPException(status_code=409, detail={"code": "administrator_missing", "message": "A conta administrativa não está disponível. Faça login novamente."})
         token, csrf, expires = await _call(auth.create_session, session["username"])
         _set_session_cookies(response, token, csrf, cookie_secure)
+        reims_update_status: Literal["queued", "unavailable"] | None = None
+        reims_update_job_id: str | None = None
+        if initial_password_rotation:
+            # Password rotation must succeed even when the agent is offline.
+            # The agent job checks the latest release and skips installation
+            # when the appliance already has that version.
+            reims_update_status = "unavailable"
+            svc = app.state.agent
+            if svc is not None:
+                method = getattr(svc, "update_reims_release", None)
+                try:
+                    if method is not None and await _call(svc.is_connected):
+                        accepted = JobAccepted.model_validate(await _call(method, ReimsReleaseUpdateRequest(
+                            idempotency_key=str(uuid.uuid4()),
+                            tag="latest",
+                        )))
+                        reims_update_status = "queued"
+                        reims_update_job_id = accepted.job_id
+                except Exception:
+                    # The user can continue; the UI will point to the manual
+                    # Reims update action if this optional enqueue fails.
+                    pass
         return SessionView(
             authenticated=True,
             username=session["username"],
@@ -1107,6 +1130,8 @@ def create_app(
             must_change_password=False,
             default_credentials_available=False,
             tls_fingerprint=app.state.tls_fingerprint,
+            reims_update_status=reims_update_status,
+            reims_update_job_id=reims_update_job_id,
         )
 
     @app.get("/api/v1/host", response_model=HostOverview)

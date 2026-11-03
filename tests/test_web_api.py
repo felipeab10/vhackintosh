@@ -367,6 +367,9 @@ class WebApiTests(unittest.TestCase):
         )
         self.assertEqual(changed.status_code, 200, changed.text)
         self.assertFalse(changed.json()["must_change_password"])
+        self.assertEqual(changed.json()["reims_update_status"], "queued")
+        self.assertEqual(changed.json()["reims_update_job_id"], "release-job")
+        self.assertEqual(self.client.app.state.agent.last_reims_release_request.tag, "latest")
         self.assertFalse(self.client.get("/api/v1/session").json()["default_credentials_available"])
         self.assertEqual(self.client.get("/api/v1/host").status_code, 200)
 
@@ -547,6 +550,7 @@ class WebApiTests(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()["username"], "admin")
+            self.assertIsNone(response.json()["reims_update_status"])
             self.assertEqual(self.client.get("/api/v1/host").status_code, 200)
             self.assertEqual(other.get("/api/v1/host").status_code, 401)
 
@@ -572,6 +576,23 @@ class WebApiTests(unittest.TestCase):
             self.assertNotIn("new secure password", str(audit))
         finally:
             other.close()
+
+    def test_initial_password_change_succeeds_if_reims_update_cannot_be_queued(self) -> None:
+        self.assertTrue(self.auth.ensure_default_admin())
+        login = self.client.post(
+            "/api/v1/session/login", headers=origin(),
+            json={"username": "admin", "password": "vhackintosh"},
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+        self.client.app.state.agent.update_reims_release = lambda _request: (_ for _ in ()).throw(RuntimeError("offline"))
+        response = self.client.post(
+            "/api/v1/session/password",
+            headers={**origin(), "X-CSRF-Token": self.client.cookies.get("vh_csrf")},
+            json={"current_password": "vhackintosh", "new_password": "a new secure password"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["reims_update_status"], "unavailable")
+        self.assertFalse(response.json()["must_change_password"])
 
     def test_password_change_requires_csrf_and_validates_current_password(self) -> None:
         self.bootstrap()

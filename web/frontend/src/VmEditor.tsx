@@ -172,8 +172,9 @@ export default function VmEditor() {
   }, [job?.id, job?.state]);
 
   useEffect(() => {
-    if (job?.state !== 'succeeded' || !draft.id) return;
+    if (job?.state !== 'succeeded') return;
     const provisionedVmId = typeof job.result.vm_id === 'string' ? job.result.vm_id : draft.id;
+    if (!provisionedVmId) return;
     const timer = window.setTimeout(() => navigate(`/vms/${encodeURIComponent(provisionedVmId)}/summary`, { replace: true }), 1600);
     return () => window.clearTimeout(timer);
   }, [job?.state, draft.id, navigate]);
@@ -208,7 +209,7 @@ export default function VmEditor() {
   const displayWidth = Number((draft.display_resolution || '1920x1080').split('x')[0]);
   const validate = () => {
     const errors: Record<string, string> = {};
-    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(draft.id.trim())) errors.id = t('Use até 63 caracteres: letras minúsculas, números ou hífen.');
+    if (isEdit && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(draft.id.trim())) errors.id = t('Use até 63 caracteres: letras minúsculas, números ou hífen.');
     if (draft.name.trim().length < 1 || draft.name.trim().length > 80) errors.name = t('Informe um nome de até 80 caracteres.');
     if (draft.network_mac.trim() && (!/^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(draft.network_mac.trim()) || (Number.parseInt(draft.network_mac.slice(0, 2), 16) & 1) === 1)) errors.network_mac = t('Informe um MAC unicast com seis pares hexadecimais.');
     if (draft.network_ssh_port.trim()) {
@@ -249,7 +250,7 @@ export default function VmEditor() {
     try {
       if (!isEdit) {
         const payload: VmProvisionRequest = {
-          idempotency_key: crypto.randomUUID(), id: draft.id.trim(), name: draft.name.trim(), macos_version: draft.macos_version,
+          idempotency_key: crypto.randomUUID(), name: draft.name.trim(), macos_version: draft.macos_version,
           vcpus: Number(draft.vcpus), ram_gb: Number(draft.ram_gb), disk_size_gb: Number(draft.disk_size_gb),
           cpu_model: draft.cpu_model,
           ...(topologyAvailable ? { cpu_topology: draft.cpu_topology_enabled ? {
@@ -315,7 +316,7 @@ export default function VmEditor() {
     {saved && isEdit && <div className="inline-message success-message" role="status"><Check size={16}/>{t('Configuração salva. Abrindo a página da VM…')}</div>}
     <form className="vm-editor-form" onSubmit={save} noValidate>
       <section className="panel vm-editor-section"><div className="vm-editor-section-heading"><span className="vm-editor-section-icon"><Server size={18}/></span><div><h2>{t('Identificação')}</h2><p>{t('Nome e versão do sistema oferecido pelo vHackintosh.')}</p></div></div><div className="vm-editor-grid">
-        <Field label={t('Identificador')} hint={t('Letras minúsculas, números e hífen. Não pode ser alterado depois da criação.')} error={fieldErrors.id}><input required disabled={isEdit} autoComplete="off" value={draft.id} onChange={(e) => update('id', e.target.value.toLowerCase())}/></Field>
+        <Field label={t('Identificador')} hint={isEdit ? t('Não pode ser alterado depois da criação.') : t('Gerado automaticamente ao criar a VM, com sufixo exclusivo.')} error={fieldErrors.id}><input readOnly autoComplete="off" value={draft.id} placeholder={isEdit ? undefined : t('Gerado automaticamente')}/></Field>
         <Field label={t('Nome da VM')} error={fieldErrors.name}><input required maxLength={80} value={draft.name} onChange={(e) => update('name', e.target.value)}/></Field>
         <Field label={t('Versão macOS')} hint={isEdit ? t('A versão instalada não pode ser alterada editando a VM.') : t('Versões atualmente oferecidas pelo assistente do vHackintosh.')}><select disabled={isEdit} value={draft.macos_version} onChange={(e) => update('macos_version', e.target.value)}><option value="sequoia">{t('macOS Sequoia 15 · estável')}</option><option value="tahoe">{t('macOS Tahoe 26 · experimental')}</option><option value="ventura">{t('macOS Ventura 13 · legado')}</option></select></Field>
       </div></section>
