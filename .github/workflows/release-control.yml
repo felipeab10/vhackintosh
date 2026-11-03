@@ -3,6 +3,7 @@ name: Release vHackintosh Control
 on:
   pull_request:
     paths:
+      - ".github/workflows/release-control.yml"
       - "web/**"
       - "core/**"
       - "appliance/archiso/airootfs/etc/systemd/system/vhackintosh-*.service"
@@ -82,6 +83,26 @@ jobs:
           code=$(curl --silent --insecure -b /tmp/vh-cookies.txt -o /tmp/vh-blocked.json -w '%{http_code}' https://127.0.0.1:8443/api/v1/host)
           test "$code" = 403
           python3 -c 'import json; assert json.load(open("/tmp/vh-blocked.json"))["code"] == "password_change_required"'
+      - name: Verify Arch upgrade from legacy directory install
+        run: |
+          mkdir -p /tmp/vh-arch-upgrade/old
+          curl --fail --silent --show-error --location \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/control-v1.0.0-beta.11/vhackintosh-control-1.0.0.beta.11-1-x86_64.pkg.tar.zst" \
+            -o /tmp/vh-arch-upgrade/old/vhackintosh-control-1.0.0.beta.11-1-x86_64.pkg.tar.zst
+          docker run --rm \
+            --volume "$PWD/dist:/new:ro" \
+            --volume /tmp/vh-arch-upgrade/old:/old:ro \
+            archlinux:base bash -euc '
+              pacman -Sy --noconfirm >/dev/null
+              pacman -U --noconfirm --nodeps /old/*.pkg.tar.zst >/dev/null
+              mkdir -p /opt/vhackintosh/web/current
+              echo legacy > /opt/vhackintosh/web/current/unmanaged-file
+              pacman -U --noconfirm --nodeps /new/*.pkg.tar.zst
+              test -L /opt/vhackintosh/web/current
+              target="$(readlink -f /opt/vhackintosh/web/current)"
+              test -s "$target/templates/OVMF_CODE_4M.fd"
+              find /opt/vhackintosh/web/bundles -path "*/unmanaged-file" -exec grep -qx legacy {} \;
+            '
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/control-v')
         env:

@@ -186,9 +186,17 @@ container_build "${VHACK_ARCH_IMAGE:-archlinux:latest}" "$PAYLOAD_ARCH" bash -eu
   cp -a /payload /tmp/vhackintosh-package-payload
   bash /src/packaging/common/install-python-deps.sh /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current/requirements.lock
   PYTHONPATH=/src python3 /src/packaging/common/refresh-control-bundle.py /tmp/vhackintosh-package-payload
+  # Arch may have an unowned legacy directory at this path from an earlier
+  # install. Do not include the symlink in the transaction; create it in the
+  # package scriptlet after pacman has safely replaced owned package files.
+  rm /tmp/vhackintosh-package-payload/opt/vhackintosh/web/current
   bash /src/packaging/arch/build-package.sh "$VHACK_CONTROL_VERSION" /tmp/vhackintosh-package-payload /out
   package="/out/vhackintosh-control-${VHACK_CONTROL_VERSION//-/.}-1-x86_64.pkg.tar.zst"
   pacman -Qp "$package" >/dev/null
+  if pacman -Qpql "$package" | grep -Fxq "/opt/vhackintosh/web/current"; then
+    echo "Arch package must activate web/current from its install scriptlet, not the package payload" >&2
+    exit 1
+  fi
   if pacman -Qpql "$package" | grep -E "(^|/)__pycache__/|\\.py[co]$"; then
     echo "refusing to publish Python bytecode caches in the Arch package" >&2
     exit 1
