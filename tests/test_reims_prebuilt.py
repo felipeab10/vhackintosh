@@ -353,6 +353,48 @@ class LegacyRomIsNotMistakenForTheVgpuRomTests(unittest.TestCase):
         _make_release_tree(self.reims)
         reims_release._verify_tree(self.reims)  # não levanta
 
+    def test_verify_tree_accepts_reims_graphics_device_and_its_rom(self):
+        build = self.reims / "vendor" / "qemu" / "build"
+        (build / "bin").mkdir(parents=True, exist_ok=True)
+        (build / "bin" / "qemu-system-x86_64").write_bytes(
+            b"ELF\x00apple-gfx-pci\x00reims-graphics-pci\x00"
+        )
+        rom = self.reims / "firmware" / "prebuilt" / "ReimsGraphics.rom"
+        rom.parent.mkdir(parents=True)
+        rom.write_bytes(b"graphics-rom")
+
+        self.assertEqual(reims_release._device_of_this_binary(build / "bin" / "qemu-system-x86_64"), "graphics")
+        reims_release._verify_tree(self.reims)
+
+    def test_verify_tree_refuses_reims_graphics_without_its_rom(self):
+        build = self.reims / "vendor" / "qemu" / "build"
+        (build / "bin").mkdir(parents=True, exist_ok=True)
+        (build / "bin" / "qemu-system-x86_64").write_bytes(
+            b"ELF\x00apple-gfx-pci\x00reims-graphics-pci\x00"
+        )
+
+        with self.assertRaises(reims_release.ReleaseError) as ctx:
+            reims_release._verify_tree(self.reims)
+        self.assertIn("ReimsGraphics.rom", str(ctx.exception))
+
+    def test_install_copies_reims_graphics_rom_with_its_name(self):
+        build = self.reims / "vendor" / "qemu" / "build"
+        (build / "bin").mkdir(parents=True, exist_ok=True)
+        qemu = build / "bin" / "qemu-system-x86_64"
+        qemu.write_bytes(b"ELF\x00apple-gfx-pci\x00reims-graphics-pci\x00")
+        qemu.chmod(0o755)
+        rom = self.reims / "firmware" / "prebuilt" / "ReimsGraphics.rom"
+        rom.parent.mkdir(parents=True)
+        rom.write_bytes(b"graphics-rom")
+
+        destination = Path(self.tmp.name) / "user-data"
+        with patch.object(reims_build, "qemu_data_dir", return_value=destination):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(reims_build.install_prebuilt(self.reims))
+
+        installed = destination / "qemu" / "prebuilt" / "share" / "qemu" / "ReimsGraphics.rom"
+        self.assertEqual(installed.read_bytes(), b"graphics-rom")
+
 
 class BinaryGenerationQuadrantTests(unittest.TestCase):
     """Os 4 quadrantes de `_binary_wants_the_new_rom_name`.
@@ -410,6 +452,14 @@ class BinaryGenerationQuadrantTests(unittest.TestCase):
             reims_release._binary_wants_the_new_rom_name(
                 self._binario(device="reims-vgpu-pci", versao="11.0.50")
             )
+        )
+
+    def test_reims_graphics_is_recognized_even_with_apple_gfx_compatibility(self):
+        self.assertEqual(
+            reims_release._device_of_this_binary(
+                self._binario(device="apple-gfx-pci\x00reims-graphics-pci")
+            ),
+            "graphics",
         )
 
     def test_device_novo_com_a_string_da_rom_removida_e_a_geracao_nova(self):
@@ -790,6 +840,23 @@ class PrebuiltMotorInstallTests(unittest.TestCase):
         ):
             self.assertTrue(reims_build.install_prebuilt(self.reims))
         self.assertTrue((self.home / ".cargo" / "bin" / "reims-ctl").is_file())
+
+    def test_matching_reims_util_from_the_bundle_is_installed_beside_the_motor(self):
+        util = self.reims / "bin" / "reims-util"
+        util.parent.mkdir(parents=True, exist_ok=True)
+        util.write_text("#!/bin/sh\necho matching util\n", encoding="utf-8")
+        util.chmod(0o644)
+        self._com_motor()
+
+        with patch.object(reims_build, "qemu_data_dir", lambda: self.data), patch.dict(
+            os.environ, {"HOME": str(self.home)}
+        ):
+            self.assertTrue(reims_build.install_prebuilt(self.reims))
+
+        installed = self.home / ".cargo" / "bin" / "reims-util"
+        self.assertTrue(installed.is_file())
+        self.assertTrue(os.access(installed, os.X_OK))
+        self.assertEqual(installed.read_text(encoding="utf-8"), "#!/bin/sh\necho matching util\n")
 
     def test_switching_release_updates_the_matching_reims_ctl_too(self):
         """Rollback deve trocar o controlador junto com a versão do QEMU."""

@@ -59,6 +59,7 @@ PREBUILT_QEMU_RELS = (
 )
 # A ROM do vGPU: o binário a procura por este nome, relativo ao próprio prefixo.
 PREBUILT_ROM_NAME = "ReimsVgpu.rom"
+PREBUILT_GRAPHICS_ROM_NAME = "ReimsGraphics.rom"
 PREBUILT_MARKER_REL = Path(".release")
 PREBUILT_PROVENANCE_REL = Path("SOURCE-PROVENANCE.txt")
 
@@ -69,6 +70,10 @@ PREBUILT_PROVENANCE_REL = Path("SOURCE-PROVENANCE.txt")
 PREBUILT_REIMS_CTL_RELS = (
     Path("bin/reims-ctl"),
     Path("reims-ctl"),
+)
+PREBUILT_REIMS_UTIL_RELS = (
+    Path("bin/reims-util"),
+    Path("reims-util"),
 )
 
 
@@ -104,6 +109,25 @@ def prebuilt_rom(reims_dir: Path) -> Optional[Path]:
         for achado in sorted(reims_dir.rglob(PREBUILT_ROM_NAME)):
             if achado.is_file():
                 return achado
+    except OSError:
+        pass
+    return None
+
+
+def prebuilt_graphics_rom(reims_dir: Path) -> Optional[Path]:
+    """ROM do novo dispositivo PCI `reims-graphics-pci`, se a release a trouxer."""
+    candidates = [
+        reims_dir / "firmware" / "prebuilt" / PREBUILT_GRAPHICS_ROM_NAME,
+        reims_dir / "vendor" / "qemu" / "build" / "share" / "qemu" / PREBUILT_GRAPHICS_ROM_NAME,
+        reims_dir / "vendor" / "qemu" / "pc-bios" / PREBUILT_GRAPHICS_ROM_NAME,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    try:
+        for candidate in sorted(reims_dir.rglob(PREBUILT_GRAPHICS_ROM_NAME)):
+            if candidate.is_file():
+                return candidate
     except OSError:
         pass
     return None
@@ -174,6 +198,15 @@ def prebuilt_reims_ctl(reims_dir: Path) -> Optional[Path]:
         candidato = reims_dir / rel
         if candidato.is_file():
             return candidato
+    return None
+
+
+def prebuilt_reims_util(reims_dir: Path) -> Optional[Path]:
+    """The matching reims-util, used to regenerate OpenCore without a local build."""
+    for rel in PREBUILT_REIMS_UTIL_RELS:
+        candidate = reims_dir / rel
+        if candidate.is_file():
+            return candidate
     return None
 
 
@@ -621,6 +654,23 @@ def install_prebuilt(reims_dir: Path, *, reservation_vm_id: str | None = None) -
         return False
 
 
+def _install_bundled_executable(source: Path, destination: Path, name: str) -> None:
+    """Replace a bundled helper atomically so a concurrent caller sees one complete binary."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{name}.", dir=destination.parent)
+    temporary = Path(temp_name)
+    try:
+        with os.fdopen(fd, "wb") as out, source.open("rb") as inp:
+            shutil.copyfileobj(inp, out)
+            out.flush()
+            os.fsync(out.fileno())
+        temporary.chmod(0o755)
+        os.replace(temporary, destination)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def _install_prebuilt_atomic(reims_dir: Path) -> bool:
     """Instala o QEMU pré-compilado da release no prefixo que o appliance usa.
 
@@ -662,11 +712,19 @@ def _install_prebuilt_atomic(reims_dir: Path) -> bool:
         and os.access(ctl_dest, os.X_OK)
         and filecmp.cmp(ctl_src, ctl_dest, shallow=False)
     )
+    util_src = prebuilt_reims_util(reims_dir)
+    util_dest = reims_ctl_install_dir() / "reims-util"
+    util_ok = util_src is None or (
+        util_dest.is_file()
+        and os.access(util_dest, os.X_OK)
+        and filecmp.cmp(util_src, util_dest, shallow=False)
+    )
     if (
         atual == safe
         and dest.is_file()
         and os.access(dest, os.X_OK)
         and ctl_ok
+        and util_ok
     ):
         return True
 
@@ -705,6 +763,12 @@ def _install_prebuilt_atomic(reims_dir: Path) -> bool:
             else:
                 print("  aviso: a release não trouxe a ROM do vGPU (ReimsVgpu.rom)")
 
+        graphics_rom = prebuilt_graphics_rom(reims_dir)
+        if graphics_rom is not None:
+            rom_dest = staging / "share" / "qemu"
+            rom_dest.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(graphics_rom, rom_dest / PREBUILT_GRAPHICS_ROM_NAME)
+
         # As demais ROMs do QEMU (pxe, vgabios) acompanham a do vGPU.
         for origem, destino in (
             (reims_dir / "vendor" / "qemu" / "build" / "share" / "qemu", staging / "share" / "qemu"),
@@ -741,19 +805,9 @@ def _install_prebuilt_atomic(reims_dir: Path) -> bool:
         # reims-ctl has a stable lookup path. Replace via a same-directory
         # temporary file so readers see either the old executable or the new.
         if ctl_src is not None and not ctl_ok:
-            ctl_dest.parent.mkdir(parents=True, exist_ok=True)
-            fd, ctl_temp_name = tempfile.mkstemp(prefix=".reims-ctl.", dir=ctl_dest.parent)
-            ctl_temp = Path(ctl_temp_name)
-            try:
-                with os.fdopen(fd, "wb") as out, ctl_src.open("rb") as inp:
-                    shutil.copyfileobj(inp, out)
-                    out.flush()
-                    os.fsync(out.fileno())
-                ctl_temp.chmod(0o755)
-                os.replace(ctl_temp, ctl_dest)
-            except Exception:
-                ctl_temp.unlink(missing_ok=True)
-                raise
+            _install_bundled_executable(ctl_src, ctl_dest, "reims-ctl")
+        if util_src is not None and not util_ok:
+            _install_bundled_executable(util_src, util_dest, "reims-util")
 
         link = base / "current"
         if link.is_dir() and not link.is_symlink():
@@ -782,6 +836,8 @@ def _install_prebuilt_atomic(reims_dir: Path) -> bool:
     print(f"  QEMU pré-compilado instalado em {dest} (release {origin})")
     if ctl_src is not None:
         print(f"  motor reims-ctl instalado em {ctl_dest} (release {origin})")
+    if util_src is not None:
+        print(f"  auxiliar reims-util instalado em {util_dest} (release {origin})")
     else:
         # Sem motor no bundle E sem nenhum utilizável no sistema a ISO instala o
         # QEMU e ainda assim não sobe VM (o appliance não tem motor de reserva).

@@ -44,7 +44,7 @@ DEFAULT_REIMS_DIR = Path("/opt/reims-vgpu")
 # import falhar (uso isolado do módulo), cai no caminho novo.
 try:
     from core.reims_build import PREBUILT_QEMU_RELS as _QEMU_RELS
-    from core.reims_build import legacy_gop_rom, prebuilt_rom
+    from core.reims_build import legacy_gop_rom, prebuilt_graphics_rom, prebuilt_rom
 
     PREBUILT_QEMU_REL = _QEMU_RELS[0]
 except Exception:  # pragma: no cover - só quando importado fora do pacote
@@ -55,6 +55,9 @@ except Exception:  # pragma: no cover - só quando importado fora do pacote
         return None
 
     def legacy_gop_rom(reims_dir: Path) -> None:  # type: ignore[misc]
+        return None
+
+    def prebuilt_graphics_rom(reims_dir: Path) -> None:  # type: ignore[misc]
         return None
 MARKER_REL = Path(".release")
 
@@ -120,7 +123,7 @@ _VERIFY_NOTES: list[str] = []
 
 
 def _device_of_this_binary(qemu: Path) -> Optional[str]:
-    """Qual device de GPU virtual este binário traz: `"novo"`, `"antigo"`.
+    """Qual device de GPU virtual este binário traz: `"graphics"`, `"novo"`, `"antigo"`.
 
     O sinal é o NOME DO DEVICE compilado, e a razão de não usar o nome da ROM é
     que aquele sinal era APENAS NEGATIVO: a ausência de `ReimsVgpu.rom` era lida
@@ -152,8 +155,13 @@ def _device_of_this_binary(qemu: Path) -> Optional[str]:
     except OSError:
         # Binário ilegível: sem como saber, os chamadores recusam.
         return None
+    tem_graphics = b"reims-graphics-pci" in dados
     tem_novo = b"apple-gfx-pci" in dados
     tem_antigo = b"reims-vgpu-pci" in dados
+    # A geração development mantém apple-gfx-pci para compatibilidade e soma
+    # reims-graphics-pci. Esse nome identifica o dispositivo novo por si só.
+    if tem_graphics:
+        return None if tem_antigo else "graphics"
     if tem_novo == tem_antigo:  # nenhum dos dois, ou os dois: ambíguo
         return None
     return "novo" if tem_novo else "antigo"
@@ -362,6 +370,21 @@ def _verify_tree(reims_dir: Path) -> None:
     # ocorrências de `ReimsVgpu.rom`; o 11.1.50 atual dá 1). Rejeitar as duas
     # releases publicadas por "ROM errada" seria regressão: para aquele binário,
     # a ROM antiga É a certa, e vem no mesmo pacote.
+    qemu_device = _device_of_this_binary(qemu)
+    graphics_rom = prebuilt_graphics_rom(reims_dir)
+    if qemu_device == "graphics":
+        if graphics_rom is None:
+            raise ReleaseError(
+                "a release traz reims-graphics-pci, mas não trouxe "
+                "ReimsGraphics.rom; nada foi trocado"
+            )
+        return
+    if graphics_rom is not None:
+        raise ReleaseError(
+            "a release traz ReimsGraphics.rom, mas o QEMU não anuncia "
+            "reims-graphics-pci; nada foi trocado"
+        )
+
     rom_nova = prebuilt_rom(reims_dir)
     rom_antiga = legacy_gop_rom(reims_dir)
     if rom_nova is None and rom_antiga is None:
