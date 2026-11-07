@@ -194,11 +194,9 @@ def list_releases(*, kind: str | None = None, os_release: dict[str, str] | None 
 def current_version(*, package: str | None = None, version_file: Path = VERSION_FILE) -> str:
     if package:
         return package
-    try:
-        value = version_file.read_text(encoding="utf-8").strip()
-        return value or "desconhecida"
-    except OSError:
-        pass
+    # The native package database is authoritative after an upgrade. The marker
+    # is also shipped inside the package and can remain stale if the filesystem
+    # refuses to replace it (for example, when /usr is mounted read-only).
     for command in (("pacman", "-Q", "vhackintosh-control"),
                     ("dpkg-query", "-W", "-f=${Version}", "vhackintosh-control"),
                     ("rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", "vhackintosh-control")):
@@ -207,7 +205,29 @@ def current_version(*, package: str | None = None, version_file: Path = VERSION_
         result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=10)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip().split()[-1]
+    try:
+        value = version_file.read_text(encoding="utf-8").strip()
+        return value or "desconhecida"
+    except OSError:
+        pass
     return "desconhecida"
+
+
+def _write_installed_version(version: str, *, version_file: Path = VERSION_FILE) -> None:
+    """Publish the installed release marker even when the package manager keeps an old file."""
+    version_file.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{version_file.name}.", dir=version_file.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(version + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, version_file)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def is_current_release(tag: str, installed: str) -> bool:
@@ -315,6 +335,15 @@ def install_release(release: ControlRelease, *, kind: str | None = None,
         if result.returncode:
             detail = (result.stderr or result.stdout).strip()[-1000:]
             raise ControlReleaseError(detail or "O gerenciador de pacotes recusou a atualização.")
+    try:
+        _write_installed_version(release.tag.removeprefix("control-v"))
+    except OSError as exc:
+        logger(
+            f"AVISO: pacote instalado como {release.tag}, mas não foi possível atualizar "
+            f"o marcador de versão: {exc}"
+        )
+    else:
+        logger(f"Marcador de versão atualizado para {release.tag}")
     if schedule_restart:
         _schedule_restart()
     return ControlUpdateResult(tag=release.tag, previous=previous,

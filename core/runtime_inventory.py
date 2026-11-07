@@ -290,7 +290,7 @@ def _device_categories(devices: list[str]) -> dict[str, list[str]]:
         "network": ("virtio-net-pci", "e1000", "rtl8139"),
         "audio": ("usb-audio", "ich9-intel-hda", "hda-output", "virtio-sound"),
         "usb": ("qemu-xhci", "usb-kbd", "usb-tablet", "usb-host"),
-        "display": ("virtio-vga", "virtio-gpu", "VGA", "vmware-svga", "apple-gfx"),
+        "display": ("virtio-vga", "virtio-gpu", "VGA", "vmware-svga", "apple-gfx", "reims-graphics"),
     }
     return {
         category: [name for name in devices if any(token in name for token in tokens)]
