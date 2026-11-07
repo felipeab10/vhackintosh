@@ -92,6 +92,12 @@ Object.assign(appMessages, {
   "Consultando releases do Control…": "Checking Control releases…",
   "Atualizar vHackintosh Control para": "Update vHackintosh Control to",
   "O pacote nativo desta distribuição será baixado, validado por SHA-256 e instalado pelo gerenciador de pacotes do sistema. A API e o agente locais serão reiniciados após a instalação.": "The native package for this distribution will be downloaded, verified with SHA-256, and installed by the system package manager. The local API and agent will restart after installation.",
+  "Reaplicar release e atualizar OpenCore": "Reapply release and update OpenCore",
+  "Mesmo com a mesma versão selecionada, você pode reaplicá-la para atualizar o OpenCore.": "You can reapply the selected version to update OpenCore, even when it is already prepared.",
+  "Reaplicar Reims e atualizar OpenCore?": "Reapply Reims and update OpenCore?",
+  "Preparar release do Reims?": "Prepare Reims release?",
+  "A release já está na árvore local. O appliance vai conferir ou instalar os binários correspondentes e regenerar o OpenCore de todas as VMs x86-64 gerenciadas, com todas as VMs paradas. A imagem anterior será guardada na pasta de cada VM.": "This release is already in the local tree. The appliance will check or install its matching binaries and regenerate OpenCore for every managed x86-64 VM while all VMs are stopped. The previous image will be saved in each VM's folder.",
+  "O appliance baixará e validará a release selecionada. Com todas as VMs paradas, instalará o runtime e regenerará o OpenCore das VMs x86-64 gerenciadas; as imagens anteriores ficarão em backup.": "The appliance will download and verify the selected release. With all VMs stopped, it will install the runtime and regenerate OpenCore for managed x86-64 VMs; previous images will be backed up.",
   "Enfileirar atualização": "Queue update",
   "Senha, retenção do histórico e releases do Control e Reims podem ser gerenciadas aqui. Rede e certificados continuam somente para consulta.": "Manage the password, history retention, and Control and Reims releases here. Network and certificates remain read-only.",
 });

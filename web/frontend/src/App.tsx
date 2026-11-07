@@ -1119,6 +1119,7 @@ function ReimsReleaseSettings() {
   }, [releases.data, selectedTag]);
 
   const selected = releases.data?.items.find((item) => item.tag === selectedTag) ?? null;
+  const selectedIsPrepared = Boolean(selected && selected.tag === releases.data?.current_release);
   const update = async () => {
     if (!selected) return;
     setBusy(true);
@@ -1150,12 +1151,12 @@ function ReimsReleaseSettings() {
           {releases.data.items.map((release) => <option key={release.tag} value={release.tag}>{release.name} · {release.tag}{release.prerelease ? translate(" · pré-lançamento") : ''}</option>)}
         </select>
         {selected && <p className="settings-card-foot">{selected.published_at ? `Publicada em ${formatTimestamp(selected.published_at)} · ` : ''}{formatBytes(selected.asset_size_bytes)}{selected.tag === releases.data.current_release ? translate(" · já está na árvore local") : ''}</p>}
-        <button className="button button-primary" type="button" disabled={!selected || busy || selected.tag === releases.data.current_release} onClick={() => setConfirmOpen(true)}>{translate("Preparar esta release")}</button>
+        <button className="button button-primary" type="button" disabled={!selected || busy} onClick={() => setConfirmOpen(true)}>{translate(selectedIsPrepared ? "Reaplicar release e atualizar OpenCore" : "Preparar esta release")}</button>
       </div> : <div className="settings-empty">{translate("Nenhuma release compatível com o appliance foi encontrada.")}</div>}
-      <p className="settings-card-foot">{translate("O download só acontece após sua confirmação. A troca exige a janela de manutenção livre e será ativada no próximo início de uma VM; não há download automático ao iniciar.")}</p>
+      <p className="settings-card-foot">{translate("O download só acontece após sua confirmação. Com todas as VMs paradas, o runtime é instalado e os OpenCore das VMs x86-64 gerenciadas são atualizados automaticamente. A identidade do Mac, o picker e as variáveis UEFI são preservados; cada imagem anterior fica em backup na pasta da VM. Personalizações manuais no OpenCore podem ser substituídas.")}{selectedIsPrepared ? ` ${translate("Mesmo com a mesma versão selecionada, você pode reaplicá-la para atualizar o OpenCore.")}` : ''}</p>
     </>}
     {!releases.data && !releases.error && <div className="settings-empty">{translate("Consultando releases do fork…")}</div>}
-    <ConfirmationDialog open={confirmOpen} title={`Preparar Reims ${selected?.tag ?? ''}?`} description={`O appliance baixará e validará a release selecionada de ${releases.data?.repository ?? 'seu fork'}. A atualização só prossegue quando a janela de manutenção estiver livre; o runtime novo será ativado no próximo início de uma VM.`} confirmLabel="Enfileirar atualização" busy={busy} confirmDisabled={!selected} onClose={() => setConfirmOpen(false)} onConfirm={() => void update()}/>
+    <ConfirmationDialog open={confirmOpen} title={translate(selectedIsPrepared ? "Reaplicar Reims e atualizar OpenCore?" : "Preparar release do Reims?")} description={translate(selectedIsPrepared ? "A release já está na árvore local. O appliance vai conferir ou instalar os binários correspondentes e regenerar o OpenCore de todas as VMs x86-64 gerenciadas, com todas as VMs paradas. A imagem anterior será guardada na pasta de cada VM.") : "O appliance baixará e validará a release selecionada. Com todas as VMs paradas, instalará o runtime e regenerará o OpenCore das VMs x86-64 gerenciadas; as imagens anteriores ficarão em backup."} confirmLabel={translate("Enfileirar atualização")} busy={busy} confirmDisabled={!selected} onClose={() => setConfirmOpen(false)} onConfirm={() => void update()}/>
   </article>;
 }
 
