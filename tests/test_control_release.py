@@ -4,11 +4,14 @@ import hashlib
 import json
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.control_release import (
     ControlReleaseError,
+    ControlRelease,
     _asset_for,
     _release_version_key,
     _verify_checksum,
@@ -16,6 +19,7 @@ from core.control_release import (
     list_releases,
     package_architecture,
     package_kind,
+    install_release,
 )
 
 
@@ -117,6 +121,135 @@ class ControlReleaseTests(unittest.TestCase):
             sums.write_text(f"{'0' * 64}  control.pkg\n", encoding="utf-8")
             with self.assertRaises(ControlReleaseError):
                 _verify_checksum(package, sums, "control.pkg")
+
+
+class ControlInstallTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.version_file = self.root / "control-version"
+        self.bundle_file = self.root / "control-bundle-id"
+        self.web_root = self.root / "web"
+        self.current = self.web_root / "current"
+        self.installed_version = "1.0.0.beta.20-1"
+        self.maintenance = False
+        self.commands = []
+        self.activate("1.0.0-beta.20", "a" * 64)
+        self.release = ControlRelease(
+            tag="control-v1.0.0-beta.22", name="Control", published_at="", prerelease=True,
+            asset_name="vhackintosh-control-1.0.0.beta.22-1-x86_64.pkg.tar.zst",
+            asset_url="https://example.invalid/control.pkg", asset_size=7,
+            checksum_url="https://example.invalid/SHA256SUMS",
+        )
+        self.restart = self.enter_patch("_schedule_restart")
+        self.enter_patch("VERSION_FILE", self.version_file)
+        self.enter_patch("BUNDLE_ID_FILE", self.bundle_file)
+        self.enter_patch("WEB_ROOT", self.web_root)
+        self.enter_patch("current_version", side_effect=lambda: self.installed_version)
+        self.enter_patch("os.geteuid", return_value=0)
+        self.enter_patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}")
+        self.enter_patch("_download", side_effect=self.download)
+        self.native_run = self.enter_patch("subprocess.run", side_effect=self.run_installer)
+        guard = patch("core.update_guard.maintenance_window", self.window)
+        guard.start()
+        self.addCleanup(guard.stop)
+
+    def enter_patch(self, name, *args, **kwargs):
+        patched = patch(f"core.control_release.{name}", *args, **kwargs)
+        result = patched.start()
+        self.addCleanup(patched.stop)
+        return result
+
+    def activate(self, version, bundle_id):
+        bundle = self.web_root / "bundles" / bundle_id
+        bundle.mkdir(parents=True, exist_ok=True)
+        (bundle / "BUNDLE.json").write_text(json.dumps({"bundle_id": bundle_id}))
+        self.version_file.write_text(version)
+        self.bundle_file.write_text(bundle_id)
+        self.current.unlink(missing_ok=True)
+        self.current.symlink_to(f"bundles/{bundle_id}")
+
+    def download(self, url, destination):
+        if url.endswith("SHA256SUMS"):
+            digest = hashlib.sha256(b"package").hexdigest()
+            destination.write_text(f"{digest}  {self.release.asset_name}\n")
+        else:
+            destination.write_bytes(b"package")
+
+    @contextmanager
+    def window(self):
+        self.maintenance = True
+        try:
+            yield
+        finally:
+            self.maintenance = False
+
+    def run_installer(self, command, **kwargs):
+        self.assertTrue(self.maintenance)
+        self.commands.append(command)
+        self.assertEqual(command[0], "/usr/bin/systemd-run")
+        self.assertIn("--wait", command)
+        self.assertIn("--pipe", command)
+        self.assertIn("--setenv=VHACKINTOSH_CONTROL_UPDATE_DEFER_RESTART=1", command)
+        self.assertEqual(command[command.index("--") + 1], "/usr/bin/pacman")
+        self.installed_version = "1.0.0.beta.22-1"
+        self.activate("1.0.0-beta.22", "b" * 64)
+        return SimpleNamespace(returncode=0, stdout="installed", stderr="")
+
+    def test_update_replaces_stale_marker_and_bundle_before_scheduling_restart(self):
+        result = install_release(self.release, kind="arch", schedule_restart=True)
+        self.assertTrue(result.changed)
+        self.assertEqual(self.version_file.read_text(), "1.0.0-beta.22")
+        self.assertEqual(self.current.resolve().name, "b" * 64)
+        self.assertFalse(self.maintenance)
+        self.restart.assert_called_once()
+
+    def test_package_database_success_with_stale_marker_is_a_failed_update(self):
+        def partial(command, **kwargs):
+            self.installed_version = "1.0.0.beta.22-1"
+            return SimpleNamespace(returncode=0, stdout="installed", stderr="Read-only file system")
+
+        self.native_run.side_effect = partial
+        with self.assertRaisesRegex(ControlReleaseError, "marcador Control continua em 1.0.0-beta.20"):
+            install_release(self.release, kind="arch", schedule_restart=True)
+        self.restart.assert_not_called()
+        self.assertFalse(self.maintenance)
+
+    def test_new_marker_with_old_active_bundle_is_a_failed_update(self):
+        def partial(command, **kwargs):
+            response = self.run_installer(command, **kwargs)
+            self.current.unlink()
+            self.current.symlink_to(f"bundles/{'a' * 64}")
+            return response
+
+        self.native_run.side_effect = partial
+        with self.assertRaisesRegex(ControlReleaseError, "outro bundle"):
+            install_release(self.release, kind="arch", schedule_restart=True)
+        self.restart.assert_not_called()
+
+    def test_native_install_failure_keeps_markers_and_does_not_restart(self):
+        self.native_run.side_effect = None
+        self.native_run.return_value = SimpleNamespace(returncode=1, stdout="", stderr="package install failed")
+        with self.assertRaisesRegex(ControlReleaseError, "package install failed"):
+            install_release(self.release, kind="arch", schedule_restart=True)
+        self.assertEqual(self.version_file.read_text(), "1.0.0-beta.20")
+        self.restart.assert_not_called()
+
+    def test_busy_vm_prevents_installer_service_from_starting(self):
+        from core.update_guard import MaintenanceBlocked
+
+        with patch("core.update_guard.maintenance_window", side_effect=MaintenanceBlocked("VMs ativas")):
+            with self.assertRaisesRegex(ControlReleaseError, "VMs ativas"):
+                install_release(self.release, kind="arch", schedule_restart=True)
+        self.native_run.assert_not_called()
+        self.restart.assert_not_called()
+
+    def test_missing_systemd_run_does_not_fall_back_to_sandboxed_package_manager(self):
+        with patch("core.control_release.shutil.which", side_effect=lambda name: None if name == "systemd-run" else f"/usr/bin/{name}"):
+            with self.assertRaisesRegex(ControlReleaseError, "systemd-run"):
+                install_release(self.release, kind="arch", schedule_restart=True)
+        self.native_run.assert_not_called()
 
 
 if __name__ == "__main__":

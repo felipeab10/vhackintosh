@@ -83,6 +83,31 @@ jobs:
           code=$(curl --silent --insecure -b /tmp/vh-cookies.txt -o /tmp/vh-blocked.json -w '%{http_code}' https://127.0.0.1:8443/api/v1/host)
           test "$code" = 403
           python3 -c 'import json; assert json.load(open("/tmp/vh-blocked.json"))["code"] == "password_change_required"'
+      - name: Verify self-update from the protected agent environment
+        run: |
+          agent_before=$(systemctl show vhackintosh-agent.service -p InvocationID --value)
+          printf 'stale-before-self-update\n' | sudo tee /usr/lib/vhackintosh/control-version >/dev/null
+          package=$(realpath dist/vhackintosh-control_*_amd64.deb)
+          sudo systemd-run --wait --pipe --collect --service-type=exec \
+            --property=ProtectSystem=full \
+            --property=NoNewPrivileges=yes \
+            --property=WorkingDirectory=/opt/vhackintosh/web/current \
+            --setenv=PYTHONPATH=/opt/vhackintosh/web/current:/opt/vhackintosh/web/current/vendor \
+            /usr/bin/python3 "$PWD/tests/control_update_systemd_smoke.py" "$package"
+          for attempt in $(seq 1 30); do
+            agent_after=$(systemctl show vhackintosh-agent.service -p InvocationID --value)
+            if [[ -n "$agent_after" && "$agent_before" != "$agent_after" ]] && \
+                systemctl is-active --quiet vhackintosh-agent.service vhackintosh-web.service && \
+                curl --fail --silent --show-error --insecure https://127.0.0.1:8443/api/v1/session >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          test -n "$agent_after"
+          test "$agent_before" != "$agent_after"
+          systemctl is-active --quiet vhackintosh-agent.service vhackintosh-web.service
+          test "$(cat /usr/lib/vhackintosh/control-version)" = "$(dpkg-query -W -f='${Version}' vhackintosh-control)"
+          test "$(basename "$(readlink -f /opt/vhackintosh/web/current)")" = "$(cat /usr/lib/vhackintosh/control-bundle-id)"
       - name: Verify Arch upgrade from legacy directory install
         run: |
           mkdir -p /tmp/vh-arch-upgrade/old
