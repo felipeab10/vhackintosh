@@ -210,6 +210,23 @@ def current_version(*, package: str | None = None, version_file: Path = VERSION_
     return "desconhecida"
 
 
+def _write_installed_version(version: str, *, version_file: Path = VERSION_FILE) -> None:
+    """Publish the installed release marker even when the package manager keeps an old file."""
+    version_file.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{version_file.name}.", dir=version_file.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(version + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, version_file)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def is_current_release(tag: str, installed: str) -> bool:
     if tag.startswith("control-v") and installed.startswith("control-v"):
         return tag == installed
@@ -315,6 +332,13 @@ def install_release(release: ControlRelease, *, kind: str | None = None,
         if result.returncode:
             detail = (result.stderr or result.stdout).strip()[-1000:]
             raise ControlReleaseError(detail or "O gerenciador de pacotes recusou a atualização.")
+    try:
+        _write_installed_version(release.tag.removeprefix("control-v"))
+    except OSError as exc:
+        raise ControlReleaseError(
+            "O pacote foi instalado, mas não foi possível atualizar o marcador da versão instalada."
+        ) from exc
+    logger(f"Marcador de versão atualizado para {release.tag}")
     if schedule_restart:
         _schedule_restart()
     return ControlUpdateResult(tag=release.tag, previous=previous,
