@@ -194,11 +194,9 @@ def list_releases(*, kind: str | None = None, os_release: dict[str, str] | None 
 def current_version(*, package: str | None = None, version_file: Path = VERSION_FILE) -> str:
     if package:
         return package
-    try:
-        value = version_file.read_text(encoding="utf-8").strip()
-        return value or "desconhecida"
-    except OSError:
-        pass
+    # The native package database is authoritative after an upgrade. The marker
+    # is also shipped inside the package and can remain stale if the filesystem
+    # refuses to replace it (for example, when /usr is mounted read-only).
     for command in (("pacman", "-Q", "vhackintosh-control"),
                     ("dpkg-query", "-W", "-f=${Version}", "vhackintosh-control"),
                     ("rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", "vhackintosh-control")):
@@ -207,6 +205,11 @@ def current_version(*, package: str | None = None, version_file: Path = VERSION_
         result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=10)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip().split()[-1]
+    try:
+        value = version_file.read_text(encoding="utf-8").strip()
+        return value or "desconhecida"
+    except OSError:
+        pass
     return "desconhecida"
 
 
@@ -335,10 +338,12 @@ def install_release(release: ControlRelease, *, kind: str | None = None,
     try:
         _write_installed_version(release.tag.removeprefix("control-v"))
     except OSError as exc:
-        raise ControlReleaseError(
-            "O pacote foi instalado, mas não foi possível atualizar o marcador da versão instalada."
-        ) from exc
-    logger(f"Marcador de versão atualizado para {release.tag}")
+        logger(
+            f"AVISO: pacote instalado como {release.tag}, mas não foi possível atualizar "
+            f"o marcador de versão: {exc}"
+        )
+    else:
+        logger(f"Marcador de versão atualizado para {release.tag}")
     if schedule_restart:
         _schedule_restart()
     return ControlUpdateResult(tag=release.tag, previous=previous,
