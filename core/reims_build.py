@@ -619,8 +619,18 @@ class BuildError(RuntimeError):
     pass
 
 
-def install_prebuilt(reims_dir: Path, *, reservation_vm_id: str | None = None) -> bool:
-    """Install a release while excluding VM launches in the appliance."""
+def install_prebuilt(
+    reims_dir: Path,
+    *,
+    reservation_vm_id: str | None = None,
+    maintenance_locked: bool = False,
+) -> bool:
+    """Install a release while excluding VM launches in the appliance.
+
+    ``maintenance_locked`` is for callers that already hold the appliance-wide
+    maintenance window across a larger operation, such as updating every
+    managed VM's OpenCore after replacing the bundled Reims runtime.
+    """
     from contextlib import nullcontext
     import filecmp
 
@@ -629,20 +639,26 @@ def install_prebuilt(reims_dir: Path, *, reservation_vm_id: str | None = None) -
     target_dir = qemu_data_dir() / "qemu" / safe
     qemu = target_dir / "bin" / "qemu-system-x86_64"
     ctl_src = prebuilt_reims_ctl(reims_dir)
+    util_src = prebuilt_reims_util(reims_dir)
     ctl_dest = reims_ctl_install_dir() / "reims-ctl"
+    util_dest = reims_ctl_install_dir() / "reims-util"
     ctl_ok = ctl_src is None or (
         ctl_dest.is_file() and os.access(ctl_dest, os.X_OK)
         and filecmp.cmp(ctl_src, ctl_dest, shallow=False)
     )
+    util_ok = util_src is None or (
+        util_dest.is_file() and os.access(util_dest, os.X_OK)
+        and filecmp.cmp(util_src, util_dest, shallow=False)
+    )
     if (prebuilt_current_release() == safe and qemu.is_file()
-            and os.access(qemu, os.X_OK) and ctl_ok):
+            and os.access(qemu, os.X_OK) and ctl_ok and util_ok):
         return True
 
     # Development installs and tests use explicit data directories and should
     # not acquire the appliance-wide maintenance gate.
     appliance_runtime = os.geteuid() == 0 and qemu_data_dir() == Path("/root/.local/share/reims-ctl")
     guard = nullcontext()
-    if appliance_runtime:
+    if appliance_runtime and not maintenance_locked:
         from core.update_guard import maintenance_window
 
         guard = maintenance_window(reservation_vm_id=reservation_vm_id)

@@ -14,6 +14,7 @@ import json
 import shutil
 import stat
 import subprocess
+import tempfile
 import time
 import tomllib
 from datetime import datetime, timezone
@@ -3167,28 +3168,182 @@ class WebAgentService:
         return {"vm_id": result.vm.id, "name": result.vm.name, "disk_path": result.vm.disk_path}
 
     def _run_reims_release_update_job(self, payload: dict[str, Any], context: Any) -> dict[str, Any]:
+        from core import reims_ctl
+        from core.reims_build import (
+            install_prebuilt,
+            prebuilt_reims_ctl,
+            prebuilt_reims_util,
+        )
         from core.reims_release import update_from_release
+        from core.update_guard import maintenance_window
 
         tag = payload.get("tag")
         if not isinstance(tag, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}", tag):
             raise ValueError("Tag da release inválida.")
         context.check_cancelled()
         context.phase("Bloqueando novas partidas e verificando VMs ativas", 0)
-        # From this point the updater may mutate /opt/reims-vgpu and cannot be
-        # interrupted safely. The core updater holds the appliance maintenance
-        # window for the full download, verification, and publication.
         context.checkpoint("reims_release_update_started", {"tag": tag})
-        context.phase(f"Baixando e validando Reims {tag}", 5)
-        result = update_from_release(tag=tag, log=context.log)
-        if not result.ok:
-            raise RuntimeError(result.message or "Não foi possível atualizar o runtime Reims.")
-        context.phase(f"Reims {result.tag} disponível; será ativado no próximo boot", 100)
+        # Keep admission blocked for the whole transition. Otherwise a VM could
+        # boot with the new source tree and old OpenCore between these steps.
+        with maintenance_window():
+            context.phase(f"Baixando e validando Reims {tag}", 5)
+            result = update_from_release(
+                tag=tag,
+                log=context.log,
+                maintenance_locked=True,
+            )
+            if not result.ok:
+                raise RuntimeError(result.message or "Não foi possível atualizar o runtime Reims.")
+
+            reims_directory = Path("/opt/reims-vgpu")
+            ctl_source = prebuilt_reims_ctl(reims_directory)
+            if ctl_source is None or prebuilt_reims_util(reims_directory) is None:
+                raise RuntimeError(
+                    f"A árvore Reims {result.tag} foi atualizada, mas não contém reims-ctl e reims-util "
+                    "compatíveis; os binários ativos e os OpenCore das VMs foram mantidos."
+                )
+            try:
+                help_result = subprocess.run(
+                    [str(ctl_source), "update-opencore", "--help"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise RuntimeError(
+                    "A árvore foi baixada, mas não foi possível validar update-opencore; "
+                    "os binários ativos e os OpenCore das VMs foram mantidos."
+                ) from exc
+            if help_result.returncode != 0 or "update-opencore" not in help_result.stdout:
+                raise RuntimeError(
+                    f"A árvore Reims {result.tag} não anuncia update-opencore; "
+                    "os binários ativos e os OpenCore das VMs foram mantidos."
+                )
+            context.phase(f"Instalando binários Reims {result.tag}", 35)
+            if not install_prebuilt(reims_directory, maintenance_locked=True):
+                raise RuntimeError(
+                    f"A árvore Reims {result.tag} foi atualizada, mas os binários pré-compilados "
+                    "não puderam ser instalados; as VMs não foram modificadas."
+                )
+
+            binary = reims_ctl.reims_ctl_bin()
+            if not binary:
+                raise RuntimeError("Os binários foram instalados, mas reims-ctl não está disponível.")
+
+            self._refresh_catalog()
+            managed_root = (self.store.config_dir / "vms").resolve(strict=False)
+            managed_vms = self.store.list_vms()
+            updated: list[str] = []
+            skipped: list[str] = []
+            failed: list[dict[str, str]] = []
+            total = len(managed_vms)
+            safe_tag = re.sub(r"[^A-Za-z0-9._-]", "_", result.tag)
+
+            for index, vm in enumerate(managed_vms, start=1):
+                context.check_cancelled()
+                context.phase(f"Preparando OpenCore de {vm.name} ({index}/{total})", 40 + 55 * (index - 1) / max(total, 1))
+                context.checkpoint("reims_vm_opencore_started", {"vm_id": vm.id, "tag": result.tag})
+                try:
+                    record = reims_ctl.vm_record(vm.id)
+                    if not isinstance(record, dict) or record.get("state") != "stopped" or record.get("pid") is not None:
+                        raise RuntimeError("o Reims não confirmou que a VM está parada e registrada")
+                    directory_value = record.get("dir")
+                    if not isinstance(directory_value, str) or not directory_value:
+                        raise RuntimeError("o Reims não informou o diretório da VM")
+                    vm_directory = Path(directory_value).expanduser()
+                    try:
+                        resolved_directory = vm_directory.resolve(strict=True)
+                    except OSError as exc:
+                        raise RuntimeError("o diretório registrado da VM não está acessível") from exc
+                    if resolved_directory != managed_root / vm.id or not resolved_directory.is_relative_to(managed_root):
+                        raise RuntimeError("a VM não está dentro do armazenamento gerenciado pelo appliance")
+
+                    projection_path = resolved_directory / "vm.toml"
+                    try:
+                        if projection_path.is_symlink() or not projection_path.is_file():
+                            raise ValueError("projeção ausente ou insegura")
+                        with projection_path.open("rb") as handle:
+                            projection = tomllib.load(handle)
+                        q35 = projection.get("q35")
+                        if not isinstance(q35, dict):
+                            skipped.append(vm.id)
+                            context.log(f"{vm.name}: ignorada; arquitetura sem OpenCore x86-64.")
+                            context.checkpoint("reims_vm_opencore_skipped", {"vm_id": vm.id, "reason": "no-q35"}, completed=True)
+                            continue
+                        opencore_name = q35.get("opencore", "OpenCore.qcow2")
+                        relative_image = Path(opencore_name)
+                        if relative_image.is_absolute() or ".." in relative_image.parts:
+                            raise ValueError("caminho do OpenCore fora do diretório da VM")
+                        image = resolved_directory / relative_image
+                        resolved_image = image.resolve(strict=True)
+                        if (
+                            image.is_symlink()
+                            or resolved_image != image
+                            or not resolved_image.is_relative_to(resolved_directory)
+                            or not resolved_image.is_file()
+                            or resolved_image.stat().st_size <= 0
+                        ):
+                            raise ValueError("imagem OpenCore ausente ou insegura")
+                    except (OSError, ValueError, TypeError, tomllib.TOMLDecodeError) as exc:
+                        raise RuntimeError("não foi possível validar a projeção e a imagem OpenCore") from exc
+
+                    backup = resolved_directory / f".opencore-before-{safe_tag}.qcow2"
+                    if backup.exists():
+                        if backup.is_symlink() or not backup.is_file() or backup.stat().st_size <= 0:
+                            raise RuntimeError("o backup OpenCore existente não é seguro")
+                    else:
+                        fd, temporary_name = tempfile.mkstemp(
+                            prefix=f".{backup.name}.", dir=resolved_directory
+                        )
+                        os.close(fd)
+                        temporary_backup = Path(temporary_name)
+                        try:
+                            shutil.copy2(image, temporary_backup)
+                            os.replace(temporary_backup, backup)
+                        finally:
+                            temporary_backup.unlink(missing_ok=True)
+
+                    context.phase(f"Atualizando OpenCore de {vm.name} ({index}/{total})", 42 + 55 * (index - 1) / max(total, 1))
+                    outcome = context.run_subprocess(
+                        [str(binary), "update-opencore", vm.id],
+                        timeout=1800,
+                        check=False,
+                    )
+                    if outcome.returncode != 0:
+                        raise RuntimeError("reims-ctl não conseguiu regenerar o OpenCore")
+                    updated.append(vm.id)
+                    context.log(
+                        f"{vm.name}: OpenCore atualizado; identidade SMBIOS, picker e variáveis UEFI preservados. "
+                        f"Backup: {backup.name}."
+                    )
+                    context.checkpoint("reims_vm_opencore_completed", {"vm_id": vm.id, "backup": backup.name}, completed=True)
+                except Exception as exc:
+                    # Continue the batch so one malformed or incompatible VM
+                    # does not prevent the remaining managed VMs from updating.
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    failed.append({"vm_id": vm.id, "name": vm.name, "error": str(exc)})
+                    context.log(f"{vm.name}: falha ao atualizar OpenCore: {exc}", level="error")
+                    context.checkpoint("reims_vm_opencore_failed", {"vm_id": vm.id, "error": str(exc)}, completed=True)
+
+            if failed:
+                names = ", ".join(item["name"] for item in failed)
+                raise RuntimeError(
+                    f"Reims {result.tag} foi instalado. OpenCore atualizado em {len(updated)} VM(s), "
+                    f"ignoradas {len(skipped)}, com falha em {len(failed)} ({names}); "
+                    "consulte os detalhes da tarefa e tente novamente após corrigir as falhas."
+                )
+
+        context.phase("Runtime Reims e OpenCore atualizados", 100)
         return {
             "tag": result.tag,
             "previous": result.previous,
             "changed": result.changed,
             "message": result.message,
-            "activation": "next-vm-start",
+            "activation": "active",
+            "opencore_updated": updated,
+            "opencore_skipped": skipped,
         }
 
     def _run_control_release_update_job(self, payload: dict[str, Any], context: Any) -> dict[str, Any]:

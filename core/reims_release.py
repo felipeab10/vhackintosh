@@ -468,12 +468,13 @@ def update_from_release(
     reims_dir: Path = DEFAULT_REIMS_DIR,
     log: Optional[Callable[[str], None]] = None,
     force: bool = False,
+    maintenance_locked: bool = False,
 ) -> UpdateResult:
     """Update a release, excluding VM admission while the appliance is mutated."""
     from contextlib import nullcontext
 
     guard = nullcontext()
-    if reims_dir == DEFAULT_REIMS_DIR and os.geteuid() == 0:
+    if reims_dir == DEFAULT_REIMS_DIR and os.geteuid() == 0 and not maintenance_locked:
         from core.update_guard import maintenance_window
 
         guard = maintenance_window()
