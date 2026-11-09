@@ -29,10 +29,71 @@ REQUIRED_KEXTS = {
     "IOGraphicsFamilyBridge.kext": "25.4.0",
     "APVDisplayPort.kext": "25.4.0",
 }
+KEXT_MAX_KERNEL = "25.99.99"
+
+# Lilu ainda vem embutido no binário do reims-util; os 8 restantes são vendorizados
+# aqui e injetados com `--add-kext` quando o binário não os traz.
+EMBEDDED_KEXTS = frozenset({"Lilu.kext"})
+VENDORED_KEXTS = tuple(
+    (name, minimum) for name, minimum in REQUIRED_KEXTS.items() if name not in EMBEDDED_KEXTS
+)
+# Ordem de carga: ReimsVgpu primeiro, os bridges depois. O reims-util recusa um kext que
+# linke contra outro dado mais tarde, então a ordem de REQUIRED_KEXTS (dict ordenado) vale.
+VENDORED_KEXTS_DIR = Path(__file__).resolve().parent.parent / "resources" / "reims-kexts"
+
+# Flag do binário novo (master >= fe9bfe1) que aceita kexts externos.
+_ADD_KEXT_FLAG = "--add-kext"
+
+# ATENÇÃO — bomba-relógio. Os 8 kexts abaixo são os do `apple-gfx-pci`, o default do
+# reims-ctl instalado hoje (~/.cargo/bin de 30/out; core/reims_ctl.py omite --graphics e
+# core/reims_release.py exige `apple-gfx-pci` no binário). Quando o reims-ctl da frota
+# migrar para `reims-graphics-pci` (default do origin/master do fork, commit 2cc59c93e),
+# o conjunto certo passa a ser os 5 `Rgfx*` de guest/prebuilt/ e estes 8 ficam errados.
+# A escolha depende do binário do reims-ctl instalado, NÃO de uma constante eterna.
 
 
 def run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, check=True, capture_output=True, text=True)
+
+def kext_injection(util: Path) -> list[str]:
+    """Argumentos `--add-kext` que o binário precisa, ou [] se ele já os embute.
+
+    Duas gerações de reims-util são aceitas:
+      - master (>= fe9bfe1): não embute os kexts de guest; expõe `--add-kext` e nós
+        passamos os bundles vendorizados com os gates de kernel de REQUIRED_KEXTS;
+      - pin antigo (c717e69): embute os 9 kexts na própria imagem; não passamos nada.
+    Rejeita binário que não entregue os kexts por nenhum dos dois caminhos.
+    """
+    try:
+        help_result = subprocess.run(
+            [str(util), "opencore", "--help"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"reims-util opencore --help falhou: {exc}") from exc
+    help_text = help_result.stdout or ""
+    if help_result.returncode != 0:
+        raise RuntimeError(f"reims-util opencore --help falhou (rc={help_result.returncode})")
+
+    if _ADD_KEXT_FLAG not in help_text:
+        # Binário antigo: embute os kexts. A validação de REQUIRED_KEXTS logo abaixo
+        # confirma, na imagem gerada, que todos os 9 chegaram.
+        return []
+
+    missing = [name for name, _ in VENDORED_KEXTS if not (VENDORED_KEXTS_DIR / name).is_dir()]
+    if missing:
+        raise RuntimeError(
+            f"reims-util exige --add-kext, mas faltam kexts em {VENDORED_KEXTS_DIR}: "
+            f"{', '.join(missing)}"
+        )
+    args: list[str] = []
+    for name, minimum_kernel in VENDORED_KEXTS:
+        # MIN explícito: o default do `--add-kext` é 25.0.0, e os 7 ports exigem 25.4.0.
+        args += ["--add-kext", f"{VENDORED_KEXTS_DIR / name},{minimum_kernel},{KEXT_MAX_KERNEL}"]
+    return args
 
 
 def build(util: Path, output: Path, config_output: Path) -> None:
@@ -41,6 +102,8 @@ def build(util: Path, output: Path, config_output: Path) -> None:
             raise RuntimeError(f"Ferramenta obrigatória ausente: {tool}")
     if not util.is_file() or not os.access(util, os.X_OK):
         raise RuntimeError(f"reims-util não executável: {util}")
+
+    kext_args = kext_injection(util)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     config_output.parent.mkdir(parents=True, exist_ok=True)
@@ -55,6 +118,7 @@ def build(util: Path, output: Path, config_output: Path) -> None:
             "--mlb", NEUTRAL_MLB, "--uuid", NEUTRAL_UUID,
             "--rom", NEUTRAL_ROM, "--timeout", str(PICKER_TIMEOUT),
             "--boot-args", BOOT_ARGS, "--show-picker",
+            *kext_args,
         )
         run("qemu-img", "check", str(staging))
         image_info = json.loads(run("qemu-img", "info", "--output=json", str(staging)).stdout)

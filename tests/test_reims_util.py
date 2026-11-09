@@ -143,7 +143,6 @@ class ReimsUtilTests(unittest.TestCase):
                 if command[0] == "/bin/reims-util":
                     Path(command[command.index("-o") + 1]).write_bytes(b"MOCK_QCOW2_CONTENT")
                 return Mock(returncode=0, stdout="", stderr="")
-
             with patch("core.reims_util.find_reims_util", return_value=Path("/bin/reims-util")), patch(
                 "shutil.which", return_value="/usr/bin/qemu-img"
             ), patch(
@@ -182,6 +181,84 @@ class ReimsUtilTests(unittest.TestCase):
                 self.assertIn("keepsyms=1 vti=9", called_cmd)
                 self.assertIn("--verbose-boot", called_cmd)
                 self.assertIn("--text-picker", called_cmd)
+                # O binário velho embute os kexts; não se passa --add-kext a ele.
+                self.assertNotIn("--add-kext", called_cmd)
+
+    def test_generate_opencore_passes_vendored_kexts_to_a_binary_that_dropped_them(self):
+        """O master (>= fe9bfe1) não embute mais os kexts: eles vão por --add-kext."""
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "OpenCore.qcow2"
+            def fake_run(command, **_kwargs):
+                if command[1:3] == ["opencore", "--help"]:
+                    return Mock(returncode=0, stdout="  --add-kext <PATH>  Add a kext bundle", stderr="")
+                if command[0] == "/bin/reims-util":
+                    Path(command[command.index("-o") + 1]).write_bytes(b"MOCK_QCOW2_CONTENT")
+                return Mock(returncode=0, stdout="", stderr="")
+
+            with patch("core.reims_util.find_reims_util", return_value=Path("/bin/reims-util")), patch(
+                "shutil.which", return_value="/usr/bin/qemu-img"
+            ), patch(
+                "core.reims_util.VENDORED_KEXTS_DIR", Path("/vendored")
+            ), patch(
+                "pathlib.Path.is_dir", return_value=True
+            ), patch(
+                "subprocess.run", side_effect=fake_run
+            ) as mock_run:
+                ok = reims_util.generate_opencore(dest, self.sample_smbios, no_ovmf=True)
+                self.assertTrue(ok)
+                called_cmd = mock_run.call_args_list[1].args[0]
+                # Um --add-kext por kext vendorizado, com os gates de kernel corretos.
+                self.assertEqual(called_cmd.count("--add-kext"), len(reims_util.VENDORED_KEXTS))
+                self.assertIn("/vendored/ReimsVgpu.kext,25.0.0,25.99.99", called_cmd)
+                self.assertIn("/vendored/APVDisplayPort.kext,25.4.0,25.99.99", called_cmd)
+                # A ordem tem de casar com VENDORED_KEXTS: o reims-util recusa link para kext posterior.
+                add_positions = [i for i, arg in enumerate(called_cmd) if arg == "--add-kext"]
+                given = [called_cmd[i + 1].rsplit("/", 1)[1].split(",")[0] for i in add_positions]
+                self.assertEqual(given, [name for name, _ in reims_util.VENDORED_KEXTS])
+
+    def test_generate_opencore_refuses_binary_with_neither_embedded_nor_added_kexts(self):
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "OpenCore.qcow2"
+            def fake_run(command, **_kwargs):
+                if command[1:3] == ["opencore", "--help"]:
+                    return Mock(returncode=0, stdout="  --model <MODEL>  The Mac model", stderr="")
+                return Mock(returncode=0, stdout="", stderr="")
+
+            with patch("core.reims_util.find_reims_util", return_value=Path("/bin/reims-util")), patch(
+                "subprocess.run", side_effect=fake_run
+            ):
+                self.assertFalse(reims_util.generate_opencore(dest, self.sample_smbios))
+
+    def test_generate_opencore_refuses_add_kext_binary_without_vendored_kexts(self):
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "OpenCore.qcow2"
+            def fake_run(command, **_kwargs):
+                if command[1:3] == ["opencore", "--help"]:
+                    return Mock(returncode=0, stdout="  --add-kext <PATH>  Add a kext bundle", stderr="")
+                return Mock(returncode=0, stdout="", stderr="")
+
+            with patch("core.reims_util.find_reims_util", return_value=Path("/bin/reims-util")), patch(
+                "core.reims_util.VENDORED_KEXTS_DIR", Path("/nao-existe")
+            ), patch("subprocess.run", side_effect=fake_run) as mock_run:
+                self.assertFalse(reims_util.generate_opencore(dest, self.sample_smbios))
+                # Não tenta gerar uma EFI sem kexts e depois mentir que deu certo.
+                self.assertEqual(len(mock_run.call_args_list), 1)
+
+    def test_vendored_kexts_match_required_kexts_contract(self):
+        """A lista do core tem de casar com REQUIRED_KEXTS e com os bundles em disco.
+
+        Lilu.kext é exceção: o binário ainda o embute, então não é vendorizado.
+        """
+        from appliance.build_opencore import REQUIRED_KEXTS
+
+        vendored = dict(reims_util.VENDORED_KEXTS)
+        self.assertEqual(set(vendored), set(REQUIRED_KEXTS) - {"Lilu.kext"})
+        for name, minimum in vendored.items():
+            self.assertEqual(minimum, REQUIRED_KEXTS[name])
+            self.assertTrue(
+                (reims_util.VENDORED_KEXTS_DIR / name / "Contents" / "Info.plist").is_file(),
+                f"bundle ausente: {name}",
+            )
 
     def test_generate_opencore_failure_handling(self):
         with tempfile.TemporaryDirectory() as td:

@@ -21,6 +21,34 @@ LOG_FILE = LOGS_DIR / "reims-util-opencore.log"
 OPENCORE_BOOT_ARGS = "keepsyms=1 tlbto_us=0 vti=9"
 OPENCORE_PICKER_TIMEOUT = 45
 
+# Kexts que a EFI neutra precisa carregar, e a versão de kernel mínima de cada um.
+# Desde o master do upstream (`fe9bfe1`, 2026-11-05) o reims-util NÃO embute mais os kexts
+# de guest: a imagem sai só com Lilu. Os oito kexts abaixo são vendorizados em
+# `resources/reims-kexts/` e injetados com `--add-kext`. A ordem importa: o reims-util
+# recusa um kext que linke contra outro dado depois dele, então ReimsVgpu vem primeiro e
+# os bridges depois. Os valores casam com REQUIRED_KEXTS de appliance/build_opencore.py.
+VENDORED_KEXTS: tuple[tuple[str, str], ...] = (
+    ("ReimsVgpu.kext", "25.0.0"),
+    ("AppleGraphicsDeviceControlBridge.kext", "25.4.0"),
+    ("AppleParavirtGPULoader.kext", "25.4.0"),
+    ("AppleParavirtIOSurface.kext", "25.4.0"),
+    ("IOGPUFamilyBridge.kext", "25.4.0"),
+    ("AppleParavirtGPUIOGPUFamily.kext", "25.4.0"),
+    ("IOGraphicsFamilyBridge.kext", "25.4.0"),
+    ("APVDisplayPort.kext", "25.4.0"),
+)
+KEXT_MAX_KERNEL = "25.99.99"
+
+# Raiz dos kexts vendorizados, ao lado do pacote `core/`.
+VENDORED_KEXTS_DIR = Path(__file__).resolve().parent.parent / "resources" / "reims-kexts"
+
+# Nome da flag aposentada que gateava a EFI: o master a aceita e ignora (`hide = true`),
+# e binários antigos a expõem no `--help`. Serve só para reconhecer o binário velho.
+_LEGACY_APV_FLAG = "--no-apv-arm64-port"
+
+# Flag do binário novo que prova que ele aceita kexts externos.
+_ADD_KEXT_FLAG = "--add-kext"
+
 
 REIMS_UTIL_CANDIDATES = (
     # Linux distro packages ship the exact upstream revision validated for APV.
@@ -164,9 +192,14 @@ def generate_opencore(
         return False
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # O APV arm64-port é a correção validada para o primeiro desktop no Tahoe.
-    # Binários antigos ainda geravam uma EFI válida, mas sem esses kexts. Não
-    # aceite silenciosamente uma EFI incompleta como se fosse a atual.
+    # Os kexts de guest definem se a EFI sobe o desktop. São DUAS gerações de binário,
+    # e as duas são aceitas:
+    #   - master (>= fe9bfe1): não embute os kexts; expõe `--add-kext` e nós passamos os
+    #     kexts vendorizados;
+    #   - antigo (pin c717e69): embute os 9 kexts na própria imagem e não conhece
+    #     `--add-kext`; não passamos nada.
+    # O `--no-apv-arm64-port` NÃO serve de critério: o master o aceita e ignora, e o
+    # esconderam do `--help` — um gate por essa flag reprovaria o binário novo.
     try:
         help_result = subprocess.run(
             [str(util_bin), "opencore", "--help"],
@@ -177,13 +210,42 @@ def generate_opencore(
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    if help_result.returncode != 0 or "--no-apv-arm64-port" not in help_result.stdout:
+    help_text = help_result.stdout or ""
+    if help_result.returncode != 0:
         with LOG_FILE.open("a", encoding="utf-8") as lf:
             lf.write(
                 f"\n--- reims-util opencore ({Path(output_path).name}) ---\n"
-                f"Erro: {util_bin} não oferece suporte aos kexts APV arm64-port.\n"
+                f"Erro: {util_bin} opencore --help falhou (rc={help_result.returncode}).\n"
             )
         return False
+
+    supports_add_kext = _ADD_KEXT_FLAG in help_text
+    embeds_kexts = _LEGACY_APV_FLAG in help_text
+
+    # Rejeita binário que não sabe entregar os kexts por NENHUM dos dois caminhos.
+    if not supports_add_kext and not embeds_kexts:
+        with LOG_FILE.open("a", encoding="utf-8") as lf:
+            lf.write(
+                f"\n--- reims-util opencore ({Path(output_path).name}) ---\n"
+                f"Erro: {util_bin} não oferece nem kexts embutidos nem {_ADD_KEXT_FLAG}.\n"
+            )
+        return False
+
+    # No caminho `--add-kext` os kexts têm de estar vendorizados, senão a EFI sai sem eles.
+    kext_args: list[str] = []
+    if supports_add_kext:
+        missing = [name for name, _ in VENDORED_KEXTS if not (VENDORED_KEXTS_DIR / name).is_dir()]
+        if missing:
+            with LOG_FILE.open("a", encoding="utf-8") as lf:
+                lf.write(
+                    f"\n--- reims-util opencore ({Path(output_path).name}) ---\n"
+                    f"Erro: {util_bin} exige --add-kext, mas faltam kexts em "
+                    f"{VENDORED_KEXTS_DIR}: {', '.join(missing)}.\n"
+                )
+            return False
+        for name, minimum_kernel in VENDORED_KEXTS:
+            kext_args.append("--add-kext")
+            kext_args.append(f"{VENDORED_KEXTS_DIR / name},{minimum_kernel},{KEXT_MAX_KERNEL}")
 
     final_dest = Path(output_path).resolve()
     final_dest.parent.mkdir(parents=True, exist_ok=True)
@@ -210,6 +272,8 @@ def generate_opencore(
         "--rom",
         smbios.rom,
     ]
+
+    cmd.extend(kext_args)
 
     if no_ovmf:
         cmd.append("--no-ovmf")
