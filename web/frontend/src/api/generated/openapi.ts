@@ -321,6 +321,8 @@ export interface components {
   "reims_set_options"?: Array<string>;
   "reims_create_options"?: Array<string>;
   "reims_update_opencore_picker"?: boolean;
+  "reims_update_opencore_kext_mode"?: string;
+  "reims_update_opencore_kext_mode_source"?: (string) | (null);
   "capability_inventory"?: {
   [key: string]: unknown;
 };

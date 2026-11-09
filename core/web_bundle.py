@@ -86,7 +86,11 @@ def write_bundle_metadata(root: str | os.PathLike[str], *, runtime_release: str)
     directory = Path(root)
     if not isinstance(runtime_release, str) or not runtime_release.strip() or len(runtime_release) > 128:
         raise BundleCompatibilityError("runtime release must be a non-empty bounded string")
-    files = _regular_payload_files(directory)
+    metadata_files = {"BUNDLE.json", "MANIFEST.sha256"}
+    files = [
+        path for path in _regular_payload_files(directory)
+        if path.relative_to(directory).as_posix() not in metadata_files
+    ]
     required = {
         "core/web_jobs.py", "core/web_rpc.py", "web/api/server.py",
         "web/api/app.py", "web/frontend/dist/index.html",
@@ -119,6 +123,61 @@ def write_bundle_metadata(root: str | os.PathLike[str], *, runtime_release: str)
         encoding="utf-8",
     )
     _write_sha256_manifest(directory)
+    return metadata
+
+
+def bind_current_bundle_runtime(
+    web_root: str | os.PathLike[str], *, runtime_release: str
+) -> BundleMetadata:
+    """Bind the staged current bundle to a runtime and version it by its new ID.
+
+    Packaging initially creates a runtime-independent bundle. An appliance ISO
+    knows its exact Reims version only after the runtime has been staged, so
+    this build-time operation updates the manifest, directory name, and current
+    pointer together.
+    """
+    root = Path(web_root)
+    bundles = root / "bundles"
+    current = root / "current"
+    if not current.is_symlink():
+        raise BundleIntegrityError("current bundle pointer is missing or is not a symlink")
+
+    raw_target = Path(os.readlink(current))
+    if (raw_target.is_absolute() or len(raw_target.parts) != 2
+            or raw_target.parts[0] != "bundles"
+            or not _BUNDLE_ID.fullmatch(raw_target.parts[1])):
+        raise BundleIntegrityError("current bundle pointer is malformed or escapes its versions directory")
+
+    source = bundles / raw_target.parts[1]
+    bundles_real = bundles.resolve(strict=True)
+    source_real = source.resolve(strict=True)
+    if source.is_symlink() or source_real.parent != bundles_real or not source_real.is_dir():
+        raise BundleIntegrityError("current bundle pointer does not target a real bundle directory")
+
+    old_metadata_path = source_real / "BUNDLE.json"
+    try:
+        old_metadata = json.loads(old_metadata_path.read_text(encoding="utf-8"))
+        old_runtime = old_metadata["runtime_release"]
+        schema = old_metadata["jobs_schema_min"]
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
+        raise BundleIntegrityError("current bundle metadata is missing or malformed") from exc
+    validate_bundle(source_real, jobs_schema=schema, runtime_release=old_runtime)
+
+    metadata = write_bundle_metadata(source_real, runtime_release=runtime_release)
+    destination = bundles_real / metadata.bundle_id
+    if destination != source_real:
+        if destination.exists() or destination.is_symlink():
+            raise BundleIntegrityError("runtime-bound bundle ID already exists in the versions directory")
+        source_real.rename(destination)
+
+    replacement = root / f".current.{os.getpid()}.tmp"
+    replacement.unlink(missing_ok=True)
+    try:
+        replacement.symlink_to(f"bundles/{metadata.bundle_id}")
+        os.replace(replacement, current)
+    except Exception:
+        replacement.unlink(missing_ok=True)
+        raise
     return metadata
 
 

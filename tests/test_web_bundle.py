@@ -11,6 +11,7 @@ from core.web_bundle import (
     BundleCompatibilityError,
     BundleIntegrityError,
     _write_sha256_manifest,
+    bind_current_bundle_runtime,
     promote_bundle,
     validate_bundle,
     write_bundle_metadata,
@@ -30,6 +31,36 @@ def make_bundle(root: Path, *, content: str, runtime: str = "v1.0.0") -> Path:
 
 
 class WebBundleTests(unittest.TestCase):
+    def test_runtime_binding_rehashes_bundle_and_updates_current_pointer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            web_root = Path(temporary) / "opt/vhackintosh/web"
+            versions = web_root / "bundles"
+            versions.mkdir(parents=True)
+            candidate = make_bundle(versions / ".control-staging", content="control",
+                                    runtime="control-independent")
+            initial_metadata = json.loads((candidate / "BUNDLE.json").read_text(encoding="utf-8"))
+            source = versions / initial_metadata["bundle_id"]
+            candidate.rename(source)
+            current = web_root / "current"
+            current.symlink_to(f"bundles/{source.name}")
+
+            metadata = bind_current_bundle_runtime(web_root, runtime_release="v1.5.0")
+
+            self.assertNotEqual(metadata.bundle_id, initial_metadata["bundle_id"])
+            self.assertEqual(os.readlink(current), f"bundles/{metadata.bundle_id}")
+            self.assertFalse(source.exists())
+            self.assertEqual(current.resolve().name, metadata.bundle_id)
+            self.assertEqual(validate_bundle(current.resolve(), jobs_schema=1,
+                                             runtime_release="v1.5.0"), metadata)
+
+    def test_runtime_binding_rejects_current_pointer_outside_bundle_versions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            web_root = Path(temporary) / "opt/vhackintosh/web"
+            (web_root / "bundles").mkdir(parents=True)
+            (web_root / "current").symlink_to("../../outside")
+            with self.assertRaisesRegex(BundleIntegrityError, "malformed or escapes"):
+                bind_current_bundle_runtime(web_root, runtime_release="v1.5.0")
+
     def test_valid_bundle_promotes_through_one_current_pointer(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

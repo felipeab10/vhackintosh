@@ -122,6 +122,16 @@ class DiskProvisioner:
         macos_path = vm_dir / "macos.qcow2"
         hdd_path = vm_dir / "hdd.qcow2"
         opencore_path = vm_dir / "OpenCore.qcow2"
+        # O OVMF é escrito antes do OpenCore porque o reims-util é chamado com
+        # `--no-ovmf` e não deve tocar nesses arquivos. Se a geração da EFI
+        # falhar depois, o diretório não pode ficar com OVMF e sem OpenCore: um
+        # provisionamento meio-feito engana qualquer diagnóstico seguinte (o
+        # diretório "parece" pronto para uma VM que não tem bootloader). Marque
+        # o que já existia para nunca apagar OVMF que era de uma VM anterior.
+        ovmf_preexisting = {
+            name: (vm_dir / name).exists()
+            for name in ("OVMF_VARS.fd", "OVMF_CODE.fd")
+        }
         progress_context = (
             Progress(
                 SpinnerColumn(spinner_name="dots"),
@@ -196,6 +206,10 @@ class DiskProvisioner:
                     job_context=job_context,
                 )
                 if not generated:
+                    # Desfaz o OVMF que ESTE provisionamento escreveu, para o
+                    # diretório não ficar meio-provisionado. O que já existia
+                    # antes (retentativa de uma VM anterior) é preservado.
+                    cls._rollback_ovmf_after_failed_opencore(vm_dir, ovmf_preexisting)
                     raise RuntimeError(
                         "Não foi possível gerar uma EFI com os kexts APV pelo reims-util oficial. "
                         "Atualize o pacote vHackintosh Control para instalar o reims-util APV validado e tente novamente."
@@ -216,6 +230,26 @@ class DiskProvisioner:
             opencore_path=opencore_path,
             installer_path=inst_target,
         )
+
+    @staticmethod
+    def _rollback_ovmf_after_failed_opencore(
+        vm_dir: Path, preexisting: dict[str, bool]
+    ) -> None:
+        """Remove o OVMF que o provisionamento falho acabou de escrever.
+
+        A geração da EFI acontece depois do OVMF; sem esta limpeza, um diretório
+        de VM sem OpenCore mas com OVMF fica indistinguível de um provisionamento
+        completo para quem for diagnosticar. Só apaga arquivos que não existiam
+        antes desta chamada, e nunca falha: uma limpeza best-effort não pode
+        substituir o erro original.
+        """
+        for name, existed_before in preexisting.items():
+            if existed_before:
+                continue
+            try:
+                (Path(vm_dir) / name).unlink(missing_ok=True)
+            except OSError:
+                continue
 
     @classmethod
     def _create_qcow2_disk(cls, disk_path: Path, size_gb: int, *, job_context=None) -> None:

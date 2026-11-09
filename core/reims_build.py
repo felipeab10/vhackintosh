@@ -640,6 +640,14 @@ def install_prebuilt(
     qemu = target_dir / "bin" / "qemu-system-x86_64"
     ctl_src = prebuilt_reims_ctl(reims_dir)
     util_src = prebuilt_reims_util(reims_dir)
+    if (ctl_src is None) != (util_src is None):
+        missing = "reims-util" if util_src is None else "reims-ctl"
+        present = "reims-ctl" if ctl_src is not None else "reims-util"
+        print(
+            f"  instalação do runtime recusada: a release contém {present}, mas não contém "
+            f"o par compatível {missing}."
+        )
+        return False
     ctl_dest = reims_ctl_install_dir() / "reims-ctl"
     util_dest = reims_ctl_install_dir() / "reims-util"
     ctl_ok = ctl_src is None or (

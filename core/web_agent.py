@@ -11,17 +11,21 @@ import pwd
 import re
 import hashlib
 import json
+import logging
 import shutil
 import stat
 import subprocess
 import tempfile
 import time
 import tomllib
+import plistlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 import psutil
+
+logger = logging.getLogger(__name__)
 
 from core.config import ConcurrentCatalogUpdate, SharedVmDiskError, SMBIOSConfig, VMConfig, VMManagerStore
 from core.telemetry import TelemetryCollector, TelemetryHistoryStore, VMProcessIdentity
@@ -798,11 +802,21 @@ class WebAgentService:
             ),
             Capability(
                 id="vm.opencore.picker", label="Regenerar OpenCore e alterar picker", supported=True,
-                available=bool(self.job_runner is not None and runtime.get("reims_update_opencore_picker")),
+                available=bool(
+                    self.job_runner is not None
+                    and runtime.get("reims_update_opencore_picker")
+                    and runtime.get("reims_update_opencore_kext_mode") == "embedded"
+                ),
                 requires_stopped_vm=True,
                 description="Executa somente reims-ctl update-opencore --boot-selection; mantém a identidade SMBIOS lida da EFI e exige confirmação explícita.",
-                limitation=None if self.job_runner is not None and runtime.get("reims_update_opencore_picker") else (
-                    "O agente precisa de tarefas persistentes e o Reims selecionado deve anunciar update-opencore --boot-selection."
+                limitation=None if (
+                    self.job_runner is not None
+                    and runtime.get("reims_update_opencore_picker")
+                    and runtime.get("reims_update_opencore_kext_mode") == "embedded"
+                ) else (
+                    "O agente precisa de tarefas persistentes e o Reims selecionado deve anunciar "
+                    "update-opencore --boot-selection com um reims-util que embuta os kexts; "
+                    "no modo add-kext o reims-ctl instalado não os repassa."
                 ),
             ),
             Capability(
@@ -2532,6 +2546,70 @@ class WebAgentService:
             raise
         return JobAccepted(job_id=job["id"], events_url=f"/api/v1/jobs/{job['id']}").model_dump(mode="json")
 
+    @staticmethod
+    def _opencore_enabled_kexts(image: Path) -> set[str]:
+        """Return the kext bundles `Kernel > Add` enables and that exist on disk.
+
+        Fail closed: any inspection error raises, so a caller never mistakes an
+        unreadable EFI for a kext set that merely shrank. No kext names are
+        hardcoded; callers compare the returned set before and after a mutation.
+        """
+        if not shutil.which("guestfish"):
+            raise RuntimeError("guestfish unavailable; EFI could not be inspected")
+        with tempfile.TemporaryDirectory(prefix="opencore-verify-") as temp_dir:
+            plist_path = Path(temp_dir) / "config.plist"
+            result = subprocess.run(
+                [
+                    "guestfish", "--ro", "-a", str(image), "-m", "/dev/sda1",
+                    "download", "/EFI/OC/config.plist", str(plist_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            if result.returncode != 0 or not plist_path.is_file():
+                raise RuntimeError("Could not read OpenCore config.plist")
+            try:
+                with plist_path.open("rb") as stream:
+                    config = plistlib.load(stream)
+            except (OSError, plistlib.InvalidFileException, ValueError) as exc:
+                raise RuntimeError("Invalid OpenCore config.plist") from exc
+            entries = config.get("Kernel", {}).get("Add") if isinstance(config, dict) else None
+            if not isinstance(entries, list):
+                raise RuntimeError("OpenCore Kernel/Add is missing")
+            enabled = {
+                item.get("BundlePath")
+                for item in entries
+                if isinstance(item, dict) and item.get("Enabled") is True
+            }
+            enabled = {name for name in enabled if isinstance(name, str) and name}
+            listing = subprocess.run(
+                ["guestfish", "--ro", "-a", str(image), "-m", "/dev/sda1", "ls", "/EFI/OC/Kexts"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            if listing.returncode != 0:
+                raise RuntimeError("Could not list OpenCore kext bundles")
+            present = {line.strip() for line in listing.stdout.splitlines() if line.strip()}
+            return enabled & present
+
+    @staticmethod
+    def _restore_opencore_image(image: Path, backup: Path, context: Any) -> None:
+        """Put the pre-mutation OpenCore image back after a failed postcondition.
+
+        Restoring is best effort for the job's error path; the original failure
+        is re-raised by the caller and must not be masked by a restore error.
+        """
+        try:
+            if backup.is_file() and not backup.is_symlink() and backup.stat().st_size > 0:
+                shutil.copy2(backup, image, follow_symlinks=False)
+                logger.warning("OpenCore restaurado a partir de %s.", backup.name)
+        except OSError as exc:
+            logger.error("Falha ao restaurar o OpenCore: %s", exc)
+
     def _run_vm_opencore_picker_job(self, payload: dict[str, Any], context: Any) -> dict[str, Any]:
         """Run only Reims' allowlisted OpenCore regeneration command; never expose its output."""
         from core.config import ConcurrentCatalogUpdate, ExclusiveVMLock
@@ -2592,8 +2670,16 @@ class WebAgentService:
             raise RuntimeError("O binário reims-ctl não está disponível.")
         try:
             from core.runtime_inventory import inspect_runtime
-            if not inspect_runtime(use_cache=False).get("reims_update_opencore_picker"):
+            runtime = inspect_runtime(use_cache=False)
+            if not runtime.get("reims_update_opencore_picker"):
                 raise RuntimeError("O Reims instalado não oferece a atualização segura do picker OpenCore.")
+            kext_mode = runtime.get("reims_update_opencore_kext_mode")
+            if kext_mode != "embedded":
+                raise RuntimeError(
+                    f"O reims-util instalado opera no modo {kext_mode!r}: sem kexts embutidos a "
+                    "regeneração deixaria a VM sem paravirtualização; use um reims-util com kexts "
+                    "embutidos ou um reims-ctl que repasse --add-kext."
+                )
         except RuntimeError:
             raise
         except Exception as exc:
@@ -2615,6 +2701,26 @@ class WebAgentService:
                 raise RuntimeError("A VM ou o catálogo mudou antes da regeneração; nenhuma imagem foi alterada.")
             context.phase("Regenerando OpenCore com a identidade atual", 10)
             context.checkpoint("opencore_regeneration_started", {"vm_id": vm_id, "boot_selection": desired})
+            # Read the pre-mutation kext set while the image is still untouched.
+            # Do this before creating the backup: a failure here mutates nothing,
+            # so it must not leave an orphan `.opencore-before-picker.qcow2`.
+            try:
+                before = self._opencore_enabled_kexts(image)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Não foi possível ler os kexts da EFI antes de regenerar; nada foi alterado."
+                ) from exc
+            # Snapshot for rollback. It is still taken before the mutation; it is
+            # only skipped when the image could not be inspected at all.
+            backup = resolved_directory / ".opencore-before-picker.qcow2"
+            fd, temporary_name = tempfile.mkstemp(prefix=f".{backup.name}.", dir=resolved_directory)
+            os.close(fd)
+            temporary_backup = Path(temporary_name)
+            try:
+                shutil.copy2(image, temporary_backup)
+                os.replace(temporary_backup, backup)
+            finally:
+                temporary_backup.unlink(missing_ok=True)
             try:
                 result = subprocess.run(
                     [binary, "update-opencore", vm_id, "--boot-selection", str(desired).lower()],
@@ -2627,6 +2733,26 @@ class WebAgentService:
                 raise RuntimeError("Não foi possível confirmar o resultado da regeneração; confira o estado da imagem OpenCore antes de tentar novamente.") from exc
             if result.returncode != 0:
                 raise RuntimeError("O Reims recusou ou não conseguiu regenerar o OpenCore; consulte o diagnóstico da tarefa.")
+            # `update-opencore` returning zero only confirms command completion;
+            # it does not prove the selected reims-util preserved the EFI. Compare
+            # the enabled+present kext set against the pre-mutation snapshot and
+            # restore the image if it shrank, before persisting the setting.
+            try:
+                after = self._opencore_enabled_kexts(image)
+            except Exception as exc:
+                self._restore_opencore_image(image, backup, context)
+                raise RuntimeError(
+                    "O Reims terminou a regeneração, mas a EFI resultante não pôde ser inspecionada; "
+                    "a imagem anterior foi restaurada e o picker não foi marcado como atualizado."
+                ) from exc
+            if bool(before - after):  # FIX nomes
+                self._restore_opencore_image(image, backup, context)
+                lost = ", ".join(sorted(before - after)) or "(nomes indisponíveis)"
+                raise RuntimeError(
+                    "O Reims terminou a regeneração, mas a EFI resultante perdeu kexts habilitados "
+                    f"({len(before)} → {len(after)}: {lost}); a imagem anterior foi restaurada. "
+                    "Verifique o par reims-ctl/reims-util."
+                )
             context.phase("Atualizando o catálogo da VM", 90)
             # Merge only this field with the freshest catalog so unrelated edits
             # made while the long-running image operation ran are preserved.
@@ -3231,6 +3357,26 @@ class WebAgentService:
             if not binary:
                 raise RuntimeError("Os binários foram instalados, mas reims-ctl não está disponível.")
 
+            # The regenerated EFI only keeps its kexts when the paired reims-util
+            # embeds them ("embedded"). An "add-kext" util needs the caller to
+            # pass --add-kext, and this reims-ctl does not; "unknown" cannot be
+            # trusted. Refuse the whole batch before touching any VM.
+            try:
+                from core.runtime_inventory import inspect_runtime
+
+                kext_mode = inspect_runtime(use_cache=False).get("reims_update_opencore_kext_mode")
+            except Exception as exc:
+                raise RuntimeError(
+                    "Não foi possível confirmar o modo de kexts do reims-util instalado; "
+                    "nenhuma VM foi modificada."
+                ) from exc
+            if kext_mode != "embedded":
+                raise RuntimeError(
+                    f"O reims-util Reims {result.tag} opera no modo {kext_mode!r}: sem kexts embutidos "
+                    "a regeneração do OpenCore deixaria as VMs sem paravirtualização. Nenhuma VM foi "
+                    "modificada; use um reims-util com kexts embutidos ou um reims-ctl que repasse --add-kext."
+                )
+
             self._refresh_catalog()
             managed_root = (self.store.config_dir / "vms").resolve(strict=False)
             managed_vms = self.store.list_vms()
@@ -3288,6 +3434,14 @@ class WebAgentService:
                     except (OSError, ValueError, TypeError, tomllib.TOMLDecodeError) as exc:
                         raise RuntimeError("não foi possível validar a projeção e a imagem OpenCore") from exc
 
+                    try:
+                        before_kexts = self._opencore_enabled_kexts(resolved_image)
+                    except Exception as exc:
+                        raise RuntimeError("não foi possível ler os kexts da EFI antes de atualizar") from exc
+                    # Create the backup only after the image was inspected: a
+                    # failed inspection never mutated anything and must not leave
+                    # an orphan `.opencore-before-{tag}.qcow2`. It is still taken
+                    # before `update-opencore`, so rollback coverage is unchanged.
                     backup = resolved_directory / f".opencore-before-{safe_tag}.qcow2"
                     if backup.exists():
                         if backup.is_symlink() or not backup.is_file() or backup.stat().st_size <= 0:
@@ -3312,6 +3466,21 @@ class WebAgentService:
                     )
                     if outcome.returncode != 0:
                         raise RuntimeError("reims-ctl não conseguiu regenerar o OpenCore")
+                    try:
+                        after_kexts = self._opencore_enabled_kexts(resolved_image)
+                    except Exception as exc:
+                        self._restore_opencore_image(resolved_image, backup, context)
+                        raise RuntimeError(
+                            "update-opencore retornou sucesso, mas a EFI não pôde ser inspecionada; "
+                            "a imagem anterior foi restaurada"
+                        ) from exc
+                    if bool(before_kexts - after_kexts):  # FIX nomes
+                        self._restore_opencore_image(resolved_image, backup, context)
+                        lost = ", ".join(sorted(before_kexts - after_kexts)) or "(nomes indisponíveis)"
+                        raise RuntimeError(
+                            "update-opencore retornou sucesso, mas a EFI perdeu kexts habilitados "
+                            f"({len(before_kexts)} → {len(after_kexts)}: {lost}); a imagem anterior foi restaurada"
+                        )
                     updated.append(vm.id)
                     context.log(
                         f"{vm.name}: OpenCore atualizado; identidade SMBIOS, picker e variáveis UEFI preservados. "

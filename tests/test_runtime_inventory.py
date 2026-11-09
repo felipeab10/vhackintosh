@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,7 +35,7 @@ esac
 esac
 ''')
 
-            with patch("core.reims_release.current_release", return_value="v1.4.0"):
+            with patch("core.reims_release.current_release", return_value="v1.4.0"), patch.dict("os.environ", {"PATH": ""}, clear=False):
                 result = inspect_runtime(reims_binary=reims, qemu_binary=qemu, use_cache=False)
 
         self.assertEqual(result["status"], "available")
@@ -48,6 +49,8 @@ esac
         self.assertEqual(result["reims_set_options"], ["--cpus", "--audio", "--audio-backend", "--network", "--mac"])
         self.assertEqual(result["reims_create_options"], ["--disk-size", "--cpus"])
         self.assertTrue(result["reims_update_opencore_picker"])
+        self.assertEqual(result["reims_update_opencore_kext_mode"], "unknown")
+        self.assertIsNone(result["reims_update_opencore_kext_mode_source"])
         self.assertEqual(result["qemu_devices"], ["q35-pcihost", "virtio-blk-pci"])
         self.assertEqual(result["qemu_machine_types"], ["q35", "pc-i440fx-9.2"])
         self.assertEqual(result["qemu_cpu_models"], ["Skylake-Client-noTSX-IBRS", "host"])
@@ -65,6 +68,40 @@ esac
         self.assertEqual(inventory["qemu"]["device_properties"]["virtio-blk-pci"]["status"], "unknown")
         self.assertEqual(inventory["qemu"]["machine_types"]["status"], "reported")
         self.assertIn("does not prove runtime compatibility", inventory["qemu"]["machine_types"]["meaning"])
+
+    def test_inventory_probes_the_util_selected_beside_reims_ctl(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            ctl_dir = root / "ctl-bin"
+            util_dir = root / "util-bin"
+            ctl_dir.mkdir()
+            util_dir.mkdir()
+            reims = self._script(ctl_dir, "reims-ctl", '''case "$1 $2" in
+  "--version ") echo "reims-ctl 8.1" ;;
+  "capabilities --json") echo '{"schema_version":1,"schema_features":[]}' ;;
+  "set --help"|"create --help") echo "--cpus <CPUS>" ;;
+  "update-opencore --help") echo 'Usage: reims-ctl update-opencore [OPTIONS] <NAME>' '--boot-selection <BOOT_SELECTION>' ;;
+esac
+''')
+            self._script(util_dir, "reims-util", '''case "$1 $2" in
+  "--version ") echo "reims-util 0.1.0" ;;
+  "opencore --help") echo '--model <MODEL> --no-apv-arm64-port' ;;
+esac
+''')
+            qemu = self._script(root, "qemu", '''case "$1" in
+  --version) echo "QEMU emulator version 11.1" ;;
+  -help) echo "-rtc [base=utc] -msg [timestamp=on]" ;;
+  -device) echo 'name "virtio-blk-pci", bus PCI' ;;
+  -machine) echo 'Supported machines are:'; echo 'q35 Q35' ;;
+  -cpu) echo 'Available CPUs:'; echo 'host host CPU' ;;
+  -audiodev) echo 'Available audio drivers:'; echo 'none' ;;
+esac
+''')
+            path = str(util_dir) + os.pathsep + os.environ.get("PATH", "")
+            with patch("core.runtime_inventory._cache", None), patch.dict("os.environ", {"PATH": path}, clear=False):
+                result = inspect_runtime(reims_binary=reims, qemu_binary=qemu, use_cache=False)
+        self.assertEqual(result["reims_update_opencore_kext_mode"], "embedded")
+        self.assertEqual(result["reims_update_opencore_kext_mode_source"], str(util_dir / "reims-util"))
 
     def test_fresh_appliance_inventories_the_tagged_iso_runtime_before_first_vm_start(self):
         with tempfile.TemporaryDirectory() as temp:

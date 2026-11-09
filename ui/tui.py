@@ -205,8 +205,14 @@ class VMTUI:
                     if sys.stdin.isatty():
                         Prompt.ask(i18n.t("tui.prompt.enter_continue"))
                 elif shutil.which("vhackintosh-install"):
-                    cmd = ["sudo", "vhackintosh-install"] if os.geteuid() != 0 else ["vhackintosh-install"]
-                    subprocess.run(cmd)
+                    install_env = os.environ.copy()
+                    install_env["VHACK_INSTALL_LANGUAGE"] = i18n.get_language()
+                    cmd = (
+                        ["sudo", "env", f"VHACK_INSTALL_LANGUAGE={install_env['VHACK_INSTALL_LANGUAGE']}", "vhackintosh-install"]
+                        if os.geteuid() != 0
+                        else ["vhackintosh-install"]
+                    )
+                    subprocess.run(cmd, env=install_env)
                 else:
                     console.print(i18n.t("tui.install_cli.missing"))
                     Prompt.ask(i18n.t("tui.prompt.enter_continue_short"))

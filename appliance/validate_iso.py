@@ -317,7 +317,14 @@ def main() -> int:
                     raise RuntimeError("OpenCore.qcow2 internal plist differs from bundled config.plist")
             parsed = plistlib.loads(embedded.read_bytes())
             kexts = {entry.get("BundlePath"): entry for entry in parsed.get("Kernel", {}).get("Add", [])}
-            required_kexts = {
+            # A migração do reims-vgpu trouxe um segundo conjunto de kexts para o
+            # dispositivo `reims-graphics-pci` (os `Rgfx*`). Qual conjunto é o
+            # correto depende do reims-ctl instalado, não de uma constante: hoje a
+            # frota usa o binário de 30/out, que só conhece `apple-gfx-pci`, então
+            # o conjunto de 9 kexts acima é o vigente. Aceitamos o conjunto novo
+            # por inteiro quando ele estiver presente, para a ISO acompanhar a
+            # migração sem uma segunda edição aqui.
+            legacy_kexts = {
                 "Lilu.kext": "25.0.0",
                 "ReimsVgpu.kext": "25.0.0",
                 "AppleGraphicsDeviceControlBridge.kext": "25.4.0",
@@ -328,6 +335,18 @@ def main() -> int:
                 "IOGraphicsFamilyBridge.kext": "25.4.0",
                 "APVDisplayPort.kext": "25.4.0",
             }
+            graphics_kexts = {
+                "Lilu.kext": "25.0.0",
+                "ReimsGraphics.kext": "25.4.0",
+                "ReimsGraphicsLoader.kext": "25.4.0",
+                "RgfxIOGraphicsFamilyBridge.kext": "25.4.0",
+                "RgfxAppleGraphicsDeviceControlBridge.kext": "25.4.0",
+                "RgfxGate.kext": "25.4.0",
+            }
+            if graphics_kexts.keys() <= kexts.keys():
+                required_kexts = graphics_kexts
+            else:
+                required_kexts = legacy_kexts
             for required_kext, minimum in required_kexts.items():
                 entry = kexts.get(required_kext)
                 if not entry or not entry.get("Enabled") or entry.get("MinKernel") != minimum or entry.get("MaxKernel") != "25.99.99":

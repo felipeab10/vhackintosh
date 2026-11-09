@@ -30,6 +30,12 @@ rsync -a "${FRONTEND}/dist/" "${APP}/web/frontend/dist/"
 install -m 0644 "${ROOT}/web/frontend/THIRD_PARTY_NOTICES.md" "${APP}/web/frontend/THIRD_PARTY_NOTICES.md"
 install -m 0644 "${ROOT}/web/requirements.lock" "${APP}/requirements.lock"
 
+# The appliance build may run under sudo while the source tree contains files
+# with mode 0600 (for example, after copying files from a restrictive umask).
+# makepkg later reads this payload as an unprivileged builder, so normalize the
+# staged bundle before copying it into DESTDIR.
+bash "${ROOT}/packaging/common/normalize-tree-permissions.sh" "${APP}"
+
 WEB_ROOT="${DESTDIR}/opt/vhackintosh/web"
 install -d "${WEB_ROOT}/bundles"
 cp -a "${APP}" "${WEB_ROOT}/bundles/.control-staging"

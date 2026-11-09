@@ -810,6 +810,10 @@ class PrebuiltMotorInstallTests(unittest.TestCase):
         # Quem instala tem de dar o bit de execução — `copy2` preserva o modo de
         # origem, então uma origem 0755 esconderia a falta do `chmod`.
         motor.chmod(0o644)
+        util = self.reims / "bin" / "reims-util"
+        util.parent.mkdir(parents=True, exist_ok=True)
+        util.write_text("#!/bin/sh\necho util\n", encoding="utf-8")
+        util.chmod(0o644)
         return motor
 
     def test_the_motor_from_the_bundle_is_installed_where_the_app_finds_it(self):
@@ -832,6 +836,27 @@ class PrebuiltMotorInstallTests(unittest.TestCase):
         ):
             self.assertEqual(reims_ctl.reims_ctl_bin(), str(destino))
 
+    def test_install_rejects_a_release_with_reims_ctl_but_no_reims_util(self):
+        self._com_motor()
+        (self.reims / "bin" / "reims-util").unlink()
+        with patch.object(reims_build, "qemu_data_dir", lambda: self.data), patch.dict(
+            os.environ, {"HOME": str(self.home)}
+        ), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertFalse(reims_build.install_prebuilt(self.reims))
+        self.assertIn("não contém o par compatível reims-util", output.getvalue())
+        self.assertFalse((self.home / ".cargo" / "bin" / "reims-ctl").exists())
+
+    def test_install_rejects_a_release_with_reims_util_but_no_reims_ctl(self):
+        util = self.reims / "bin" / "reims-util"
+        util.parent.mkdir(parents=True, exist_ok=True)
+        util.write_text("#!/bin/sh\necho util\n", encoding="utf-8")
+        # Há QEMU válido, mas nenhum reims-ctl.
+        with patch.object(reims_build, "qemu_data_dir", lambda: self.data), patch.dict(
+            os.environ, {"HOME": str(self.home)}
+        ), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertFalse(reims_build.install_prebuilt(self.reims))
+        self.assertIn("não contém o par compatível reims-ctl", output.getvalue())
+
     def test_the_motor_at_the_tarball_root_is_also_accepted(self):
         """Tolerância de layout: `reims-ctl` na raiz do tarball também vale."""
         self._com_motor("reims-ctl")
@@ -847,6 +872,7 @@ class PrebuiltMotorInstallTests(unittest.TestCase):
         util.write_text("#!/bin/sh\necho matching util\n", encoding="utf-8")
         util.chmod(0o644)
         self._com_motor()
+        util.write_text("#!/bin/sh\necho matching util\n", encoding="utf-8")
 
         with patch.object(reims_build, "qemu_data_dir", lambda: self.data), patch.dict(
             os.environ, {"HOME": str(self.home)}
@@ -1023,6 +1049,9 @@ class PrebuiltInstallIsIdempotentTests(unittest.TestCase):
         motor.parent.mkdir(parents=True, exist_ok=True)
         motor.write_text("#!/bin/sh\necho motor\n", encoding="utf-8")
         motor.chmod(0o755)
+        util = self.reims / "bin" / "reims-util"
+        util.write_text("#!/bin/sh\necho util\n", encoding="utf-8")
+        util.chmod(0o755)
         home = self.root / "home"
         home.mkdir()
         with patch.object(reims_build, "qemu_data_dir", lambda: self.data), patch.dict(

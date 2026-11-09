@@ -58,6 +58,30 @@ class TemplateIntegrityTests(unittest.TestCase):
             self.assertEqual(entries[name]["MinKernel"], "25.0.0")
             self.assertEqual(entries[name]["MaxKernel"], "25.99.99")
 
+    def test_opencore_builder_passes_explicit_kext_minimums(self):
+        from appliance import build_opencore
+
+        with patch.object(build_opencore, "VENDORED_KEXTS_DIR", ROOT / "resources/reims-kexts"), patch.object(
+            build_opencore.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="--add-kext", stderr=""
+            ),
+        ):
+            args = build_opencore.kext_injection(Path("/tmp/reims-util-master"))
+
+        self.assertEqual(args.count("--add-kext"), len(build_opencore.VENDORED_KEXTS))
+        supplied = {
+            value.split(",", 1)[0]: value.split(",")
+            for flag, value in zip(args[::2], args[1::2])
+            if flag == "--add-kext"
+        }
+        self.assertEqual(set(supplied), {str(ROOT / "resources/reims-kexts" / name) for name, _ in build_opencore.VENDORED_KEXTS})
+        for name, minimum in build_opencore.VENDORED_KEXTS:
+            value = supplied[str(ROOT / "resources/reims-kexts" / name)]
+            self.assertEqual(value[1:], [minimum, build_opencore.KEXT_MAX_KERNEL])
+            self.assertEqual(minimum, build_opencore.REQUIRED_KEXTS[name])
+
     def test_template_identity_fields_are_neutral(self):
         config = plistlib.loads((ROOT / "templates/config.plist").read_bytes())
         for section_name in ("DataHub", "Generic", "PlatformNVRAM", "SMBIOS"):

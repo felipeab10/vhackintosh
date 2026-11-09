@@ -3,7 +3,7 @@ set -euo pipefail
 
 OUT="${1:?usage: build-reims-util.sh OUTPUT_DIR}"
 REPO="https://github.com/steelbrain/reims-util.git"
-REV="c717e69f0a74ba050973dcca294ba35499145c56"
+REV="0b9c3780a3ec2aa312a448b09b18320e5a2c9251"
 TOOLCHAIN="1.98.1"
 WORK="$(mktemp -d)"
 trap 'rm -rf -- "$WORK"' EXIT
@@ -19,8 +19,16 @@ cargo "+${TOOLCHAIN}" build --locked --release --manifest-path "$WORK/source/Car
 BIN="$WORK/source/target/release/reims-util"
 test -x "$BIN" || { echo "pinned reims-util build did not produce an executable" >&2; exit 1; }
 "$BIN" --version | grep -q '^reims-util '
-"$BIN" opencore --help | grep -q -- '--no-apv-arm64-port' || {
-  echo "pinned reims-util does not expose the required APV option" >&2
+# `--no-ovmf` é usado pelo build_opencore.py; `--add-kext` é a interface que
+# leva os kexts de guest do reims-vgpu para a imagem. A antiga flag de
+# "arm64-port" foi aposentada no upstream e não aparece mais no `--help`,
+# então exigi-la aqui derrubava o pin novo sem motivo.
+"$BIN" opencore --help | grep -q -- '--no-ovmf' || {
+  echo "pinned reims-util does not expose --no-ovmf" >&2
+  exit 1
+}
+"$BIN" opencore --help | grep -q -- '--add-kext' || {
+  echo "pinned reims-util does not expose the required --add-kext option" >&2
   exit 1
 }
 

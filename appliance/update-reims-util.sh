@@ -83,10 +83,15 @@ trap cleanup EXIT
 echo "Compilando steelbrain/reims-util em ${COMMIT:0:12}..."
 cargo install --locked --git "$REPO_URL" --rev "$COMMIT" --root "${TMP_ROOT}/install" --force
 
+# O contrato é: (a) o binário roda; (b) `opencore` traz `--no-ovmf`, que o
+# build_opencore.py usa; (c) traz `--add-kext`, a interface atual para levar os
+# kexts de guest do reims-vgpu. A antiga flag de "arm64-port" foi aposentada no
+# upstream (fe9bfe1/5ca3b10) e virou no-op fora do `--help`: exigi-la rejeitava
+# o binário novo sem explicar por quê.
 if [[ ! -x "$STAGED_BIN" ]] \
     || ! "$STAGED_BIN" --version >/dev/null 2>&1 \
     || ! "$STAGED_BIN" opencore --help | grep -q -- '--no-ovmf' \
-    || ! "$STAGED_BIN" opencore --help | grep -q -- '--no-apv-arm64-port'; then
+    || ! "$STAGED_BIN" opencore --help | grep -q -- '--add-kext'; then
     echo "Erro: o binário compilado não passou na validação." >&2
     exit 1
 fi

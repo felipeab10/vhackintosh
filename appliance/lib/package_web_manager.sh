@@ -28,6 +28,8 @@ mkdir -p "${PAYLOAD}" "${PACKAGE_OUT}"
 "${PROJECT_ROOT}/packaging/common/install-python-deps.sh" \
     "${PAYLOAD}/opt/vhackintosh/web/current" \
     "${PAYLOAD}/opt/vhackintosh/web/current/requirements.lock"
+bash "${PROJECT_ROOT}/packaging/common/normalize-tree-permissions.sh" \
+    "$(readlink -f "${PAYLOAD}/opt/vhackintosh/web/current")"
 PYTHONPATH="${PROJECT_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3 \
     "${PROJECT_ROOT}/packaging/common/refresh-control-bundle.py" "${PAYLOAD}"
 "${PROJECT_ROOT}/packaging/arch/build-package.sh" \
@@ -45,12 +47,12 @@ import sys
 from pathlib import Path
 
 from core.reims_build import prebuilt_release
-from core.web_bundle import write_bundle_metadata
+from core.web_bundle import bind_current_bundle_runtime
 
 rootfs = Path(sys.argv[1])
 runtime = prebuilt_release(rootfs / "opt/reims-vgpu")
 if not runtime:
     raise SystemExit("Control package cannot be staged without a tagged Reims runtime")
-write_bundle_metadata(rootfs / "opt/vhackintosh/web/current", runtime_release=runtime)
+bind_current_bundle_runtime(rootfs / "opt/vhackintosh/web", runtime_release=runtime)
 PY
 echo "Installed the shared vhackintosh-control ${CONTROL_VERSION} Arch package payload into the appliance rootfs."

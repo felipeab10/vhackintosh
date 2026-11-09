@@ -27,6 +27,7 @@ class VMResourceAdmissionTests(unittest.TestCase):
             patch.object(ExclusiveVMLock, "_running_reims_vms", return_value=({}, True)),
             patch.object(ExclusiveVMLock, "_host_memory", return_value=(64 * 1024**3, 63 * 1024**3)),
             patch.object(ExclusiveVMLock, "_process_rss", return_value=0),
+            patch.object(ExclusiveVMLock, "_loopback_tcp_port_available", return_value=True),
             patch.object(ExclusiveVMLock, "_registered_vm_resources", return_value={}),
         ]
         for item in self.patches:

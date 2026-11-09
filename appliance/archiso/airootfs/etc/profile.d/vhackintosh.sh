@@ -358,7 +358,7 @@ if [ "$(tty)" = "/dev/tty1" ]; then
             case "$boot_choice" in
                 1)
                     if command -v vhackintosh-install >/dev/null 2>&1; then
-                        vhackintosh-install
+                        VHACK_INSTALL_LANGUAGE="$VHACK_LANGUAGE" vhackintosh-install
                         echo -e "\n\033[1;33m${installer_done}\033[0m"
                         read -r
                     fi

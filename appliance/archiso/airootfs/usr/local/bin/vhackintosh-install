@@ -6,6 +6,37 @@
 
 set -euo pipefail
 
+INSTALL_I18N="/usr/local/lib/vhackintosh-install-i18n.sh"
+if [ -r "$INSTALL_I18N" ]; then
+    # shellcheck source=/dev/null
+    . "$INSTALL_I18N"
+fi
+
+VHACK_INSTALL_LANGUAGE="${VHACK_INSTALL_LANGUAGE:-${VHACK_LANGUAGE:-}}"
+if [[ "$VHACK_INSTALL_LANGUAGE" != "en" && "$VHACK_INSTALL_LANGUAGE" != "pt" ]]; then
+    VHACK_INSTALL_LANGUAGE=""
+    LANG_HELPER="/opt/vhackintosh/bin/vhackintosh-lang"
+    if [ -x "$LANG_HELPER" ]; then
+        if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
+            VHACK_INSTALL_LANGUAGE="$(sudo -u "$SUDO_USER" -- "$LANG_HELPER" --get-code 2>/dev/null || true)"
+        else
+            VHACK_INSTALL_LANGUAGE="$("$LANG_HELPER" --get-code 2>/dev/null || true)"
+        fi
+    fi
+fi
+case "$VHACK_INSTALL_LANGUAGE" in
+    en|pt) ;;
+    *) VHACK_INSTALL_LANGUAGE="pt" ;;
+esac
+export VHACK_INSTALL_LANGUAGE
+if [ "$VHACK_INSTALL_LANGUAGE" = "en" ]; then
+    export LANG=C.UTF-8 LC_ALL=C.UTF-8
+fi
+
+if ! declare -F vhack_install_msg >/dev/null 2>&1; then
+    vhack_install_msg() { printf '%s' "$1"; }
+fi
+
 CYAN='\033[0;36m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -17,12 +48,12 @@ NC='\033[0m'
 
 clear
 echo -e "${CYAN}======================================================================${NC}"
-echo -e "${BOLD}${CYAN}          vHackintosh OS — Gerenciador de Partições e Instalação      ${NC}"
+echo -e "${BOLD}${CYAN}          $(vhack_install_msg title)      ${NC}"
 echo -e "${CYAN}======================================================================${NC}\n"
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo -e "${RED}Erro: O instalador de disco requer privilégios de superusuário (root).${NC}"
-    echo -e "Execute: ${YELLOW}sudo vhackintosh-install${NC}"
+    echo -e "${RED}$(vhack_install_msg root_error)${NC}"
+    echo -e "$(vhack_install_msg root_command)"
     exit 1
 fi
 
@@ -31,7 +62,7 @@ fi
 # Impede a destruição/formatação de discos caso o computador não atenda aos
 # requisitos obrigatórios do vHackintosh OS (KVM na BIOS e Reims vGPU / Vulkan 1.2+).
 # ------------------------------------------------------------------------------
-echo -e "${CYAN}▶ Validando requisitos de hardware para virtualização do macOS...${NC}"
+echo -e "${CYAN}$(vhack_install_msg hardware_check)${NC}"
 
 CHECK_OK=1
 CHECK_ERR=""
@@ -47,27 +78,25 @@ fi
 
 if [ "$CHECK_OK" -ne 1 ]; then
     echo -e "\n${RED}======================================================================${NC}"
-    echo -e "${BOLD}${RED}  INSTALAÇÃO BLOQUEADA: HARDWARE INCOMPATÍVEL COM vHACKINTOSH OS     ${NC}"
+    echo -e "${BOLD}${RED}  $(vhack_install_msg blocked_title)     ${NC}"
     echo -e "${RED}======================================================================${NC}\n"
-    echo -e "${YELLOW}Este computador não atende aos requisitos mínimos para executar máquinas"
-    echo -e "virtuais macOS com aceleração gráfica pelo Reims vGPU.${NC}\n"
-    echo -e "${BOLD}Diagnóstico:${NC}"
+    echo -e "${YELLOW}$(vhack_install_msg blocked_body)${NC}\n"
+    echo -e "${BOLD}$(vhack_install_msg diagnostic)${NC}"
     echo -e "${CHECK_ERR}\n"
-    echo -e "Instalar o vHackintosh OS em disco apagaria os dados do SSD sem que"
-    echo -e "fosse possível executar o macOS após a instalação.\n"
-    echo -e "${BOLD}Requisitos obrigatórios:${NC}"
-    echo -e "  • Processador com VT-x (Intel) ou AMD-V (AMD) ativado na BIOS (/dev/kvm)"
-    echo -e "  • GPU física com Vulkan 1.2+ (Intel Gen9+, NVIDIA GTX 900+ ou AMD GCN 4+)"
-    echo -e "  • Computador físico real (não suportado em VM sem GPU Passthrough)\n"
-    echo -e "${RED}A instalação foi abortada para proteger seu computador e seus discos.${NC}\n"
+    echo -e "$(vhack_install_msg data_warning)\n"
+    echo -e "${BOLD}$(vhack_install_msg requirements)${NC}"
+    echo -e "  $(vhack_install_msg cpu_requirement)"
+    echo -e "  $(vhack_install_msg gpu_requirement)"
+    echo -e "  $(vhack_install_msg physical_requirement)\n"
+    echo -e "${RED}$(vhack_install_msg install_aborted)${NC}\n"
     while true; do
-        echo -ne "${YELLOW}Pressione [Enter] para desligar o computador (ou 'r' para reiniciar): ${NC}"
+        echo -ne "${YELLOW}$(vhack_install_msg shutdown_prompt)${NC}"
         read -r shutdown_key
         if [ "$shutdown_key" = "r" ] || [ "$shutdown_key" = "R" ]; then
-            echo -e "\n${CYAN}Reiniciando o computador...${NC}"
+            echo -e "\n${CYAN}$(vhack_install_msg rebooting)${NC}"
             reboot
         else
-            echo -e "\n${RED}Desligando o computador...${NC}"
+                echo -e "\n${RED}$(vhack_install_msg powering_off)${NC}"
             if command -v systemctl >/dev/null 2>&1; then
                 systemctl poweroff -i || poweroff
             else
@@ -78,9 +107,9 @@ if [ "$CHECK_OK" -ne 1 ]; then
     done
     exit 1
 fi
-echo -e "${GREEN}✔ Hardware compatível! Prosseguindo com o instalador de disco...${NC}\n"
+echo -e "${GREEN}$(vhack_install_msg hardware_ok)${NC}\n"
 
-trap 'echo -e "\n${RED}Erro na execução (linha $LINENO). Verifique as mensagens acima.${NC}\nPressione Enter para voltar..."; read -r' ERR
+trap 'echo -e "\n${RED}$(vhack_install_msg error_line "$LINENO")${NC}\n$(vhack_install_msg press_return)"; read -r' ERR
 
 # Detecta dispositivo de boot da ISO para proteger o instalador USB
 BOOT_DEV=""
@@ -91,7 +120,7 @@ for cand in /run/archiso/bootmnt /run/archiso/img_dev /run/archiso/cowspace /run
     fi
 done
 
-echo -e "${BOLD}Detectando discos físicos conectados (filtrando unidades com >= 10 GB):${NC}\n"
+echo -e "${BOLD}$(vhack_install_msg detect_disks)${NC}\n"
 
 DISKS=()
 DISK_INFO=()
@@ -119,30 +148,30 @@ while IFS= read -r line; do
 
     DEV_SIZE_HUMAN=$(lsblk -d -n -o SIZE "${DEV_PATH}" 2>/dev/null || echo "$DEV_SIZE_BYTES")
     DISKS+=("$DEV_PATH")
-    DISK_INFO+=("$DEV_PATH (${DEV_SIZE_HUMAN}) - ${DEV_MODEL:-'Disco Armazenamento'}")
+    DISK_INFO+=("$DEV_PATH (${DEV_SIZE_HUMAN}) - ${DEV_MODEL:-$(vhack_install_msg unknown_disk)}")
 done < <(lsblk -d -n -b -o NAME,SIZE,RO,MODEL 2>/dev/null)
 
 if [ "${#DISKS[@]}" -eq 0 ]; then
-    echo -e "${RED}Nenhum disco rígido ou SSD elegível encontrado no sistema!${NC}"
-    echo -e "Verifique conexões e se o modo SATA está em AHCI (não RAID) na BIOS."
+    echo -e "${RED}$(vhack_install_msg no_disk)${NC}"
+    echo -e "$(vhack_install_msg check_sata)"
     exit 1
 fi
 
 for i in "${!DISK_INFO[@]}"; do
     echo -e "  [${GREEN}$((i + 1))${NC}] ${BOLD}${DISK_INFO[$i]}${NC}"
 done
-echo -e "  [${YELLOW}0${NC}] Cancelar e Sair\n"
+echo -e "  [${YELLOW}0${NC}] $(vhack_install_msg cancel_exit)\n"
 
-read -rp "Selecione o número do disco que deseja utilizar: " disk_choice
+read -rp "$(vhack_install_msg select_disk)" disk_choice
 
 if [ "$disk_choice" = "0" ] || [ -z "$disk_choice" ]; then
-    echo -e "\nOperação cancelada."
+    echo -e "\n$(vhack_install_msg cancelled)"
     exit 0
 fi
 
 IDX=$((disk_choice - 1))
 if [ "$IDX" -lt 0 ] || [ "$IDX" -ge "${#DISKS[@]}" ]; then
-    echo -e "${RED}Opção inválida!${NC}"
+    echo -e "${RED}$(vhack_install_msg invalid_option)${NC}"
     exit 1
 fi
 
@@ -153,24 +182,24 @@ TARGET_DISK="${DISKS[$IDX]}"
 # ------------------------------------------------------------------------------
 clear
 echo -e "${CYAN}======================================================================${NC}"
-echo -e "${BOLD}${CYAN}                Escolha o Método de Particionamento                   ${NC}"
+echo -e "${BOLD}${CYAN}                $(vhack_install_msg partition_title)                   ${NC}"
 echo -e "${CYAN}======================================================================${NC}\n"
-echo -e "Disco selecionado: ${BOLD}${YELLOW}${TARGET_DISK}${NC}\n"
+echo -e "$(vhack_install_msg selected_disk "$TARGET_DISK")\n"
 
-echo -e "  [${GREEN}1${NC}] ${BOLD}Modo Automático (Recomendado - Apagar Disco Inteiro)${NC}"
-echo -e "      • Cria automaticamente partição EFI (1 GB, FAT32) e Raiz (Ext4)"
-echo -e "      • Ideal para transformar este disco em um appliance dedicado.\n"
+echo -e "  [${GREEN}1${NC}] ${BOLD}$(vhack_install_msg automatic_mode)${NC}"
+echo -e "      $(vhack_install_msg automatic_desc1)"
+echo -e "      $(vhack_install_msg automatic_desc2)\n"
 
-echo -e "  [${MAGENTA}2${NC}] ${BOLD}Modo Manual / Avançado (Gerenciador Visual com cfdisk)${NC}"
-echo -e "      • Permite criar suas próprias partições ou usar partições existentes"
-echo -e "      • Ideal para Dual-Boot ou esquemas de particionamento customizados.\n"
+echo -e "  [${MAGENTA}2${NC}] ${BOLD}$(vhack_install_msg manual_mode)${NC}"
+echo -e "      $(vhack_install_msg manual_desc1)"
+echo -e "      $(vhack_install_msg manual_desc2)\n"
 
-echo -e "  [${YELLOW}0${NC}] Cancelar\n"
+echo -e "  [${YELLOW}0${NC}] $(vhack_install_msg cancelled)\n"
 
-read -rp "Escolha a opção [1 ou 2]: " part_mode
+read -rp "$(vhack_install_msg partition_prompt)" part_mode
 
 if [ "$part_mode" = "0" ] || [ -z "$part_mode" ]; then
-    echo -e "\nOperação cancelada."
+    echo -e "\n$(vhack_install_msg cancelled)"
     exit 0
 fi
 
@@ -187,18 +216,18 @@ ROOT_FSTYPE="ext4"
 # ------------------------------------------------------------------------------
 if [ "$part_mode" = "1" ]; then
     echo -e "\n${RED}======================================================================${NC}"
-    echo -e "${BOLD}${RED}                       ATENÇÃO: FORMATAÇÃO TOTAL                     ${NC}"
+    echo -e "${BOLD}${RED}                       $(vhack_install_msg format_warning)                     ${NC}"
     echo -e "${RED}======================================================================${NC}"
-    echo -e "O disco ${BOLD}${YELLOW}${TARGET_DISK}${NC} será ${BOLD}${RED}COMPLETAMENTE FORMATADO${NC}!"
-    echo -e "Todos os dados e partições serão apagados.\n"
+    echo -e "$(vhack_install_msg will_format "$TARGET_DISK")"
+    echo -e "$(vhack_install_msg erase_warning)\n"
 
-    read -rp "Tem certeza absoluta? Digite 'SIM' para confirmar a formatação: " confirm
-    if [ "$confirm" != "SIM" ]; then
-        echo -e "\nConfirmação não recebida. Operação abortada."
+    read -rp "$(vhack_install_msg format_confirmation)" confirm
+    if [[ "${confirm,,}" != "sim" && "${confirm,,}" != "yes" ]]; then
+        echo -e "\n$(vhack_install_msg confirmation_failed)"
         exit 0
     fi
 
-    echo -e "\n${CYAN}▶ Criando tabela GPT e partições automáticas...${NC}"
+    echo -e "\n${CYAN}$(vhack_install_msg create_gpt)${NC}"
     umount -f "${TARGET_DISK}"* 2>/dev/null || true
 
     parted -s "${TARGET_DISK}" mklabel gpt
@@ -219,7 +248,7 @@ if [ "$part_mode" = "1" ]; then
     fi
 
     if [ ! -b "${PART_EFI}" ] || [ ! -b "${PART_ROOT}" ]; then
-        echo -e "${RED}Erro: As partições criadas (${PART_EFI}, ${PART_ROOT}) não foram registradas pelo kernel.${NC}"
+        echo -e "${RED}$(vhack_install_msg partitions_missing "$PART_EFI" "$PART_ROOT")${NC}"
         exit 1
     fi
 
@@ -229,26 +258,26 @@ if [ "$part_mode" = "1" ]; then
 elif [ "$part_mode" = "2" ]; then
     clear
     echo -e "${CYAN}======================================================================${NC}"
-    echo -e "${BOLD}${CYAN}       REQUISITOS OBRIGATÓRIOS PARA A INSTALAÇÃO DO vHACKINTOSH       ${NC}"
+    echo -e "${BOLD}${CYAN}       $(vhack_install_msg manual_requirements)       ${NC}"
     echo -e "${CYAN}======================================================================${NC}\n"
 
-    echo -e "${BOLD}1. Partição EFI / Boot (${GREEN}OBRIGATÓRIA${NC}):${NC}"
-    echo -e "   • Tamanho sugerido: ${GREEN}512 MB a 1024 MB${NC} (mínimo 300 MB)"
-    echo -e "   • Tipo no cfdisk:   ${GREEN}EFI System${NC} (Código 'ef00' ou tipo 'EFI System')"
-    echo -e "   • Sistema de arq.:  ${GREEN}FAT32${NC} (será montada em /boot)"
-    echo -e "   • Dica: Se já possui uma EFI existente de outro OS, pode reutilizá-la sem formatar.\n"
+    echo -e "${BOLD}$(vhack_install_msg efi_required)${NC}"
+    echo -e "   $(vhack_install_msg efi_size)"
+    echo -e "   $(vhack_install_msg efi_type)"
+    echo -e "   $(vhack_install_msg efi_fs)"
+    echo -e "   $(vhack_install_msg efi_tip)\n"
 
-    echo -e "${BOLD}2. Partição Raiz / Root (${GREEN}OBRIGATÓRIA${NC}):${NC}"
-    echo -e "   • Tamanho sugerido: ${GREEN}50 GB ou mais${NC} (mínimo 30 GB para as VMs macOS e QCOW2)"
-    echo -e "   • Tipo no cfdisk:   ${GREEN}Linux filesystem${NC} (Código '8300')"
-    echo -e "   • Sistema de arq.:  ${GREEN}Ext4${NC} ou ${GREEN}Btrfs${NC} (será montada em /)\n"
+    echo -e "${BOLD}$(vhack_install_msg root_required)${NC}"
+    echo -e "   $(vhack_install_msg root_size)"
+    echo -e "   $(vhack_install_msg root_type)"
+    echo -e "   $(vhack_install_msg root_fs)\n"
 
-    echo -e "${BOLD}3. Partição Swap (${YELLOW}OPCIONAL${NC}):${NC}"
-    echo -e "   • Tamanho sugerido: ${YELLOW}4 GB a 16 GB${NC}"
-    echo -e "   • Tipo no cfdisk:   ${YELLOW}Linux swap${NC} (Código '8200')\n"
+    echo -e "${BOLD}$(vhack_install_msg swap_optional)${NC}"
+    echo -e "   $(vhack_install_msg swap_size)"
+    echo -e "   $(vhack_install_msg swap_type)\n"
 
     echo -e "${CYAN}----------------------------------------------------------------------${NC}"
-    read -rp "Deseja abrir o editor visual 'cfdisk' agora no disco ${TARGET_DISK}? [S/n]: " open_cfdisk
+    read -rp "$(vhack_install_msg open_cfdisk "$TARGET_DISK")" open_cfdisk
     if [[ ! "$open_cfdisk" =~ ^[Nn]$ ]]; then
         cfdisk "${TARGET_DISK}"
     fi
@@ -259,24 +288,24 @@ elif [ "$part_mode" = "2" ]; then
 
     # Lista partições disponíveis no disco
     clear
-    echo -e "${BOLD}Partições detectadas no disco ${TARGET_DISK}:${NC}\n"
+    echo -e "${BOLD}$(vhack_install_msg detected_partitions "$TARGET_DISK")${NC}\n"
     lsblk "${TARGET_DISK}" -o NAME,SIZE,FSTYPE,TYPE,MOUNTPOINTS
 
     echo -e "\n${CYAN}----------------------------------------------------------------------${NC}"
-    echo -e "${BOLD}Mapeamento das Partições para o Sistema:${NC}\n"
+    echo -e "${BOLD}$(vhack_install_msg partition_mapping)${NC}\n"
 
     # Seleção da Partição EFI
-    read -rp "Informe o caminho da partição EFI (ex: ${TARGET_DISK}1 ou /dev/sda1): " user_efi
+    read -rp "$(vhack_install_msg efi_path "$TARGET_DISK")" user_efi
     if [[ ! "$user_efi" =~ ^/dev/ ]]; then
         user_efi="/dev/${user_efi}"
     fi
     if [ ! -b "$user_efi" ]; then
-        echo -e "${RED}Erro: O dispositivo '${user_efi}' não existe como partição válida!${NC}"
+        echo -e "${RED}$(vhack_install_msg device_invalid "$user_efi")${NC}"
         exit 1
     fi
     PART_EFI="$user_efi"
 
-    read -rp "Deseja FORMATAR a partição EFI em FAT32? (Digite 'n' se for Dual-Boot) [s/N]: " fmt_efi_ans
+    read -rp "$(vhack_install_msg format_efi)" fmt_efi_ans
     if [[ "$fmt_efi_ans" =~ ^[Ss]$ ]]; then
         FORMAT_EFI=true
     else
@@ -284,27 +313,27 @@ elif [ "$part_mode" = "2" ]; then
     fi
 
     # Seleção da Partição Raiz (Root)
-    read -rp "Informe o caminho da partição Raiz '/' (ex: ${TARGET_DISK}2): " user_root
+    read -rp "$(vhack_install_msg root_path "$TARGET_DISK")" user_root
     if [[ ! "$user_root" =~ ^/dev/ ]]; then
         user_root="/dev/${user_root}"
     fi
     if [ ! -b "$user_root" ]; then
-        echo -e "${RED}Erro: O dispositivo '${user_root}' não existe como partição válida!${NC}"
+        echo -e "${RED}$(vhack_install_msg device_invalid "$user_root")${NC}"
         exit 1
     fi
     PART_ROOT="$user_root"
 
-    echo -e "\nEscolha o sistema de arquivos para a Raiz:"
-    echo -e "  [1] Ext4 (Recomendado - Máxima estabilidade para imagens de VM)"
-    echo -e "  [2] Btrfs (Suporte a snapshots e subvolumes)"
-    read -rp "Opção [1 ou 2] (padrão 1): " fs_ans
+    echo -e "\n$(vhack_install_msg root_fs_choice)"
+    echo -e "  [1] $(vhack_install_msg ext4_choice)"
+    echo -e "  [2] $(vhack_install_msg btrfs_choice)"
+    read -rp "$(vhack_install_msg fs_prompt)" fs_ans
     if [ "$fs_ans" = "2" ]; then
         ROOT_FSTYPE="btrfs"
     else
         ROOT_FSTYPE="ext4"
     fi
 
-    read -rp "Deseja FORMATAR a partição Raiz (${PART_ROOT}) em ${ROOT_FSTYPE}? [S/n]: " fmt_root_ans
+    read -rp "$(vhack_install_msg format_root "$PART_ROOT" "$ROOT_FSTYPE")" fmt_root_ans
     if [[ "$fmt_root_ans" =~ ^[Nn]$ ]]; then
         FORMAT_ROOT=false
     else
@@ -312,7 +341,7 @@ elif [ "$part_mode" = "2" ]; then
     fi
 
     # Seleção da Partição Swap (Opcional)
-    read -rp "Possui partição Swap para ativar? (Digite o caminho ou pressione Enter para pular): " user_swap
+    read -rp "$(vhack_install_msg swap_prompt)" user_swap
     if [ -n "$user_swap" ]; then
         if [[ ! "$user_swap" =~ ^/dev/ ]]; then
             user_swap="/dev/${user_swap}"
@@ -325,26 +354,30 @@ elif [ "$part_mode" = "2" ]; then
     # Resumo antes da gravação
     clear
     echo -e "${CYAN}======================================================================${NC}"
-    echo -e "${BOLD}${CYAN}                  Resumo do Plano de Instalação                       ${NC}"
+    echo -e "${BOLD}${CYAN}                  $(vhack_install_msg summary_title)                       ${NC}"
     echo -e "${CYAN}======================================================================${NC}\n"
-    echo -e "  • Partição EFI:     ${BOLD}${GREEN}${PART_EFI}${NC} (Formatar FAT32: $([ "$FORMAT_EFI" = true ] && echo "SIM" || echo "NÃO"))"
-    echo -e "  • Partição Raiz:    ${BOLD}${GREEN}${PART_ROOT}${NC} (${ROOT_FSTYPE} | Formatar: $([ "$FORMAT_ROOT" = true ] && echo "SIM" || echo "NÃO"))"
-    echo -e "  • Partição Swap:    ${BOLD}${YELLOW}${PART_SWAP:-Nenhuma}${NC}\n"
+    EFI_FORMAT_LABEL="$(vhack_install_msg no)"
+    ROOT_FORMAT_LABEL="$(vhack_install_msg no)"
+    [ "$FORMAT_EFI" = true ] && EFI_FORMAT_LABEL="$(vhack_install_msg yes)"
+    [ "$FORMAT_ROOT" = true ] && ROOT_FORMAT_LABEL="$(vhack_install_msg yes)"
+    echo -e "  $(vhack_install_msg summary_efi "$PART_EFI" "$EFI_FORMAT_LABEL")"
+    echo -e "  $(vhack_install_msg summary_root "$PART_ROOT" "$ROOT_FSTYPE" "$ROOT_FORMAT_LABEL")"
+    echo -e "  $(vhack_install_msg summary_swap "${PART_SWAP:-$(vhack_install_msg none)}")\n"
 
-    read -rp "Deseja prosseguir com a instalação e gravação dos dados? [S/n]: " final_confirm
+    read -rp "$(vhack_install_msg proceed_prompt)" final_confirm
     if [[ "$final_confirm" =~ ^[Nn]$ ]]; then
-        echo -e "\nInstalação cancelada pelo usuário."
+        echo -e "\n$(vhack_install_msg cancelled_user)"
         exit 0
     fi
 else
-    echo -e "${RED}Opção inválida!${NC}"
+    echo -e "${RED}$(vhack_install_msg invalid_option)${NC}"
     exit 1
 fi
 
 # ------------------------------------------------------------------------------
 # 3. EXECUÇÃO DA FORMATAÇÃO E MONTAGEM
 # ------------------------------------------------------------------------------
-echo -e "\n${CYAN}▶ 1/5 Aplicando formatação conforme configurado...${NC}"
+echo -e "\n${CYAN}$(vhack_install_msg step_format)${NC}"
 
 # Desmonta antes de formatar
 umount -f "${PART_ROOT}" 2>/dev/null || true
@@ -352,13 +385,13 @@ umount -f "${PART_EFI}" 2>/dev/null || true
 
 # Formatação EFI
 if [ "$FORMAT_EFI" = true ]; then
-    echo -e "  • Formatando EFI (${PART_EFI}) em FAT32..."
+    echo -e "  $(vhack_install_msg formatting_efi "$PART_EFI")"
     mkfs.fat -F32 -n "VHACK_EFI" "${PART_EFI}"
 fi
 
 # Formatação Raiz
 if [ "$FORMAT_ROOT" = true ]; then
-    echo -e "  • Formatando Raiz (${PART_ROOT}) em ${ROOT_FSTYPE}..."
+    echo -e "  $(vhack_install_msg formatting_root "$PART_ROOT" "$ROOT_FSTYPE")"
     if [ "$ROOT_FSTYPE" = "btrfs" ]; then
         mkfs.btrfs -f -L "VHACK_ROOT" "${PART_ROOT}"
     else
@@ -368,18 +401,18 @@ fi
 
 # Ativação do Swap se configurado
 if [ -n "$PART_SWAP" ]; then
-    echo -e "  • Ativando partição Swap (${PART_SWAP})..."
+    echo -e "  $(vhack_install_msg activating_swap "$PART_SWAP")"
     mkswap -f "${PART_SWAP}" 2>/dev/null || true
     swapon "${PART_SWAP}" 2>/dev/null || true
 fi
 
-echo -e "\n${CYAN}▶ 2/5 Montando estrutura de diretórios em /mnt...${NC}"
+echo -e "\n${CYAN}$(vhack_install_msg step_mount)${NC}"
 mkdir -p /mnt
 mount "${PART_ROOT}" /mnt
 mkdir -p /mnt/boot
 mount "${PART_EFI}" /mnt/boot
 
-echo -e "\n${CYAN}▶ 3/5 Gravando sistema operacional vHackintosh no SSD...${NC}"
+echo -e "\n${CYAN}$(vhack_install_msg step_copy)${NC}"
 if [ -f /usr/local/bin/vhack-copy-system ]; then
     /usr/local/bin/vhack-copy-system "/" "/mnt/"
 else
@@ -398,12 +431,12 @@ chmod 1777 /mnt/tmp
 SYSTEMD_WANTS_DIR="/mnt/etc/systemd/system/multi-user.target.wants"
 for service in vhackintosh-agent.service vhackintosh-web.service vhackintosh-http-redirect.service; do
     if [ ! -f "/mnt/etc/systemd/system/${service}" ]; then
-        echo -e "${RED}Erro: unidade obrigatória ausente no sistema copiado: ${service}${NC}"
+        echo -e "${RED}$(vhack_install_msg missing_unit "$service")${NC}"
         exit 1
     fi
 done
 if [ ! -e "/mnt/usr/lib/systemd/system/seatd.service" ]; then
-    echo -e "${RED}Erro: o pacote seatd e sua unidade systemd são necessários para iniciar o compositor gráfico.${NC}"
+    echo -e "${RED}$(vhack_install_msg missing_seatd)${NC}"
     exit 1
 fi
 mkdir -p "${SYSTEMD_WANTS_DIR}"
@@ -415,13 +448,13 @@ ln -sfn ../vhackintosh-http-redirect.service "${SYSTEMD_WANTS_DIR}/vhackintosh-h
 # Preserve remote diagnostics on the installed appliance as well as in live mode.
 if [ -f "/mnt/etc/ssh/sshd_config.d/00-vhackintosh-debug.conf" ]; then
     if [ ! -f "/mnt/usr/lib/systemd/system/sshd.service" ]; then
-        echo -e "${RED}Erro: a ISO de diagnóstico não contém a unidade sshd.service.${NC}"
+        echo -e "${RED}$(vhack_install_msg missing_sshd)${NC}"
         exit 1
     fi
     ln -sfn /usr/lib/systemd/system/sshd.service "${SYSTEMD_WANTS_DIR}/sshd.service"
 fi
 
-echo -e "\n${CYAN}▶ 4/5 Gerando /etc/fstab e configurações de sistema...${NC}"
+echo -e "\n${CYAN}$(vhack_install_msg step_fstab)${NC}"
 if command -v genfstab >/dev/null 2>&1; then
     genfstab -U /mnt > /mnt/etc/fstab
 else
@@ -461,7 +494,7 @@ root_partition=${PART_ROOT}
 root_fstype=${ROOT_FSTYPE}
 EOF
 chmod 644 /mnt/etc/vhackintosh/installed
-echo -e "  • Registrado marcador de instalação em /etc/vhackintosh/installed"
+echo -e "  $(vhack_install_msg install_marker)"
 
 # Permissões de execução dos binários
 chmod +x /mnt/opt/vhackintosh/bin/* 2>/dev/null || true
@@ -470,7 +503,7 @@ chmod +x /mnt/opt/vhackintosh/themes/grub/install.sh 2>/dev/null || true
 chmod +x /mnt/usr/local/bin/* 2>/dev/null || true
 
 # Copia o kernel do Linux para /mnt/boot/vmlinuz-linux
-echo -e "  • Instalando imagem do Kernel Linux em /boot/vmlinuz-linux..."
+echo -e "  $(vhack_install_msg install_kernel)"
 if [ ! -f /mnt/boot/vmlinuz-linux ]; then
     KERNEL_FOUND=""
     for k in "/run/archiso/bootmnt/arch/boot/x86_64/vmlinuz-linux" \
@@ -487,7 +520,7 @@ if [ ! -f /mnt/boot/vmlinuz-linux ]; then
     fi
 fi
 
-echo -e "\n${CYAN}▶ 5/5 Instalando Bootloader GRUB 2 UEFI e tema Dark Apple...${NC}"
+echo -e "\n${CYAN}$(vhack_install_msg step_bootloader)${NC}"
 
 # Chroot compatível (usa arch-chroot se disponível para propagar efivars automaticamente)
 if command -v arch-chroot >/dev/null 2>&1; then
@@ -529,26 +562,26 @@ $CHROOT_EXEC /bin/bash -c "
 # Não conclua uma instalação que ficou sem auto-start do painel.
 for service in vhackintosh-agent.service vhackintosh-web.service vhackintosh-http-redirect.service; do
     if [ "$(readlink -f "${SYSTEMD_WANTS_DIR}/${service}" 2>/dev/null || true)" != "/mnt/etc/systemd/system/${service}" ]; then
-        echo -e "${RED}Erro: não foi possível habilitar o início automático de ${service}.${NC}"
+        echo -e "${RED}$(vhack_install_msg enable_unit "$service")${NC}"
         exit 1
     fi
 done
 if [ -f "/mnt/etc/ssh/sshd_config.d/00-vhackintosh-debug.conf" ] && \
    [ "$(readlink "${SYSTEMD_WANTS_DIR}/sshd.service" 2>/dev/null || true)" != "/usr/lib/systemd/system/sshd.service" ]; then
-    echo -e "${RED}Erro: não foi possível habilitar o acesso SSH temporário de diagnóstico.${NC}"
+    echo -e "${RED}$(vhack_install_msg enable_debug_ssh)${NC}"
     exit 1
 fi
 
-echo -e "\n${BLUE}▶ Sincronizando dados pendentes no disco...${NC}"
+echo -e "\n${BLUE}$(vhack_install_msg syncing)${NC}"
 sync
 umount -R /mnt 2>/dev/null || true
 
 echo -e "\n${GREEN}======================================================================${NC}"
-echo -e "${BOLD}${GREEN}        PARABÉNS! vHackintosh OS INSTALADO COM SUCESSO!               ${NC}"
+echo -e "${BOLD}${GREEN}        $(vhack_install_msg success_title)               ${NC}"
 echo -e "${GREEN}======================================================================${NC}\n"
-echo -e "O seu computador agora está pronto para rodar macOS com aceleração nativa!"
-echo -e "1. Remova o pendrive de instalação USB."
-echo -e "2. Pressione ${BOLD}Enter${NC} para reiniciar o computador no vHackintosh OS."
+echo -e "$(vhack_install_msg success_body)"
+echo -e "$(vhack_install_msg remove_usb)"
+echo -e "$(vhack_install_msg reboot_instruction)"
 
 read -rp ""
 reboot

@@ -267,6 +267,7 @@ class WebAgentServiceTests(unittest.TestCase):
                 "reims_set_options": ["--cpus", "--memory", "--network", "--mac", "--audio", "--audio-backend"],
                 "reims_create_options": ["--disk-size"],
                 "reims_update_opencore_picker": True,
+                "reims_update_opencore_kext_mode": "embedded",
                 "binary_fingerprint": "a" * 64,
             }
             with patch("core.runtime_inventory.inspect_runtime", return_value=runtime):
@@ -1511,15 +1512,260 @@ class WebAgentServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             service = WebAgentService(Path(directory) / "vms.json")
             context = Context()
+            from core import update_guard
+
+            fake_tree = Path(directory) / "release"
+            fake_tree.mkdir()
+            maintenance_root = Path(directory) / "maintenance"
+            real_maintenance_window = update_guard.maintenance_window
             with patch("core.reims_release.update_from_release", return_value=UpdateResult(
                 ok=True, tag="v1.2.3", previous="v1.2.2", message="updated", changed=True,
-            )) as update:
-                result = service._run_reims_release_update_job({"tag": "v1.2.3"}, context)
-            self.assertEqual(result["tag"], "v1.2.3")
-            self.assertEqual(result["activation"], "next-vm-start")
+            )) as update, patch(
+                "core.update_guard.maintenance_window",
+                side_effect=lambda **_kwargs: real_maintenance_window(
+                    marker=maintenance_root / "maintenance.json",
+                    lock_path=maintenance_root / "reservations.lock",
+                    reservations_dir=maintenance_root / "reservations",
+                ),
+            ) as maintenance, patch(
+                "core.reims_build.prebuilt_reims_ctl", return_value=fake_tree / "bin/reims-ctl"
+            ), patch(
+                "core.reims_build.prebuilt_reims_util", return_value=None
+            ):
+                with self.assertRaisesRegex(RuntimeError, "não contém reims-ctl e reims-util compatíveis"):
+                    service._run_reims_release_update_job({"tag": "v1.2.3"}, context)
             self.assertEqual(update.call_args.kwargs["tag"], "v1.2.3")
+            maintenance.assert_called_once()
             self.assertIn(("reims_release_update_started", {"tag": "v1.2.3"}), context.events)
-            self.assertEqual(context.events[-1], ("Reims v1.2.3 disponível; será ativado no próximo boot", 100))
+
+    def test_reims_release_update_fails_and_restores_the_vm_when_kexts_shrink(self):
+        """rc=0 per VM is not success: a shrunken EFI must abort the update."""
+        import plistlib
+        from core.reims_release import UpdateResult
+
+        class Context:
+            def __init__(self): self.events = []
+            def check_cancelled(self): return None
+            def phase(self, name, progress=None): self.events.append((name, progress))
+            def checkpoint(self, name, payload, **_kwargs): self.events.append((name, payload))
+            def log(self, message, level=None): self.events.append(("log", message, level))
+            def run_subprocess(self, command, **_kwargs):
+                if command[1] == "update-opencore":
+                    (vm_dir / "OpenCore.qcow2").write_bytes(b"regenerated with Lilu only")
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                raise AssertionError(command)
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = WebAgentService(Path(directory) / "vms.json", gpu_inventory=lambda: [])
+            vm = VMConfig(id="macos-studio", name="Studio", macos_version="tahoe")
+            service.store.add_vm(vm)
+            vm_dir = service.store.config_dir / "vms" / vm.id
+            vm_dir.mkdir(parents=True)
+            (vm_dir / "vm.toml").write_text('[q35]\nopencore = "OpenCore.qcow2"\n', encoding="utf-8")
+            (vm_dir / "OpenCore.qcow2").write_bytes(b"original image")
+            fake_tree = Path(directory) / "release"
+            fake_tree.mkdir()
+            seen = {"n": 0}
+
+            def fake_run(command, **_kwargs):
+                if command[1:3] == ["update-opencore", "--help"]:
+                    return SimpleNamespace(returncode=0, stdout="Usage: reims-ctl update-opencore <NAME>", stderr="")
+                if command[0] == "guestfish" and "download" in command:
+                    seen["n"] += 1
+                    bundles = ("Lilu.kext", "ReimsGfx.kext") if seen["n"] == 1 else ("Lilu.kext",)
+                    plist = {"Kernel": {"Add": [{"BundlePath": n, "Enabled": True} for n in bundles]}}
+                    Path(command[-1]).write_bytes(plistlib.dumps(plist))
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                if command[0] == "guestfish" and "ls" in command:
+                    out = "Lilu.kext\nReimsGfx.kext\n" if seen["n"] == 1 else "Lilu.kext\n"
+                    return SimpleNamespace(returncode=0, stdout=out, stderr="")
+                raise AssertionError(command)
+
+            with patch("core.reims_release.update_from_release", return_value=UpdateResult(
+                     ok=True, tag="v1.2.3", previous="v1.2.2", message="updated", changed=True,
+                 )), patch("core.update_guard.maintenance_window"), patch(
+                     "core.reims_build.prebuilt_reims_ctl", return_value=fake_tree / "bin/reims-ctl"
+                 ), patch(
+                     "core.reims_build.prebuilt_reims_util", return_value=fake_tree / "bin/reims-util"
+                 ), patch("core.reims_build.install_prebuilt", return_value=True), patch(
+                     "core.reims_ctl.reims_ctl_bin", return_value="/managed/reims-ctl"
+                 ), patch(
+                     "core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}
+                 ), patch("core.web_agent.shutil.which", return_value="/usr/bin/guestfish"), patch(
+                     "core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_kext_mode": "embedded"}
+                 ), patch("core.web_agent.subprocess.run", side_effect=fake_run):
+                with self.assertRaisesRegex(RuntimeError, r"com falha em 1 \(Studio\)"):
+                    service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
+            self.assertEqual((vm_dir / "OpenCore.qcow2").read_bytes(), b"original image")
+            service.close_jobs()
+
+    def test_reims_release_update_fails_when_the_kext_set_swaps_at_constant_size(self):
+        """A same-size swap must fail: cardinality alone misses (or so it seems) it.
+
+        `apple-gfx-pci` yields 8 ports; a `reims-graphics-pci` set yields 5 `Rgfx*`.
+        A swap that keeps the count is just as broken as a shrink, and the EFI
+        must be restored either way.
+        """
+        import plistlib
+        from core.reims_release import UpdateResult
+
+        before_bundles = ("Lilu.kext", "ReimsGfx.kext")
+        after_bundles = ("Lilu.kext", "RgfxGate.kext")
+
+        class Context:
+            def __init__(self): self.events = []
+            def check_cancelled(self): return None
+            def phase(self, name, progress=None): self.events.append((name, progress))
+            def checkpoint(self, name, payload, **_kwargs): self.events.append((name, payload))
+            def log(self, message, level=None): self.events.append(("log", message, level))
+            def run_subprocess(self, command, **_kwargs):
+                if command[1] == "update-opencore":
+                    (vm_dir / "OpenCore.qcow2").write_bytes(b"regenerated with a swapped set")
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                raise AssertionError(command)
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = WebAgentService(Path(directory) / "vms.json", gpu_inventory=lambda: [])
+            vm = VMConfig(id="macos-studio", name="Studio", macos_version="tahoe")
+            service.store.add_vm(vm)
+            vm_dir = service.store.config_dir / "vms" / vm.id
+            vm_dir.mkdir(parents=True)
+            (vm_dir / "vm.toml").write_text('[q35]\nopencore = "OpenCore.qcow2"\n', encoding="utf-8")
+            (vm_dir / "OpenCore.qcow2").write_bytes(b"original image")
+            fake_tree = Path(directory) / "release"
+            fake_tree.mkdir()
+            seen = {"n": 0}
+
+            def fake_run(command, **_kwargs):
+                if command[1:3] == ["update-opencore", "--help"]:
+                    return SimpleNamespace(returncode=0, stdout="Usage: reims-ctl update-opencore <NAME>", stderr="")
+                if command[0] == "guestfish" and "download" in command:
+                    seen["n"] += 1
+                    bundles = before_bundles if seen["n"] == 1 else after_bundles
+                    plist = {"Kernel": {"Add": [{"BundlePath": n, "Enabled": True} for n in bundles]}}
+                    Path(command[-1]).write_bytes(plistlib.dumps(plist))
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                if command[0] == "guestfish" and "ls" in command:
+                    bundles = before_bundles if seen["n"] == 1 else after_bundles
+                    return SimpleNamespace(returncode=0, stdout="\n".join(bundles), stderr="")
+                raise AssertionError(command)
+
+            with patch("core.reims_release.update_from_release", return_value=UpdateResult(
+                     ok=True, tag="v1.2.3", previous="v1.2.2", message="updated", changed=True,
+                 )), patch("core.update_guard.maintenance_window"), patch(
+                     "core.reims_build.prebuilt_reims_ctl", return_value=fake_tree / "bin/reims-ctl"
+                 ), patch(
+                     "core.reims_build.prebuilt_reims_util", return_value=fake_tree / "bin/reims-util"
+                 ), patch("core.reims_build.install_prebuilt", return_value=True), patch(
+                     "core.reims_ctl.reims_ctl_bin", return_value="/managed/reims-ctl"
+                 ), patch(
+                     "core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}
+                 ), patch("core.web_agent.shutil.which", return_value="/usr/bin/guestfish"), patch(
+                     "core.web_agent.subprocess.run", side_effect=fake_run
+                 ), patch(
+                     "core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_kext_mode": "embedded"}
+                 ):
+                with self.assertRaisesRegex(RuntimeError, r"com falha em 1 \(Studio\)"):
+                    service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
+            self.assertEqual((vm_dir / "OpenCore.qcow2").read_bytes(), b"original image")
+            service.close_jobs()
+
+    def test_reims_release_update_leaves_no_orphan_backup_when_before_read_fails(self):
+        """A `before` inspection failure mutates nothing, so it must not leave a backup.
+
+        A host without `guestfish` fails on every VM; without this ordering the
+        batch would drop one `.opencore-before-{tag}.qcow2` per managed VM.
+        """
+        from core.reims_release import UpdateResult
+
+        class Context:
+            def check_cancelled(self): return None
+            def phase(self, *args, **kwargs): return None
+            def checkpoint(self, *args, **kwargs): return None
+            def log(self, *args, **kwargs): return None
+            def run_subprocess(self, *args, **kwargs):
+                raise AssertionError("nenhuma imagem pode ser tocada")
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = WebAgentService(Path(directory) / "vms.json", gpu_inventory=lambda: [])
+            vm = VMConfig(id="macos-studio", name="Studio", macos_version="tahoe")
+            service.store.add_vm(vm)
+            vm_dir = service.store.config_dir / "vms" / vm.id
+            vm_dir.mkdir(parents=True)
+            (vm_dir / "vm.toml").write_text('[q35]\nopencore = "OpenCore.qcow2"\n', encoding="utf-8")
+            (vm_dir / "OpenCore.qcow2").write_bytes(b"original image")
+            fake_tree = Path(directory) / "release"
+            fake_tree.mkdir()
+
+            def fake_run(command, **_kwargs):
+                if command[1:3] == ["update-opencore", "--help"]:
+                    return SimpleNamespace(returncode=0, stdout="Usage: reims-ctl update-opencore <NAME>", stderr="")
+                raise AssertionError(command)
+
+            with patch("core.reims_release.update_from_release", return_value=UpdateResult(
+                     ok=True, tag="v1.2.3", previous="v1.2.2", message="updated", changed=True,
+                 )), patch("core.update_guard.maintenance_window"), patch(
+                     "core.reims_build.prebuilt_reims_ctl", return_value=fake_tree / "bin/reims-ctl"
+                 ), patch(
+                     "core.reims_build.prebuilt_reims_util", return_value=fake_tree / "bin/reims-util"
+                 ), patch("core.reims_build.install_prebuilt", return_value=True), patch(
+                     "core.reims_ctl.reims_ctl_bin", return_value="/managed/reims-ctl"
+                 ), patch(
+                     "core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}
+                 ), patch("core.web_agent.shutil.which", return_value=None), patch(
+                     "core.web_agent.subprocess.run", side_effect=fake_run
+                 ), patch(
+                     "core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_kext_mode": "embedded"}
+                 ):
+                with self.assertRaisesRegex(RuntimeError, r"com falha em 1 \(Studio\)"):
+                    service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
+            self.assertEqual((vm_dir / "OpenCore.qcow2").read_bytes(), b"original image")
+            self.assertEqual({entry.name for entry in vm_dir.iterdir()}, {"vm.toml", "OpenCore.qcow2"})
+            service.close_jobs()
+
+    def test_reims_release_update_aborts_the_whole_batch_on_add_kext_util(self):
+        """An add-kext util without a ctl that forwards --add-kext must abort before any VM."""
+        from core.reims_release import UpdateResult
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = WebAgentService(Path(directory) / "vms.json", gpu_inventory=lambda: [])
+            vm = VMConfig(id="macos-studio", name="Studio", macos_version="tahoe")
+            service.store.add_vm(vm)
+            vm_dir = service.store.config_dir / "vms" / vm.id
+            vm_dir.mkdir(parents=True)
+            (vm_dir / "vm.toml").write_text('[q35]\nopencore = "OpenCore.qcow2"\n', encoding="utf-8")
+            (vm_dir / "OpenCore.qcow2").write_bytes(b"original image")
+            fake_tree = Path(directory) / "release"
+            fake_tree.mkdir()
+
+            class Context:
+                def check_cancelled(self): return None
+                def phase(self, *args, **kwargs): return None
+                def checkpoint(self, *args, **kwargs): return None
+                def log(self, *args, **kwargs): return None
+                def run_subprocess(self, *args, **kwargs):
+                    raise AssertionError("nenhuma VM pode ser tocada")
+
+            def fake_run(command, **_kwargs):
+                if command[1:3] == ["update-opencore", "--help"]:
+                    return SimpleNamespace(returncode=0, stdout="Usage: reims-ctl update-opencore <NAME>", stderr="")
+                raise AssertionError(command)
+
+            with patch("core.reims_release.update_from_release", return_value=UpdateResult(
+                     ok=True, tag="v1.2.3", previous="v1.2.2", message="updated", changed=True,
+                 )), patch("core.update_guard.maintenance_window"), patch(
+                     "core.reims_build.prebuilt_reims_ctl", return_value=fake_tree / "bin/reims-ctl"
+                 ), patch(
+                     "core.reims_build.prebuilt_reims_util", return_value=fake_tree / "bin/reims-util"
+                 ), patch("core.reims_build.install_prebuilt", return_value=True), patch(
+                     "core.reims_ctl.reims_ctl_bin", return_value="/managed/reims-ctl"
+                 ), patch(
+                     "core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_kext_mode": "add-kext"}
+                 ), patch("core.web_agent.subprocess.run", side_effect=fake_run):
+                with self.assertRaisesRegex(RuntimeError, "sem kexts embutidos"):
+                    service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
+            self.assertEqual((vm_dir / "OpenCore.qcow2").read_bytes(), b"original image")
+            service.close_jobs()
 
     def test_control_release_catalog_and_update_job_are_allowlisted(self):
         from core.control_release import ControlRelease

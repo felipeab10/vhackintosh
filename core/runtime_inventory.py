@@ -351,6 +351,8 @@ def _capability_inventory(
     reims_set_options: list[str],
     reims_create_options: list[str],
     reims_update_opencore_picker: bool,
+    reims_util_kext_mode: str,
+    reims_util_kext_mode_source: str | None,
     reims_schema_version: int | None,
     reims_schema_features: list[str],
 ) -> dict[str, object]:
@@ -380,6 +382,12 @@ def _capability_inventory(
                 "values": ["--boot-selection <NAME>"] if reims_update_opencore_picker else [],
                 "meaning": "help lists the option; execution is not validated" if reims_update_opencore_picker
                 else "help did not establish availability; omission is not proof of unsupported",
+            },
+            "update_opencore_util": {
+                "status": "reported" if reims_util_kext_mode != "unknown" else "unknown",
+                "source": reims_util_kext_mode_source or "reims-ctl companion reims-util opencore --help",
+                "kext_mode": reims_util_kext_mode,
+                "meaning": "selected companion reports embedded or --add-kext support; this does not prove image contents",
             },
         },
         "qemu": {
@@ -445,6 +453,22 @@ def inspect_runtime(
     reims_set_help = _probe(reims, "set", "--help", deadline=deadline) if reims else None
     reims_create_help = _probe(reims, "create", "--help", deadline=deadline) if reims else None
     reims_update_opencore_help = _probe(reims, "update-opencore", "--help", deadline=deadline) if reims else None
+    # reims-ctl selects reims-util via REIMS_CTL_UTIL, then beside itself, then
+    # PATH. Probe that exact companion, not core.reims_util's independent list.
+    util_candidates: list[Path] = []
+    override_util = os.environ.get("REIMS_CTL_UTIL")
+    if override_util:
+        util_candidates.append(Path(override_util).expanduser())
+    if reims is not None:
+        util_candidates.append(reims.parent / "reims-util")
+    util_candidates.extend(Path(value).expanduser() / "reims-util" for value in os.environ.get("PATH", "").split(os.pathsep) if value)
+    reims_util = next((candidate for candidate in util_candidates if candidate.is_file() and os.access(candidate, os.X_OK)), None)
+    reims_util_help = _probe(reims_util, "opencore", "--help", deadline=deadline) if reims_util else None
+    reims_util_kext_mode = (
+        "add-kext" if reims_util_help and "--add-kext" in reims_util_help else
+        "embedded" if reims_util_help and "--no-apv-arm64-port" in reims_util_help else
+        "unknown"
+    )
     qemu_version_output = _probe(qemu, "--version", deadline=deadline)
     qemu_help = _probe(qemu, "-help", deadline=deadline)
     qemu_devices_output = _probe(qemu, "-device", "help", deadline=deadline)
@@ -505,6 +529,8 @@ def inspect_runtime(
                 and "--boot-selection" in reims_update_opencore_help
                 and "<NAME>" in reims_update_opencore_help
             ),
+            reims_util_kext_mode=reims_util_kext_mode,
+            reims_util_kext_mode_source=str(reims_util) if reims_util else None,
             reims_schema_version=reims_schema_version,
             reims_schema_features=reims_schema_features,
         ),
@@ -515,6 +541,8 @@ def inspect_runtime(
             and "--boot-selection" in reims_update_opencore_help
             and "<NAME>" in reims_update_opencore_help
         ),
+        "reims_update_opencore_kext_mode": reims_util_kext_mode,
+        "reims_update_opencore_kext_mode_source": str(reims_util) if reims_util else None,
         "binary_fingerprint": binary_fingerprint,
     }
     if use_cache:

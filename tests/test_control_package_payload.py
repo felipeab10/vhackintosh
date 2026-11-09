@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import configparser
 import hashlib
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -14,14 +17,16 @@ class ControlPackagePayloadTests(unittest.TestCase):
         builder = (ROOT / "packaging/common/build-reims-util.sh").read_text(encoding="utf-8")
         build_all = (ROOT / "packaging/build-all.sh").read_text(encoding="utf-8")
         workflow = (ROOT / ".github/workflows/release-control.yml").read_text(encoding="utf-8")
-        revision = "c717e69f0a74ba050973dcca294ba35499145c56"
+        revision = "0b9c3780a3ec2aa312a448b09b18320e5a2c9251"
 
         self.assertIn(revision, builder)
         self.assertIn("cargo \"+${TOOLCHAIN}\" build --locked --release", builder)
-        self.assertIn("--no-apv-arm64-port", builder)
+        self.assertIn("--add-kext", builder)
+        self.assertNotIn("--no-apv-arm64-port", builder)
         self.assertIn('"${PAYLOAD_BASE}/opt/vhackintosh/resources/reims-util"', build_all)
         self.assertIn("/opt/vhackintosh/resources/reims-util/reims-util", workflow)
-        self.assertIn("--no-apv-arm64-port", workflow)
+        self.assertIn("--add-kext", workflow)
+        self.assertNotIn("--no-apv-arm64-port", workflow)
 
     def test_staging_includes_the_pinned_macserial_tool_and_redirect_service(self):
         stage = (ROOT / "packaging/common/stage-app.sh").read_text(encoding="utf-8")
@@ -35,6 +40,29 @@ class ControlPackagePayloadTests(unittest.TestCase):
         self.assertIn(expected_sha256, stage)
         self.assertIn('"${ROOT}/packaging/systemd/vhackintosh-http-redirect.service"', stage)
         self.assertIn('"${DESTDIR}/usr/lib/systemd/system/vhackintosh-http-redirect.service"', stage)
+
+    def test_staged_control_bundle_normalizes_restrictive_source_permissions(self):
+        stage = (ROOT / "packaging/common/stage-app.sh").read_text(encoding="utf-8")
+        normalizer = ROOT / "packaging/common/normalize-tree-permissions.sh"
+        self.assertIn('normalize-tree-permissions.sh" "${APP}"', stage)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary) / "bundle"
+            core = bundle / "core"
+            core.mkdir(parents=True)
+            unreadable_module = core / "hardware.py"
+            unreadable_module.write_text("value = 1\n", encoding="utf-8")
+            unreadable_module.chmod(0o600)
+            executable = bundle / "launcher"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+            core.chmod(0o700)
+
+            subprocess.run(["bash", str(normalizer), str(bundle)], check=True)
+
+            self.assertEqual(os.stat(core).st_mode & 0o777, 0o755)
+            self.assertEqual(os.stat(unreadable_module).st_mode & 0o777, 0o644)
+            self.assertEqual(os.stat(executable).st_mode & 0o777, 0o755)
 
     def test_desktop_package_stages_the_matching_ovmf_code_and_vars_templates(self):
         stage = (ROOT / "packaging/common/stage-app.sh").read_text(encoding="utf-8")

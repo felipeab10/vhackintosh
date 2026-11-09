@@ -1030,6 +1030,8 @@ class RuntimeInventory(Contract):
     reims_set_options: list[str] = Field(default_factory=list)
     reims_create_options: list[str] = Field(default_factory=list)
     reims_update_opencore_picker: bool = False
+    reims_update_opencore_kext_mode: str = "unknown"
+    reims_update_opencore_kext_mode_source: str | None = None
     # Versioned, evidence-backed report from the selected binary CLI help.
     # Values are inventory only; this contract never treats help output as
     # proof that a device or option works in a guest.
