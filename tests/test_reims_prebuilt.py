@@ -1730,6 +1730,13 @@ class ReleaseScriptContractTests(unittest.TestCase):
             (repo / "vendor" / "qemu" / "pc-bios" / "bios-256k.bin").write_bytes(b"b")
             (repo / "vm").mkdir()
             (repo / "vm" / "boot-x86.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            # O preflight de bundle completo exige estes três, além do QEMU.
+            (repo / "firmware" / "prebuilt").mkdir(parents=True)
+            (repo / "firmware" / "prebuilt" / "ReimsGraphics.rom").write_bytes(b"graphics rom")
+            (repo / "target" / "release").mkdir(parents=True)
+            (repo / "target" / "release" / "reims-ctl").write_text("ctl", encoding="utf-8")
+            (repo / "target" / "release" / "reims-util").write_text("util", encoding="utf-8")
+            (repo / "SOURCE-PROVENANCE.txt").write_text("commit=test\n", encoding="utf-8")
 
             def git(*args: str) -> None:
                 sp.run(
@@ -1771,7 +1778,12 @@ class ReleaseScriptContractTests(unittest.TestCase):
                 # `getnames()` traz o prefixo `./` da release real; normalizo
                 # para comparar com os caminhos relativos que o appliance usa,
                 # mas guardo o nome ORIGINAL para poder extrair.
-                nomes = {n.lstrip("./"): n for n in tar.getnames()}
+                # `lstrip("./")` remove CARACTERES, não o prefixo: `.release`
+                # virava `release` e a asserção do par completo nunca veria o
+                # item. Aqui o prefixo `./` é removido de verdade.
+                nomes = {
+                    (n[2:] if n.startswith("./") else n): n for n in tar.getnames()
+                }
 
                 # O caminho tem de estar DENTRO do pacote — não basta aparecer
                 # no script. É isto que o `_verify_tree` vai procurar na árvore
@@ -1786,6 +1798,25 @@ class ReleaseScriptContractTests(unittest.TestCase):
                 )
                 # E o binário precisa ser REALMENTE o do cache, não um placeholder.
                 conteudo = tar.extractfile(nomes[presentes[0]]).read()
+
+                # O PAR COMPLETO tem de estar no pacote, não só o ctl. A
+                # release v1.6.0 foi publicada com `bin/reims-ctl` e mais nada:
+                # sem `bin/reims-util`, sem `.release` e sem
+                # `SOURCE-PROVENANCE.txt`. Só a presença de todos os quatro
+                # itens detecta essa regressão; um teste que só olhasse o ctl
+                # aceitaria de novo o pacote furado.
+                for obrigatorio in (
+                    "bin/reims-ctl",
+                    "bin/reims-util",
+                    ".release",
+                    "SOURCE-PROVENANCE.txt",
+                ):
+                    self.assertIn(
+                        obrigatorio, nomes,
+                        f"o pacote não traz {obrigatorio}; é exatamente o furo "
+                        "da release v1.6.0 (par ctl/util + proveniência "
+                        "incompletos):\n" + "\n".join(sorted(nomes)),
+                    )
             self.assertIn(b"apple-gfx-pci", conteudo, "empacotou um binário que não é o do QEMU")
             self.assertIn(b"ReimsVgpu.rom", conteudo)
 
@@ -2229,6 +2260,16 @@ class ReleaseScriptContractTests(unittest.TestCase):
 
             env = dict(os.environ)
             env["PATH"] = f"{fakebin}:{env.get('PATH', '')}"
+            # Novos artefatos requeridos pelo contrato de bundle completo.
+            (repo / "firmware" / "prebuilt").mkdir(parents=True)
+            (repo / "firmware" / "prebuilt" / "ReimsGraphics.rom").write_bytes(b"graphics rom")
+            (repo / "target" / "release").mkdir(parents=True)
+            (repo / "target" / "release" / "reims-ctl").write_text("ctl", encoding="utf-8")
+            (repo / "target" / "release" / "reims-util").write_text("util", encoding="utf-8")
+            (repo / "SOURCE-PROVENANCE.txt").write_text("commit=test\\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "fixture artifacts")
+
             # O `DIST_TMP` do release.sh é `mktemp -d`, que honra o TMPDIR.
             # Apontando-o para um dir nosso, o vazamento de 481 MB fica
             # observável DENTRO do teste em vez de poluir o `/tmp` do host — e
@@ -2297,6 +2338,13 @@ class ReleaseScriptContractTests(unittest.TestCase):
             (repo / "vendor" / "qemu" / "pc-bios" / "bios-256k.bin").write_bytes(b"b")
             (repo / "vm").mkdir()
             (repo / "vm" / "boot-x86.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            # O preflight de bundle completo exige estes três, além do QEMU.
+            (repo / "firmware" / "prebuilt").mkdir(parents=True)
+            (repo / "firmware" / "prebuilt" / "ReimsGraphics.rom").write_bytes(b"graphics rom")
+            (repo / "target" / "release").mkdir(parents=True)
+            (repo / "target" / "release" / "reims-ctl").write_text("ctl", encoding="utf-8")
+            (repo / "target" / "release" / "reims-util").write_text("util", encoding="utf-8")
+            (repo / "SOURCE-PROVENANCE.txt").write_text("commit=test\n", encoding="utf-8")
 
             def git(*args: str) -> None:
                 sp.run(
@@ -2326,6 +2374,8 @@ class ReleaseScriptContractTests(unittest.TestCase):
 
             env = dict(os.environ)
             env["PATH"] = f"{fakebin}:{env.get('PATH', '')}"
+            env["TMPDIR"] = str(raiz / "tmpdir")
+            (raiz / "tmpdir").mkdir()
             proc = sp.run(
                 ["bash", str(script), "--yes", "--tag", "v1.0.2"],
                 capture_output=True, text=True, env=env, cwd=str(repo), timeout=300,
@@ -2600,18 +2650,27 @@ class ReleaseAssetContractTests(unittest.TestCase):
         script = tmp / "empacota.sh"
         script.write_text(
             "#!/usr/bin/env bash\nset -euo pipefail\n"
-            # `say` e as cores vêm de antes no release.sh.
+            # `say`, cores e `die` vêm de antes no release.sh.
             'say() { :; }\n'
             'RED=""; YELLOW=""; NC=""; GREEN=""; CYAN=""; BLUE=""\n'
+            'die() { echo "$*" >&2; exit 1; }\n'
             f'DIST_TMP="{dist}"\n'
             f'QEMU_BIN="{qemu}"\n'
             f'CTL_BIN="{motor}"\n'
+            f'UTIL_BIN="{motor}"\n'
+            f'NEXT_TAG="v-test"\n'
+            f'GRAPHICS_ROM_BIN="{rom}"\n'
             f'ROM_BIN="{rom}"\n'
             f"{bloco}\n",
             encoding="utf-8",
         )
+        # O bloco extrai a proveniência do checkout real do vhackintosh;
+        # como o teste roda o release.sh a partir de /tmp, a cópia de cwd
+        # quebraria. Crio o arquivo com o nome que release.sh procura no cwd.
+        (tmp / "SOURCE-PROVENANCE.txt").write_text("commit=test\n", encoding="utf-8")
         r = subprocess.run(
-            ["bash", str(script)], capture_output=True, text=True, timeout=120
+            ["bash", str(script)], capture_output=True, text=True,
+            cwd=str(tmp), timeout=120,
         )
         self.assertEqual(
             0, r.returncode,
