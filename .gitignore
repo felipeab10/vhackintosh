@@ -18,3 +18,6 @@ appliance/out-*/
 appliance/archiso/airootfs/opt/
 .playwright-mcp/
 *.zip
+
+# Artefatos de medicao locais (vulkaninfo embute GPU+driver no nome)
+VP_VULKANINFO_*.json
