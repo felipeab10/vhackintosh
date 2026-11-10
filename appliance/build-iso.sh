@@ -308,24 +308,42 @@ if ! REIMS_UTIL_HOST_BIN="$(bash "${SCRIPT_DIR}/find_reims_util.sh")"; then
 fi
 
 echo -e "${BLUE}▶ Empacotando utilitário nativo reims-util (${REIMS_UTIL_HOST_BIN})...${NC}"
+# Procedência única: o appliance e o pacote do Control têm de levar o mesmo
+# binário. O pin vive em packaging/reims-util.pin e é lido aqui e pelo
+# build-reims-util.sh. Procedência desconhecida é ERRO, não default silencioso.
+. "${PROJECT_ROOT}/packaging/common/reims-util-pin.sh"
+reims_util_pin_load || exit 1
+if ! reims_util_pin_verify_binary "${REIMS_UTIL_HOST_BIN}"; then
+    echo -e "${RED}✖ reims-util do host não corresponde ao pin do pacote.${NC}"
+    echo -e "  O pacote do Control compila ${CYAN}${REIMS_UTIL_REV:0:12}${NC} (packaging/reims-util.pin)."
+    echo -e "  A ISO precisa do MESMO binário: rode ${CYAN}appliance/update-reims-util.sh${NC}"
+    echo -e "  para compilá-lo e gravar o sidecar ${CYAN}<bin>.commit${NC}."
+    exit 1
+fi
 mkdir -p "${ARCHISO_PROFILE}/airootfs/usr/local/bin"
 install -m 0755 "${REIMS_UTIL_HOST_BIN}" "${ARCHISO_PROFILE}/airootfs/usr/local/bin/reims-util"
 REIMS_UTIL_VERSION="$("${REIMS_UTIL_HOST_BIN}" --version | head -n1)"
-REIMS_UTIL_COMMIT="unknown"
-if [ -f "${REIMS_UTIL_HOST_BIN}.commit" ]; then
-    REIMS_UTIL_COMMIT="$(head -n1 "${REIMS_UTIL_HOST_BIN}.commit")"
-fi
+REIMS_UTIL_COMMIT="${REIMS_UTIL_REV}"
 cat > "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/REIMS-UTIL-PROVENANCE.txt" <<EOF
-repository=https://github.com/steelbrain/reims-util
+repository=${REIMS_UTIL_REPO%.git}
 version=${REIMS_UTIL_VERSION}
 commit=${REIMS_UTIL_COMMIT}
+toolchain=${REIMS_UTIL_TOOLCHAIN}
 EOF
 
 # A imagem vai pronta para uso offline: OpenCore, Lilu e os kexts de aceleração
 # ficam no qcow2. --no-ovmf mantém o OVMF vHackintosh, com a logo do projeto.
+#
+# O perfil gráfico é DECLARADO a priori (packaging/reims-util.pin) e não
+# detectado pelo QEMU do host de build: o QEMU da release só é baixado no passo
+# 5, depois daqui, e um host limpo não tem QEMU algum — a detecção abortava o
+# build. A ISO sabe o que embarca; o passo 5 confere que o QEMU embarcado casa
+# com esta declaração.
 echo -e "${BLUE}▶ Gerando OpenCore e kexts de aceleração com reims-util...${NC}"
+echo -e "  Perfil gráfico: ${CYAN}${REIMS_UTIL_GRAPHICS_PROFILE}${NC} (packaging/reims-util.pin)"
 python3 "${SCRIPT_DIR}/build_opencore.py" \
     --reims-util "${REIMS_UTIL_HOST_BIN}" \
+    --graphics-profile "${REIMS_UTIL_GRAPHICS_PROFILE}" \
     --output "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/templates/OpenCore.qcow2" \
     --config-output "${ARCHISO_PROFILE}/airootfs/opt/vhackintosh/templates/config.plist"
 
@@ -392,6 +410,14 @@ if [ -z "${REIMS_QEMU_BIN}" ]; then
     echo -e "${RED}Erro: a release ${REIMS_RELEASE} não trouxe qemu-system-x86_64.${NC}"
     exit 1
 fi
+# A declaração a priori do perfil só vale se o QEMU que a ISO EMBARCA a cumprir.
+if ! reims_util_pin_verify_qemu_device "${REIMS_QEMU_BIN}"; then
+    echo -e "${RED}✖ o QEMU da release não casa com o perfil gráfico pinado da ISO.${NC}"
+    echo -e "  Perfil pinado: ${CYAN}${REIMS_UTIL_GRAPHICS_PROFILE}${NC} (packaging/reims-util.pin)"
+    echo -e "  Ajuste GRAPHICS_PROFILE no pin ou use a release correspondente."
+    exit 1
+fi
+echo -e "${GREEN}✓ QEMU da release confere com o perfil ${REIMS_UTIL_GRAPHICS_PROFILE}.${NC}"
 
 REIMS_ROM="$(find "${REIMS_DEST}" -name 'ReimsVgpu.rom' -type f 2>/dev/null | head -n1 || true)"
 if [ -z "${REIMS_ROM}" ]; then

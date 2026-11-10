@@ -8,8 +8,25 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.config import SMBIOSConfig, VMConfig, VMManagerStore
+from core.graphics_profiles import EMBEDDED_KEXTS, GRAPHICS_PROFILES
 from core.web_agent import WebAgentService
 from core.web_rpc import RpcRemoteError
+
+LEGACY = "apple-gfx-pci"
+REIMS = "reims-graphics-pci"
+
+def _kexts(profile):
+    """Exact enabled-kext set the closed contract declares for a profile."""
+    return set(EMBEDDED_KEXTS) | {bundle for bundle, _minimum in GRAPHICS_PROFILES[profile]}
+
+def _runtime(profile=LEGACY, kext_mode="embedded"):
+    return {
+        "reims_update_opencore_picker": True,
+        "reims_update_opencore_kext_mode": kext_mode,
+        "reims_update_opencore_kext_mode_source": "/managed/reims-util",
+        "qemu_graphics_profile": profile,
+        "qemu_graphics_profile_source": "/managed/qemu-system-x86_64",
+    }
 
 
 class WebAgentCatalogMutationTests(unittest.TestCase):
@@ -736,7 +753,7 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
 
         runner = Runner()
         self.service.job_runner = runner
-        with patch("core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_picker": True, "reims_update_opencore_kext_mode": "embedded"}):
+        with patch("core.runtime_inventory.inspect_runtime", return_value=_runtime()):
             result = self.service.submit_vm_opencore_picker({
                 "vm_id": vm.id,
                 "boot_selection": True,
@@ -784,9 +801,9 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
 
         with patch("core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}), \
              patch("core.reims_ctl.reims_ctl_bin", return_value="/managed/reims-ctl"), \
-             patch("core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_picker": True, "reims_update_opencore_kext_mode": "embedded"}), \
+             patch("core.runtime_inventory.inspect_runtime", return_value=_runtime()), \
              patch("core.web_agent.shutil.which", return_value="/usr/bin/guestfish"), \
-             patch.object(self.service, "_opencore_enabled_kexts", side_effect=[{"Lilu.kext", "ReimsGfx.kext"}, {"Lilu.kext", "ReimsGfx.kext"}]) as verify, \
+             patch.object(self.service, "_opencore_enabled_kexts", side_effect=[_kexts(LEGACY), _kexts(LEGACY)]) as verify, \
              patch("core.config.ExclusiveVMLock", Lock), \
              patch("subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="serial=PRIVATE", stderr="")) as run:
             result = self.service._run_vm_opencore_picker_job({
@@ -796,6 +813,7 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
         self.assertEqual(result, {"vm_id": vm.id, "boot_selection": True, "message": "OpenCore regenerado com a identidade SMBIOS preservada."})
         self.assertEqual(verify.call_count, 2)
         self.assertEqual(run.call_args.args[0], ["/managed/reims-ctl", "update-opencore", vm.id, "--boot-selection", "true"])
+        self.assertEqual(run.call_args.kwargs["env"]["REIMS_CTL_UTIL"], "/managed/reims-util")
         self.assertNotIn("PRIVATE", str(result))
         self.assertTrue(self.service.store.get_vm(vm.id).opencore_show_picker)
         self.assertEqual(checkpoints[0][0], "opencore_regeneration_started")
@@ -846,22 +864,22 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             if command[0] == "guestfish" and "download" in command:
                 seen["n"] += 1
-                bundles = ("Lilu.kext", "ReimsGfx.kext") if seen["n"] == 1 else ("Lilu.kext",)
-                plist = {"Kernel": {"Add": [{"BundlePath": name, "Enabled": True} for name in bundles]}}
+                bundles = _kexts(LEGACY) if seen["n"] == 1 else {"Lilu.kext"}
+                plist = {"Kernel": {"Add": [{"BundlePath": name, "Enabled": True} for name in sorted(bundles)]}}
                 Path(command[-1]).write_bytes(plistlib.dumps(plist))
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             if command[0] == "guestfish" and "ls" in command:
-                bundles = "Lilu.kext\nReimsGfx.kext\n" if seen["n"] == 1 else "Lilu.kext\n"
-                return SimpleNamespace(returncode=0, stdout=bundles, stderr="")
+                bundles = _kexts(LEGACY) if seen["n"] == 1 else {"Lilu.kext"}
+                return SimpleNamespace(returncode=0, stdout="\n".join(sorted(bundles)) + "\n", stderr="")
             raise AssertionError(f"comando inesperado: {command}")
 
         with patch("core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}), \
              patch("core.reims_ctl.reims_ctl_bin", return_value="/managed/reims-ctl"), \
-             patch("core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_picker": True, "reims_update_opencore_kext_mode": "embedded"}), \
+             patch("core.runtime_inventory.inspect_runtime", return_value=_runtime()), \
              patch("core.web_agent.shutil.which", return_value="/usr/bin/guestfish"), \
              patch("core.config.ExclusiveVMLock", Lock), \
              patch("subprocess.run", side_effect=fake_run) as run:
-            with self.assertRaisesRegex(RuntimeError, "perdeu kexts habilitados"):
+            with self.assertRaisesRegex(RuntimeError, "não corresponde exatamente ao perfil"):
                 self.service._run_vm_opencore_picker_job({
                     "vm_id": vm.id, "boot_selection": True, "expected_revision": expected,
                 }, Context())
@@ -888,9 +906,9 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
                 return None
 
         with patch("core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}), \
-             patch("core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_picker": True, "reims_update_opencore_kext_mode": "add-kext"}), \
+             patch("core.runtime_inventory.inspect_runtime", return_value=_runtime(kext_mode="add-kext")), \
              patch("subprocess.run") as run:
-            with self.assertRaisesRegex(RuntimeError, "sem kexts embutidos"):
+            with self.assertRaisesRegex(RuntimeError, "sem kexts embutidos|opera no modo"):
                 self.service._run_vm_opencore_picker_job({
                     "vm_id": vm.id, "boot_selection": True, "expected_revision": self.service.store.revision,
                 }, Context())
@@ -923,7 +941,7 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
             def release(self): pass
 
         with patch("core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}), \
-             patch("core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_picker": True, "reims_update_opencore_kext_mode": "embedded"}), \
+             patch("core.runtime_inventory.inspect_runtime", return_value=_runtime()), \
              patch("core.web_agent.shutil.which", return_value=None), \
              patch("core.config.ExclusiveVMLock", Lock), \
              patch("subprocess.run") as run:
@@ -951,7 +969,7 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
                 return None
 
         with patch("core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}), \
-             patch("core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_picker": True, "reims_update_opencore_kext_mode": "embedded"}), \
+             patch("core.runtime_inventory.inspect_runtime", return_value=_runtime()), \
              patch("subprocess.run") as run:
             with self.assertRaisesRegex(RuntimeError, "arquivo gerenciado"):
                 self.service._run_vm_opencore_picker_job({
@@ -977,7 +995,7 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
                 return None
 
         with patch("core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}), \
-             patch("core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_picker": True, "reims_update_opencore_kext_mode": "embedded"}), \
+             patch("core.runtime_inventory.inspect_runtime", return_value=_runtime()), \
              patch("subprocess.run") as run:
             with self.assertRaisesRegex(RuntimeError, "arquivo gerenciado"):
                 self.service._run_vm_opencore_picker_job({

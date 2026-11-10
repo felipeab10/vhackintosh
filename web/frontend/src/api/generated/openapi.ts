@@ -309,6 +309,8 @@ export interface components {
   "qemu_options"?: Array<string>;
   "qemu_command_options"?: Array<string>;
   "qemu_devices"?: Array<string>;
+  "qemu_graphics_profile"?: (string) | (null);
+  "qemu_graphics_profile_source"?: (string) | (null);
   "qemu_machine_types"?: Array<string>;
   "qemu_cpu_models"?: Array<string>;
   "qemu_audio_backends"?: Array<string>;

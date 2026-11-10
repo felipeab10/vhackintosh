@@ -13,7 +13,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf -- "$WORK"' EXIT
 FRONTEND="${WORK}/frontend"
 APP="${WORK}/control-bundle"
-mkdir -p "$FRONTEND" "${APP}/core" "${APP}/web/api" "${APP}/web/frontend" "${APP}/vendor" "${APP}/templates"
+mkdir -p "$FRONTEND" "${APP}/core" "${APP}/web/api" "${APP}/web/frontend" "${APP}/vendor" "${APP}/templates" "${APP}/resources"
 
 rsync -a --delete \
   --exclude=node_modules/ --exclude=dist/ --exclude=.git/ --exclude=.env \
@@ -24,6 +24,11 @@ npm run build --prefix "$FRONTEND"
 
 rsync -a --exclude=__pycache__/ --exclude='*.pyc' "${ROOT}/core/" "${APP}/core/"
 rsync -a --exclude=__pycache__/ --exclude='*.pyc' "${ROOT}/web/api/" "${APP}/web/api/"
+# Os kexts de guest do reims-util novo (`--add-kext`) vivem ao lado do `core/`
+# empacotado: `bundles/<id>/core/reims_util.py` sobe dois niveis e resolve
+# `bundles/<id>/resources/reims-kexts`. Sem esta copia o pacote instala e o
+# provisionamento falha em silencio ao gerar a EFI.
+rsync -a --delete "${ROOT}/resources/reims-kexts/" "${APP}/resources/reims-kexts/"
 install -m 0644 "${ROOT}/templates/OVMF_VARS.fd" "${APP}/templates/OVMF_VARS.fd"
 install -m 0644 "${ROOT}/templates/OVMF_CODE_4M.fd" "${APP}/templates/OVMF_CODE_4M.fd"
 rsync -a "${FRONTEND}/dist/" "${APP}/web/frontend/dist/"

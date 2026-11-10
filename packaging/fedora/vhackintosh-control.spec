@@ -35,7 +35,8 @@ Requires:       glib2
 
 %description
 Installs the vHackintosh HTTPS dashboard, an HTTP-to-HTTPS redirect, the pinned
-OpenCorePkg macserial and APV-enabled reims-util utilities, privileged local agent,
+OpenCorePkg macserial, APV-enabled reims-util utility, and vendored guest kexts,
+privileged local agent,
 and active desktop session integration with a shared Wayland fallback for macOS
 virtual machines. The Reims vGPU runtime is downloaded from the configured GitHub
 fork after first sign-in.

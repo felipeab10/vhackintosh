@@ -15,11 +15,15 @@ ROOT = Path(__file__).resolve().parents[1]
 class ControlPackagePayloadTests(unittest.TestCase):
     def test_package_builds_and_stages_the_pinned_apv_reims_util(self):
         builder = (ROOT / "packaging/common/build-reims-util.sh").read_text(encoding="utf-8")
+        pin = (ROOT / "packaging/reims-util.pin").read_text(encoding="utf-8")
         build_all = (ROOT / "packaging/build-all.sh").read_text(encoding="utf-8")
         workflow = (ROOT / ".github/workflows/release-control.yml").read_text(encoding="utf-8")
         revision = "0b9c3780a3ec2aa312a448b09b18320e5a2c9251"
 
-        self.assertIn(revision, builder)
+        # O SHA vive no pin único, lido pelo builder — não hardcoded nele.
+        self.assertIn(f"REV={revision}", pin)
+        self.assertIn("reims-util-pin.sh", builder)
+        self.assertNotIn(revision, builder)
         self.assertIn("cargo \"+${TOOLCHAIN}\" build --locked --release", builder)
         self.assertIn("--add-kext", builder)
         self.assertNotIn("--no-apv-arm64-port", builder)
@@ -27,6 +31,55 @@ class ControlPackagePayloadTests(unittest.TestCase):
         self.assertIn("/opt/vhackintosh/resources/reims-util/reims-util", workflow)
         self.assertIn("--add-kext", workflow)
         self.assertNotIn("--no-apv-arm64-port", workflow)
+
+    def test_stage_app_copies_all_vendored_kexts_into_the_control_bundle(self):
+        stage = (ROOT / "packaging/common/stage-app.sh").read_text(encoding="utf-8")
+        source = ROOT / "resources/reims-kexts"
+        staged_source = "${ROOT}/resources/reims-kexts/"
+        expected = (
+            "ReimsVgpu.kext",
+            "AppleGraphicsDeviceControlBridge.kext",
+            "AppleParavirtGPULoader.kext",
+            "AppleParavirtIOSurface.kext",
+            "IOGPUFamilyBridge.kext",
+            "AppleParavirtGPUIOGPUFamily.kext",
+            "IOGraphicsFamilyBridge.kext",
+            "APVDisplayPort.kext",
+        )
+        self.assertIn(f'rsync -a --delete "{staged_source}" "${{APP}}/resources/reims-kexts/"', stage)
+        for name in expected:
+            with self.subTest(kext=name):
+                self.assertTrue((source / name / "Contents/Info.plist").is_file())
+                self.assertTrue((source / name).is_dir(), name)
+        for metadata in ("LICENSE.txt", "PROVENANCE.md", "upstream-sources.sha256"):
+            self.assertTrue((source / metadata).is_file(), metadata)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            destdir = Path(temporary)
+            staged = destdir / "opt/vhackintosh/web/bundles/.control-staging/resources/reims-kexts"
+            staged.mkdir(parents=True)
+            subprocess.run(
+                ["rsync", "-a", "--delete", f"{source}/", f"{staged}/"], check=True
+            )
+            names = sorted(path.name for path in staged.glob("*.kext"))
+            self.assertEqual(names, sorted(expected))
+            self.assertEqual(len(names), 8)
+            for path in (staged, *(staged / name for name in expected)):
+                self.assertEqual(path.stat().st_mode & 0o777, 0o755)
+            # Os kexts vendorizados são dados: os executáveis Mach-O e os
+            # `Info.plist` de cada `Contents/` são 0755, os metadados soltos 0644.
+            # Varremos apenas os oito kexts do conjunto legado: `resources/reims-kexts/`
+            # pode conter árvores de perfil irmãs (apple-gfx-pci/, reims-graphics-pci/)
+            # cujo layout/modo não é assunto deste contrato.
+            scanned = [staged / name for name in expected]
+            for path in [p for root_dir in scanned for p in root_dir.rglob("*")]:
+                if not path.is_file():
+                    continue
+                inside_contents = path.parent.name == "MacOS" or path.parent.name == "Contents"
+                expected_mode = 0o755 if inside_contents else 0o644
+                self.assertEqual(path.stat().st_mode & 0o777, expected_mode, str(path))
+            for metadata in ("LICENSE.txt", "PROVENANCE.md", "upstream-sources.sha256"):
+                self.assertTrue((staged / metadata).is_file(), metadata)
 
     def test_staging_includes_the_pinned_macserial_tool_and_redirect_service(self):
         stage = (ROOT / "packaging/common/stage-app.sh").read_text(encoding="utf-8")
@@ -90,6 +143,36 @@ class ControlPackagePayloadTests(unittest.TestCase):
         self.assertIn("CapabilityBoundingSet=CAP_NET_BIND_SERVICE", text)
         self.assertIn("NoNewPrivileges=yes", text)
         self.assertRegex(text, r"(?m)^ExecStart=/usr/bin/python3 -m web\.api\.http_redirect$")
+
+    def test_fedora_opt_files_entries_are_created_by_package_staging(self):
+        spec = (ROOT / "packaging/fedora/vhackintosh-control.spec").read_text(encoding="utf-8")
+        stage = (ROOT / "packaging/common/stage-app.sh").read_text(encoding="utf-8")
+        build_all = (ROOT / "packaging/build-all.sh").read_text(encoding="utf-8")
+        files_section = spec.split("%files\n", 1)[1].split("%changelog", 1)[0]
+        entries = [
+            line.strip() for line in files_section.splitlines()
+            if line.strip().startswith(("/opt/", "/usr/", "/etc/"))
+        ]
+        self.assertTrue(entries)
+
+        # The RPM owns `/opt/vhackintosh/web/bundles` recursively, so an
+        # accidental separate `/opt/vhackintosh/resources/reims-kexts` entry is
+        # specifically invalid: only macserial/reims-util live at resources/.
+        self.assertIn("/opt/vhackintosh/web/bundles", entries)
+        self.assertNotIn("/opt/vhackintosh/resources/reims-kexts", entries)
+        for entry in entries:
+            with self.subTest(entry=entry):
+                if entry == "/opt/vhackintosh/web/current":
+                    self.assertIn('ln -s "bundles/.control-staging" "${WEB_ROOT}/current"', stage)
+                elif entry == "/opt/vhackintosh/web/bundles":
+                    self.assertIn('install -d "${WEB_ROOT}/bundles"', stage)
+                elif entry.startswith("/opt/vhackintosh/resources/"):
+                    resource = entry.removeprefix("/opt/vhackintosh/resources/")
+                    self.assertTrue(
+                        f'"${{ROOT}}/resources/{resource}' in stage
+                        or f'"${{PAYLOAD_BASE}}/opt/vhackintosh/resources/{resource}' in build_all,
+                        f"%files lists {entry}, but no staging script creates it",
+                    )
 
     def test_fedora_package_owns_the_shared_tool_and_redirect_unit(self):
         spec = (ROOT / "packaging/fedora/vhackintosh-control.spec").read_text(encoding="utf-8")

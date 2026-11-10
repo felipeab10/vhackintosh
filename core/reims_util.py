@@ -15,33 +15,25 @@ from pathlib import Path
 from typing import Optional
 
 from core.config import LOGS_DIR, SMBIOSConfig
+from core.graphics_profiles import (
+    GRAPHICS_PROFILES,
+    KEXT_MAX_KERNEL,
+    VENDORED_KEXTS,
+    VENDORED_KEXTS_DIR,
+    profile_kext_dir,
+    verify_kext_manifest,
+)
 
 # Onde cada chamada ao reims-util é registrada (com stdout/stderr e returncode).
 LOG_FILE = LOGS_DIR / "reims-util-opencore.log"
 OPENCORE_BOOT_ARGS = "keepsyms=1 tlbto_us=0 vti=9"
 OPENCORE_PICKER_TIMEOUT = 45
 
-# Kexts que a EFI neutra precisa carregar, e a versão de kernel mínima de cada um.
-# Desde o master do upstream (`fe9bfe1`, 2026-11-05) o reims-util NÃO embute mais os kexts
-# de guest: a imagem sai só com Lilu. Os oito kexts abaixo são vendorizados em
-# `resources/reims-kexts/` e injetados com `--add-kext`. A ordem importa: o reims-util
-# recusa um kext que linke contra outro dado depois dele, então ReimsVgpu vem primeiro e
-# os bridges depois. Os valores casam com REQUIRED_KEXTS de appliance/build_opencore.py.
-VENDORED_KEXTS: tuple[tuple[str, str], ...] = (
-    ("ReimsVgpu.kext", "25.0.0"),
-    ("AppleGraphicsDeviceControlBridge.kext", "25.4.0"),
-    ("AppleParavirtGPULoader.kext", "25.4.0"),
-    ("AppleParavirtIOSurface.kext", "25.4.0"),
-    ("IOGPUFamilyBridge.kext", "25.4.0"),
-    ("AppleParavirtGPUIOGPUFamily.kext", "25.4.0"),
-    ("IOGraphicsFamilyBridge.kext", "25.4.0"),
-    ("APVDisplayPort.kext", "25.4.0"),
-)
-KEXT_MAX_KERNEL = "25.99.99"
-
-# Raiz dos kexts vendorizados, ao lado do pacote `core/`.
-VENDORED_KEXTS_DIR = Path(__file__).resolve().parent.parent / "resources" / "reims-kexts"
-
+# Profile bundles, kernel bounds, and paths are shared with appliance/build_opencore.
+# Includes `reims-graphics-pci`; do not duplicate its bundle table here. This module's
+# `generate_opencore(graphics_profile=...)` supports both `apple-gfx-pci` and
+# `reims-graphics-pci`.
+# Keep these imported names as public aliases for existing callers and tests.
 # Nome da flag aposentada que gateava a EFI: o master a aceita e ignora (`hide = true`),
 # e binários antigos a expõem no `--help`. Serve só para reconhecer o binário velho.
 _LEGACY_APV_FLAG = "--no-apv-arm64-port"
@@ -160,6 +152,32 @@ def is_available() -> bool:
     return find_reims_util() is not None
 
 
+def _detect_profile_or_none(output_path: Path | str) -> str | None:
+    """Perfil quando o chamador não passa um: detecta pelo QEMU; `None` se não der para saber.
+
+    Reusa `appliance.build_opencore.detect_graphics_profile` (mesma regra de
+    `core.reims_release._device_of_this_binary`): `reims-graphics-pci` presente prevalece
+    (a branch development soma os dois), só `apple-gfx-pci` = legado.
+
+    IMPORTANTE: sem evidência devolve `None` e registra a razão no log — NÃO assume o legado.
+    `None` é "não sei", não "legado": o ponto de provisionamento (`core/disk.py`) chama sem
+    perfil, e assumir legado num host cujo QEMU espera `reims-graphics-pci` entrega a VM sem
+    aceleração, com o sintoma aparecendo no guest. Recusar aqui mantém o mesmo sentido do
+    builder (`detect_graphics_profile` levanta `RuntimeError`). O legado continua disponível
+    quando o chamador PEDE explicitamente (`graphics_profile="apple-gfx-pci"`).
+    """
+    try:
+        from appliance.build_opencore import detect_graphics_profile
+
+        return detect_graphics_profile(None)
+    except Exception as exc:  # import indisponível ou QEMU ilegível/ausente
+        with LOG_FILE.open("a", encoding="utf-8") as lf:
+            lf.write(
+                f"\n--- reims-util opencore ({Path(output_path).name}) ---\n"
+                f"Perfil não informado e não detectável ({exc}); nenhuma imagem foi gerada.\n"
+            )
+        return None
+
 def generate_opencore(
     output_path: Path | str,
     smbios: SMBIOSConfig,
@@ -170,6 +188,7 @@ def generate_opencore(
     verbose_boot: bool = False,
     text_picker: bool = False,
     show_picker: bool = False,
+    graphics_profile: str | None = None,
     job_context=None,
 ) -> bool:
     """Gera uma imagem OpenCore personalizada utilizando `reims-util opencore`.
@@ -183,6 +202,10 @@ def generate_opencore(
         verbose_boot: Se True, ativa mensagens detalhadas de inicialização do kernel (-v).
         text_picker: Se True, usa o seletor em modo texto do OpenCore.
         show_picker: Se True, mantém o seletor OpenCore visível em todos os boots.
+        graphics_profile: Perfil de kexts gráficos a injetar. `None` autodetecta o perfil
+            pelo device do QEMU; sem evidência a geração é RECUSADA (não assume legado).
+            Passe `"apple-gfx-pci"` explicitamente para forçar o perfil legado. Um nome
+            desconhecido falha, nunca cai em default silencioso.
 
     Returns:
         True se a imagem foi gerada com sucesso e é válida.
@@ -191,6 +214,23 @@ def generate_opencore(
     if not util_bin:
         return False
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Valida o perfil ANTES de decidir pela geração do binário: um nome desconhecido tem de
+    # falhar mesmo quando o binário escolhido embute os kexts e ignoraria o argumento.
+    # `None` NÃO é "legado silencioso": tenta detectar pelo device do QEMU da release e, sem
+    # evidência, RECUSA (mesmo sentido do builder). O legado só quando o chamador o pede.
+    if graphics_profile is None:
+        profile = _detect_profile_or_none(output_path)
+    else:
+        profile = graphics_profile
+    if profile not in GRAPHICS_PROFILES:
+        with LOG_FILE.open("a", encoding="utf-8") as lf:
+            lf.write(
+                f"\n--- reims-util opencore ({Path(output_path).name}) ---\n"
+                f"Erro: perfil gráfico desconhecido {profile!r}; conhecidos: "
+                f"{', '.join(sorted(GRAPHICS_PROFILES))}.\n"
+            )
+        return False
 
     # Os kexts de guest definem se a EFI sobe o desktop. São DUAS gerações de binário,
     # e as duas são aceitas:
@@ -234,18 +274,30 @@ def generate_opencore(
     # No caminho `--add-kext` os kexts têm de estar vendorizados, senão a EFI sai sem eles.
     kext_args: list[str] = []
     if supports_add_kext:
-        missing = [name for name, _ in VENDORED_KEXTS if not (VENDORED_KEXTS_DIR / name).is_dir()]
+        bundles = GRAPHICS_PROFILES[profile]
+        profile_dir = profile_kext_dir(profile, VENDORED_KEXTS_DIR)
+        missing = [name for name, _ in bundles if not (profile_dir / name).is_dir()]
         if missing:
             with LOG_FILE.open("a", encoding="utf-8") as lf:
                 lf.write(
                     f"\n--- reims-util opencore ({Path(output_path).name}) ---\n"
-                    f"Erro: {util_bin} exige --add-kext, mas faltam kexts em "
-                    f"{VENDORED_KEXTS_DIR}: {', '.join(missing)}.\n"
+                    f"Erro: o perfil {profile} exige --add-kext, mas faltam kexts em "
+                    f"{profile_dir}: {', '.join(missing)}.\n"
                 )
             return False
-        for name, minimum_kernel in VENDORED_KEXTS:
+        # Integridade antes de injetar: set.toml é a fonte da verdade dos executáveis.
+        try:
+            verify_kext_manifest(profile, VENDORED_KEXTS_DIR)
+        except RuntimeError as exc:
+            with LOG_FILE.open("a", encoding="utf-8") as lf:
+                lf.write(
+                    f"\n--- reims-util opencore ({Path(output_path).name}) ---\n"
+                    f"Erro de integridade dos kexts: {exc}.\n"
+                )
+            return False
+        for name, minimum_kernel in bundles:
             kext_args.append("--add-kext")
-            kext_args.append(f"{VENDORED_KEXTS_DIR / name},{minimum_kernel},{KEXT_MAX_KERNEL}")
+            kext_args.append(f"{profile_dir / name},{minimum_kernel},{KEXT_MAX_KERNEL}")
 
     final_dest = Path(output_path).resolve()
     final_dest.parent.mkdir(parents=True, exist_ok=True)

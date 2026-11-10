@@ -61,6 +61,8 @@ class TemplateIntegrityTests(unittest.TestCase):
     def test_opencore_builder_passes_explicit_kext_minimums(self):
         from appliance import build_opencore
 
+        # Patch the LIVE global the generator reads (`VENDORED_KEXTS_DIR`), not the
+        # import-time `PROFILE_KEXT_DIRS` snapshot: patching the latter is a silent no-op.
         with patch.object(build_opencore, "VENDORED_KEXTS_DIR", ROOT / "resources/reims-kexts"), patch.object(
             build_opencore.subprocess,
             "run",
@@ -68,7 +70,7 @@ class TemplateIntegrityTests(unittest.TestCase):
                 args=[], returncode=0, stdout="--add-kext", stderr=""
             ),
         ):
-            args = build_opencore.kext_injection(Path("/tmp/reims-util-master"))
+            args = build_opencore.kext_injection(Path("/tmp/reims-util-master"), "apple-gfx-pci")
 
         self.assertEqual(args.count("--add-kext"), len(build_opencore.VENDORED_KEXTS))
         supplied = {
@@ -76,8 +78,8 @@ class TemplateIntegrityTests(unittest.TestCase):
             for flag, value in zip(args[::2], args[1::2])
             if flag == "--add-kext"
         }
-        self.assertEqual(set(supplied), {str(ROOT / "resources/reims-kexts" / name) for name, _ in build_opencore.VENDORED_KEXTS})
-        for name, minimum in build_opencore.VENDORED_KEXTS:
+        self.assertEqual(set(supplied), {str(ROOT / "resources/reims-kexts" / name) for name, _ in build_opencore.GRAPHICS_PROFILES["apple-gfx-pci"]})
+        for name, minimum in build_opencore.GRAPHICS_PROFILES["apple-gfx-pci"]:
             value = supplied[str(ROOT / "resources/reims-kexts" / name)]
             self.assertEqual(value[1:], [minimum, build_opencore.KEXT_MAX_KERNEL])
             self.assertEqual(minimum, build_opencore.REQUIRED_KEXTS[name])

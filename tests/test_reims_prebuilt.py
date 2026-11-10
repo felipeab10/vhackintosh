@@ -836,6 +836,62 @@ class PrebuiltMotorInstallTests(unittest.TestCase):
         ):
             self.assertEqual(reims_ctl.reims_ctl_bin(), str(destino))
 
+    def test_bundle_without_a_reims_util_is_rejected_before_any_efi_generation(self):
+        """Um runtime sem o par ctl/util não pode gerar EFI silenciosamente.
+
+        O appliance gera a EFI a partir do pacote instalado; o `core/` empacotado
+        resolve os kexts vendorizados em `<bundle>/resources/reims-kexts`. Sem o
+        `reims-util` do bundle, o host cai no `reims-util` do sistema e o defeito
+        real — kexts ausentes — só aparece no log, com o provisionamento abortado.
+        """
+        self._com_motor()
+        (self.reims / "bin" / "reims-util").unlink()
+        with patch.object(reims_build, "qemu_data_dir", lambda: self.data), patch.dict(
+            os.environ, {"HOME": str(self.home)}
+        ), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertFalse(reims_build.install_prebuilt(self.reims))
+        self.assertIn("não contém o par compatível reims-util", output.getvalue())
+        # Nenhum QEMU versionado pode ter sido publicado pelo caminho recusado.
+        self.assertEqual(sorted((self.data / "qemu").glob("*/bin/qemu-system-x86_64")), [])
+        self.assertFalse((self.home / ".cargo" / "bin" / "reims-ctl").exists())
+
+    def test_the_packaged_core_resolves_the_vendored_kexts_next_to_itself(self):
+        """O `core/` empacotado sobe dois níveis até `resources/reims-kexts`.
+
+        Em `bundles/<id>/core/reims_util.py` isso cai em
+        `bundles/<id>/resources/reims-kexts`, portanto o staging tem de copiar os
+        oito kexts para lá — senão o `reims-util` novo (`--add-kext`) recusa
+        gerar a EFI e o usuário só vê "falha ao provisionar".
+        """
+        from core import reims_util as repo_reims_util
+
+        repo_root = Path(__file__).resolve().parent.parent
+        bundle = self.root / "web" / "bundles" / "X123"
+        core_dir = bundle / "core"
+        core_dir.mkdir(parents=True)
+        packaged_util = core_dir / "reims_util.py"
+        packaged_util.write_text(
+            (repo_root / "core" / "reims_util.py").read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        kexts = bundle / "resources" / "reims-kexts"
+        kexts.mkdir(parents=True)
+        # A mesma expressão de `VENDORED_KEXTS_DIR` do `core/reims_util.py`
+        # empacotado, avaliada na posição que o bundle tem de respeitar.
+        self.assertEqual(
+            packaged_util.resolve().parent.parent / "resources" / "reims-kexts", kexts
+        )
+        stage = (repo_root / "packaging/common/stage-app.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'rsync -a --delete "${ROOT}/resources/reims-kexts/" "${APP}/resources/reims-kexts/"',
+            stage,
+        )
+        self.assertEqual(
+            repo_reims_util.VENDORED_KEXTS_DIR, repo_root / "resources" / "reims-kexts"
+        )
+        self.assertEqual(len(repo_reims_util.VENDORED_KEXTS), 8)
+        # O host instalado não tem `<bundle>/resources` — só o pacote cria.
+        self.assertFalse((self.reims / "resources" / "reims-kexts").exists())
+
     def test_install_rejects_a_release_with_reims_ctl_but_no_reims_util(self):
         self._com_motor()
         (self.reims / "bin" / "reims-util").unlink()
@@ -1928,7 +1984,7 @@ class ReleaseScriptContractTests(unittest.TestCase):
                o `if` ENTRA, e o fallback interno executa. É mutação alcançável.
           fallback antes do `find` da ROM nova (linha 347)
             -> este teste PASSA, e NENHUM OUTRO PODE PEGAR. O `find` sobrescreve
-               a atribuição 1 linha depois. É MUTANTE EQUIVALENTE: não muda
+               a atribuição 1 linha depois. É mutação-equivalente: não muda
                comportamento, então não há cobertura possível. Foi isso que o
                verifier mediu, e ele está certo nisso.
 

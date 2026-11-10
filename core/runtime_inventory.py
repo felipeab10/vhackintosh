@@ -102,6 +102,38 @@ def _selected_binary_paths() -> tuple[Path | None, Path]:
     return installed_reims_path, installed_qemu
 
 
+def _qemu_graphics_profile(binary: Path | None) -> str | None:
+    """Profile of the selected QEMU binary, measured from the compiled device.
+
+    The development branch compiles both devices (`apple-gfx-pci` kept for
+    compatibility, `reims-graphics-pci` added), so seeing both is the
+    development build, not an ambiguity: `reims-graphics-pci` identifies the
+    new device by itself. For the two profile markers this matches
+    `appliance.build_opencore.detect_graphics_profile` and the observed
+    development case in `core.reims_release._device_of_this_binary`
+    (`new+apple -> "graphics"`). It is not full detector parity: release
+    detection also checks the older `reims-vgpu-pci` marker and returns
+    indeterminate if that marker coexists with `reims-graphics-pci`; this
+    inventory probe does not inspect that third marker.
+
+      `reims-graphics-pci` present -> "reims-graphics-pci" (wins over apple)
+      only `apple-gfx-pci`         -> "apple-gfx-pci"
+      neither, or unreadable       -> None (caller must refuse)
+    """
+    if binary is None:
+        return None
+    try:
+        with binary.open("rb") as stream:
+            data = stream.read()
+    except OSError:
+        return None
+    if b"reims-graphics-pci" in data:
+        return "reims-graphics-pci"
+    if b"apple-gfx-pci" in data:
+        return "apple-gfx-pci"
+    return None
+
+
 def _probe(
     binary: Path, *arguments: str, deadline: float | None = None,
     max_output: int = _MAX_OUTPUT,
@@ -453,17 +485,20 @@ def inspect_runtime(
     reims_set_help = _probe(reims, "set", "--help", deadline=deadline) if reims else None
     reims_create_help = _probe(reims, "create", "--help", deadline=deadline) if reims else None
     reims_update_opencore_help = _probe(reims, "update-opencore", "--help", deadline=deadline) if reims else None
-    # reims-ctl selects reims-util via REIMS_CTL_UTIL, then beside itself, then
-    # PATH. Probe that exact companion, not core.reims_util's independent list.
-    util_candidates: list[Path] = []
-    override_util = os.environ.get("REIMS_CTL_UTIL")
-    if override_util:
-        util_candidates.append(Path(override_util).expanduser())
-    if reims is not None:
-        util_candidates.append(reims.parent / "reims-util")
-    util_candidates.extend(Path(value).expanduser() / "reims-util" for value in os.environ.get("PATH", "").split(os.pathsep) if value)
-    reims_util = next((candidate for candidate in util_candidates if candidate.is_file() and os.access(candidate, os.X_OK)), None)
-    reims_util_help = _probe(reims_util, "opencore", "--help", deadline=deadline) if reims_util else None
+    # Use the generator's canonical resolver so inventory and generation refer
+    # to the same utility. An explicit REIMS_CTL_UTIL override remains honored
+    # by find_reims_util; runtime call sites pass the selected path to reims-ctl.
+    try:
+        from core.reims_util import find_reims_util
+
+        ctl_override = os.environ.get("REIMS_CTL_UTIL")
+        reims_util = Path(ctl_override).expanduser() if ctl_override else find_reims_util(probe=False)
+        if reims_util is not None and not (reims_util.is_file() and os.access(reims_util, os.X_OK)):
+            reims_util = None
+    except (ImportError, OSError, RuntimeError, ValueError):
+        reims_util = None
+    reims_util_path = Path(reims_util).expanduser() if reims_util else None
+    reims_util_help = _probe(reims_util_path, "opencore", "--help", deadline=deadline) if reims_util_path else None
     reims_util_kext_mode = (
         "add-kext" if reims_util_help and "--add-kext" in reims_util_help else
         "embedded" if reims_util_help and "--no-apv-arm64-port" in reims_util_help else
@@ -484,6 +519,7 @@ def inspect_runtime(
             if any(line.lstrip().startswith(option + " ") for line in qemu_help.splitlines()):
                 options.append(option)
     qemu_devices = _device_names(qemu_devices_output)
+    qemu_graphics_profile = _qemu_graphics_profile(qemu)
     qemu_machines = _catalog_names(qemu_machines_output, "Supported machines are:")
     qemu_cpus = _catalog_names(qemu_cpus_output, "Available CPUs:")
     qemu_audio_backends = _simple_names(qemu_audio_output)
@@ -509,6 +545,8 @@ def inspect_runtime(
         "qemu_options": options,
         "qemu_command_options": qemu_command_options,
         "qemu_devices": qemu_devices,
+        "qemu_graphics_profile": qemu_graphics_profile,
+        "qemu_graphics_profile_source": str(qemu) if qemu_graphics_profile else None,
         "qemu_machine_types": qemu_machines,
         "qemu_cpu_models": qemu_cpus,
         "qemu_audio_backends": qemu_audio_backends,
@@ -530,7 +568,7 @@ def inspect_runtime(
                 and "<NAME>" in reims_update_opencore_help
             ),
             reims_util_kext_mode=reims_util_kext_mode,
-            reims_util_kext_mode_source=str(reims_util) if reims_util else None,
+            reims_util_kext_mode_source=str(reims_util_path) if reims_util_path else None,
             reims_schema_version=reims_schema_version,
             reims_schema_features=reims_schema_features,
         ),
@@ -542,7 +580,7 @@ def inspect_runtime(
             and "<NAME>" in reims_update_opencore_help
         ),
         "reims_update_opencore_kext_mode": reims_util_kext_mode,
-        "reims_update_opencore_kext_mode_source": str(reims_util) if reims_util else None,
+        "reims_update_opencore_kext_mode_source": str(reims_util_path) if reims_util_path else None,
         "binary_fingerprint": binary_fingerprint,
     }
     if use_cache:

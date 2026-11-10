@@ -10,6 +10,24 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
+
+# Este arquivo também é executado diretamente em builds de ISO (`python appliance/...`),
+# onde sys.path começa em appliance/ e não encontra o pacote core/ do checkout.
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from core.graphics_profiles import (
+    EMBEDDED_KEXTS,
+    GRAPHICS_PROFILES,
+    KEXT_MAX_KERNEL,
+    LEGACY_PROFILE,
+    VENDORED_KEXTS,
+    VENDORED_KEXTS_DIR,
+    profile_kext_dir,
+    verify_kext_manifest,
+)
 
 BOOT_ARGS = "keepsyms=1 tlbto_us=0 vti=9"
 PICKER_TIMEOUT = 45
@@ -18,52 +36,121 @@ NEUTRAL_MLB = "C02VHA00000000001"
 NEUTRAL_UUID = "00000000-0000-0000-0000-000000000000"
 NEUTRAL_ROM = "000000000000"
 PLATFORM_GUID = "7C436110-AB2A-4BBB-A880-FE41995C9F82"
+# O conjunto legado permanece como alias histórico para chamadores que esperam o
+# contrato completo (incluindo Lilu embutido). A tabela e os diretórios vêm do módulo
+# compartilhado `core.graphics_profiles`, também usado por `core.reims_util`.
 REQUIRED_KEXTS = {
     "Lilu.kext": "25.0.0",
-    "ReimsVgpu.kext": "25.0.0",
-    "AppleGraphicsDeviceControlBridge.kext": "25.4.0",
-    "AppleParavirtGPULoader.kext": "25.4.0",
-    "AppleParavirtIOSurface.kext": "25.4.0",
-    "IOGPUFamilyBridge.kext": "25.4.0",
-    "AppleParavirtGPUIOGPUFamily.kext": "25.4.0",
-    "IOGraphicsFamilyBridge.kext": "25.4.0",
-    "APVDisplayPort.kext": "25.4.0",
+    **dict(GRAPHICS_PROFILES[LEGACY_PROFILE]),
 }
-KEXT_MAX_KERNEL = "25.99.99"
-
-# Lilu ainda vem embutido no binário do reims-util; os 8 restantes são vendorizados
-# aqui e injetados com `--add-kext` quando o binário não os traz.
-EMBEDDED_KEXTS = frozenset({"Lilu.kext"})
-VENDORED_KEXTS = tuple(
-    (name, minimum) for name, minimum in REQUIRED_KEXTS.items() if name not in EMBEDDED_KEXTS
-)
-# Ordem de carga: ReimsVgpu primeiro, os bridges depois. O reims-util recusa um kext que
-# linke contra outro dado mais tarde, então a ordem de REQUIRED_KEXTS (dict ordenado) vale.
-VENDORED_KEXTS_DIR = Path(__file__).resolve().parent.parent / "resources" / "reims-kexts"
 
 # Flag do binário novo (master >= fe9bfe1) que aceita kexts externos.
 _ADD_KEXT_FLAG = "--add-kext"
 
-# ATENÇÃO — bomba-relógio. Os 8 kexts abaixo são os do `apple-gfx-pci`, o default do
-# reims-ctl instalado hoje (~/.cargo/bin de 30/out; core/reims_ctl.py omite --graphics e
-# core/reims_release.py exige `apple-gfx-pci` no binário). Quando o reims-ctl da frota
-# migrar para `reims-graphics-pci` (default do origin/master do fork, commit 2cc59c93e),
-# o conjunto certo passa a ser os 5 `Rgfx*` de guest/prebuilt/ e estes 8 ficam errados.
-# A escolha depende do binário do reims-ctl instalado, NÃO de uma constante eterna.
+# A bomba-relógio registrada antes virou mecanismo: a escolha do perfil não é mais uma
+# constante. `detect_graphics_profile` mede o device compilado no binário do QEMU da
+# release (o mesmo detector que `core/reims_release.py:_device_of_this_binary` usa) e
+# traduz para o nome do perfil. Quando a frota migrar para `reims-graphics-pci`, a EFI
+# passa a sair com os 5 `Rgfx*`/`ReimsGraphics*` sem editar este arquivo.
 
 
 def run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, check=True, capture_output=True, text=True)
 
-def kext_injection(util: Path) -> list[str]:
+def _candidate_qemu_binaries() -> list[Path]:
+    """Onde procurar o binário do QEMU quando `--qemu` não é dado.
+
+    A ordem segue a mesma convenção de `core.reims_build.qemu_binary()` (o
+    `qemu/current/bin/qemu-system-x86_64` que o `install_prebuilt` instala) e depois o
+    PATH. O `build-iso.sh` chama este gerador ANTES de resolver o QEMU da release, então
+    exigir `--qemu` ali travaria o build; a detecção cai nesses candidatos.
+    """
+    candidates: list[Path] = []
+    try:
+        from core.reims_build import qemu_binary  # type: ignore
+
+        candidates.append(qemu_binary())
+    except Exception:  # pacote ausente no contexto da ISO: segue para o PATH
+        pass
+    on_path = shutil.which("qemu-system-x86_64")
+    if on_path:
+        candidates.append(Path(on_path))
+    return candidates
+
+def detect_graphics_profile(qemu: Path | None, *, explicit: str | None = None) -> str:
+    """Qual perfil gráfico usar: o nome do device, medido no binário do QEMU da release.
+
+    A fonte é o NOME DO DEVICE compilado no binário do QEMU — o mesmo sinal positivo que
+    `core/reims_release.py:_device_of_this_binary` já mede (docstring dela em
+    `core/reims_release.py:125-152`). Não é uma flag manual livre nem uma preferência do
+    operador: é o device que o runtime instalado realmente traz. Quando a frota migrar,
+    a EFI passa a sair com o conjunto novo sozinha.
+
+    Tradução do device para o nome do perfil (mesma precedência de
+    `core/reims_release.py:_device_of_this_binary`):
+      `reims-graphics-pci` presente -> "reims-graphics-pci". Esse nome identifica o
+      device novo por si só; a branch development SOMA os dois devices (mantém
+      `apple-gfx-pci` para compatibilidade), então o novo tem de prevalecer.
+      somente `apple-gfx-pci` presente -> "apple-gfx-pci"
+      nenhum device conhecido ou binário ilegível -> recusa (sem fallback silencioso)
+
+    `explicit` só serve para testes de mutação e para um override consciente de quem chama:
+    tem de NOMEAR um perfil conhecido; qualquer outro valor levanta, nunca cai em default.
+    """
+    if explicit is not None:
+        if explicit not in GRAPHICS_PROFILES:
+            raise RuntimeError(
+                f"perfil gráfico desconhecido: {explicit!r}; conhecidos: "
+                f"{', '.join(sorted(GRAPHICS_PROFILES))}"
+            )
+        return explicit
+
+    if qemu is None:
+        looked = _candidate_qemu_binaries()
+        qemu = next((c for c in looked if c.is_file()), None)
+        if qemu is None:
+            raise RuntimeError(
+                "não foi possível detectar o perfil gráfico: nenhum binário de QEMU "
+                "encontrado; passe --qemu com o qemu-system-x86_64 da release"
+            )
+    try:
+        dados = Path(qemu).read_bytes()
+    except OSError as exc:
+        raise RuntimeError(
+            f"não foi possível ler o binário do QEMU {qemu} para detectar o perfil: {exc}"
+        ) from exc
+
+    tem_graphics = b"reims-graphics-pci" in dados
+    tem_apple_gfx = b"apple-gfx-pci" in dados
+    if tem_graphics:
+        return "reims-graphics-pci"
+    if tem_apple_gfx:
+        return "apple-gfx-pci"
+    raise RuntimeError(
+        "não foi possível detectar o perfil gráfico do binário do QEMU "
+        f"{qemu}: nenhum device conhecido presente"
+    )
+
+def profile_kextexts(profile: str) -> tuple[tuple[str, str], ...]:
+    """Os bundles do perfil, sem o Lilu (que é embutido). Recusa perfil desconhecido."""
+    try:
+        return GRAPHICS_PROFILES[profile]
+    except KeyError as exc:
+        raise RuntimeError(
+            f"perfil gráfico desconhecido: {profile!r}; conhecidos: "
+            f"{', '.join(sorted(GRAPHICS_PROFILES))}"
+        ) from exc
+
+def kext_injection(util: Path, profile: str) -> list[str]:
     """Argumentos `--add-kext` que o binário precisa, ou [] se ele já os embute.
 
     Duas gerações de reims-util são aceitas:
       - master (>= fe9bfe1): não embute os kexts de guest; expõe `--add-kext` e nós
-        passamos os bundles vendorizados com os gates de kernel de REQUIRED_KEXTS;
-      - pin antigo (c717e69): embute os 9 kexts na própria imagem; não passamos nada.
+        passamos os bundles do PERFIL vendorizado com os gates de kernel do perfil;
+      - pin antigo (c717e69): embute os kexts na própria imagem; não passamos nada.
     Rejeita binário que não entregue os kexts por nenhum dos dois caminhos.
     """
+    bundles = profile_kextexts(profile)  # valida antes de acessar o binário externo
     try:
         help_result = subprocess.run(
             [str(util), "opencore", "--help"],
@@ -79,31 +166,36 @@ def kext_injection(util: Path) -> list[str]:
         raise RuntimeError(f"reims-util opencore --help falhou (rc={help_result.returncode})")
 
     if _ADD_KEXT_FLAG not in help_text:
-        # Binário antigo: embute os kexts. A validação de REQUIRED_KEXTS logo abaixo
-        # confirma, na imagem gerada, que todos os 9 chegaram.
+        # Binário antigo: embute os kexts. A validação do perfil logo abaixo confirma,
+        # na imagem gerada, que todos chegaram.
         return []
 
-    missing = [name for name, _ in VENDORED_KEXTS if not (VENDORED_KEXTS_DIR / name).is_dir()]
+    profile_dir = profile_kext_dir(profile, VENDORED_KEXTS_DIR)
+    missing = [name for name, _ in bundles if not (profile_dir / name).is_dir()]
     if missing:
         raise RuntimeError(
-            f"reims-util exige --add-kext, mas faltam kexts em {VENDORED_KEXTS_DIR}: "
+            f"o perfil {profile} exige --add-kext, mas faltam kexts em {profile_dir}: "
             f"{', '.join(missing)}"
         )
+    # Integridade antes de injetar: set.toml é a fonte da verdade dos executáveis.
+    verify_kext_manifest(profile, VENDORED_KEXTS_DIR)
     args: list[str] = []
-    for name, minimum_kernel in VENDORED_KEXTS:
-        # MIN explícito: o default do `--add-kext` é 25.0.0, e os 7 ports exigem 25.4.0.
-        args += ["--add-kext", f"{VENDORED_KEXTS_DIR / name},{minimum_kernel},{KEXT_MAX_KERNEL}"]
+    for name, minimum_kernel in bundles:
+        # MIN explícito: o default do `--add-kext` é 25.0.0, e os ports exigem 25.4.0.
+        args += ["--add-kext", f"{profile_dir / name},{minimum_kernel},{KEXT_MAX_KERNEL}"]
     return args
 
 
-def build(util: Path, output: Path, config_output: Path) -> None:
+def build(util: Path, output: Path, config_output: Path, *, graphics_profile: str | None = None, qemu: Path | None = None) -> None:
     for tool in ("guestfish", "qemu-img"):
         if not shutil.which(tool):
             raise RuntimeError(f"Ferramenta obrigatória ausente: {tool}")
     if not util.is_file() or not os.access(util, os.X_OK):
         raise RuntimeError(f"reims-util não executável: {util}")
 
-    kext_args = kext_injection(util)
+    profile = detect_graphics_profile(qemu, explicit=graphics_profile)
+    profile_kextexts(profile)  # recusa perfil desconhecido antes de gastar um build
+    kext_args = kext_injection(util, profile)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     config_output.parent.mkdir(parents=True, exist_ok=True)
@@ -153,12 +245,23 @@ def build(util: Path, output: Path, config_output: Path) -> None:
             for entry in data.get("Kernel", {}).get("Add", [])
             if isinstance(entry, dict)
         }
-        for name, minimum_kernel in REQUIRED_KEXTS.items():
+        # Valida contra o PERFIL detectado, não contra uma constante: o conjunto esperado
+        # (Lilu embutido + os bundles do perfil) tem de ser IGUALDADE EXATA na imagem,
+        # com os gates certos — um kext do outro perfil sobrando também é erro.
+        expected = {"Lilu.kext": "25.0.0", **dict(profile_kextexts(profile))}
+        extras = sorted(set(add_kexts) - set(expected))
+        if extras:
+            raise RuntimeError(
+                f"a imagem tem kexts fora do perfil {profile}: {', '.join(extras)}"
+            )
+        for name, minimum_kernel in expected.items():
             entry = add_kexts.get(name)
             if not entry or not entry.get("Enabled"):
-                raise RuntimeError(f"reims-util não habilitou {name}")
+                raise RuntimeError(f"reims-util não habilitou {name} (perfil {profile})")
             if entry.get("MinKernel") != minimum_kernel or entry.get("MaxKernel") != "25.99.99":
-                raise RuntimeError(f"{name} não está delimitada ao Kernel macOS 26")
+                raise RuntimeError(
+                    f"{name} não está delimitada ao Kernel macOS 26 no perfil {profile}"
+                )
             listing = run(
                 "guestfish", "--ro", "-a", str(staging), "-m", "/dev/sda1",
                 "find", f"/EFI/OC/Kexts/{name}",
@@ -199,9 +302,26 @@ def main() -> int:
     parser.add_argument("--reims-util", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--config-output", type=Path, required=True)
+    # O perfil normalmente é detectado do binário do QEMU (--qemu). --graphics-profile só
+    # sobrepõe de forma consciente; um nome desconhecido falha, nunca cai no legado.
+    parser.add_argument(
+        "--graphics-profile",
+        choices=sorted(GRAPHICS_PROFILES),
+        default=None,
+        help="Sobrepõe o perfil gráfico; o padrão é detectá-lo do binário do QEMU (--qemu).",
+    )
+    parser.add_argument(
+        "--qemu",
+        type=Path,
+        default=None,
+        help="Binário do QEMU da release, de onde o perfil gráfico é detectado.",
+    )
     args = parser.parse_args()
     try:
-        build(args.reims_util, args.output, args.config_output)
+        build(
+            args.reims_util, args.output, args.config_output,
+            graphics_profile=args.graphics_profile, qemu=args.qemu,
+        )
     except (OSError, subprocess.CalledProcessError, RuntimeError, ValueError) as exc:
         print(f"Erro ao gerar OpenCore: {exc}", file=__import__("sys").stderr)
         return 1

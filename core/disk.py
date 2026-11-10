@@ -113,6 +113,7 @@ class DiskProvisioner:
         installer_img: Optional[str | Path] = None,
         *,
         job_context=None,
+        graphics_profile: str | None = None,
     ) -> VMDiskBundle:
         """
         Cria a pasta da VM, o disco principal QCOW2 e a imagem OpenCore personalizada.
@@ -204,6 +205,7 @@ class DiskProvisioner:
                     boot_args=reims_util.OPENCORE_BOOT_ARGS,
                     show_picker=bool(getattr(vm, "opencore_show_picker", False)),
                     job_context=job_context,
+                    **({"graphics_profile": graphics_profile} if graphics_profile is not None else {}),
                 )
                 if not generated:
                     # Desfaz o OVMF que ESTE provisionamento escreveu, para o

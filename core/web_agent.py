@@ -2597,6 +2597,29 @@ class WebAgentService:
             return enabled & present
 
     @staticmethod
+    def _graphics_profile_from_kexts(kexts: set[str]) -> str | None:
+        """Recognize the EFI profile from its discriminator bundle IDs."""
+        from core.graphics_profiles import GRAPHICS_PROFILES, LEGACY_PROFILE
+
+        legacy_marker = "ReimsVgpu.kext"
+        modern_markers = {"ReimsGraphicsLoader.kext", "RgfxGate.kext"}
+        legacy = legacy_marker in kexts and not modern_markers.intersection(kexts)
+        modern = modern_markers.issubset(kexts) and legacy_marker not in kexts
+        if legacy == modern:
+            return None
+        return LEGACY_PROFILE if legacy else "reims-graphics-pci"
+
+    @staticmethod
+    def _expected_opencore_kexts(graphics_profile: str) -> set[str]:
+        from core.graphics_profiles import EMBEDDED_KEXTS, GRAPHICS_PROFILES
+
+        if graphics_profile not in GRAPHICS_PROFILES:
+            raise RuntimeError(f"Perfil gráfico desconhecido: {graphics_profile!r}")
+        return set(EMBEDDED_KEXTS) | {
+            bundle for bundle, _minimum in GRAPHICS_PROFILES[graphics_profile]
+        }
+
+    @staticmethod
     def _restore_opencore_image(image: Path, backup: Path, context: Any) -> None:
         """Put the pre-mutation OpenCore image back after a failed postcondition.
 
@@ -2674,12 +2697,23 @@ class WebAgentService:
             if not runtime.get("reims_update_opencore_picker"):
                 raise RuntimeError("O Reims instalado não oferece a atualização segura do picker OpenCore.")
             kext_mode = runtime.get("reims_update_opencore_kext_mode")
+            graphics_profile = runtime.get("qemu_graphics_profile")
+            if graphics_profile not in {"apple-gfx-pci", "reims-graphics-pci"}:
+                raise RuntimeError("Não foi possível identificar o perfil gráfico do QEMU selecionado; nada foi alterado.")
             if kext_mode != "embedded":
                 raise RuntimeError(
-                    f"O reims-util instalado opera no modo {kext_mode!r}: sem kexts embutidos a "
-                    "regeneração deixaria a VM sem paravirtualização; use um reims-util com kexts "
-                    "embutidos ou um reims-ctl que repasse --add-kext."
+                    f"O reims-util selecionado opera no modo {kext_mode!r}: sem kexts embutidos a regeneração "
+                    "deixaria a VM sem paravirtualização; use um reims-util com kexts embutidos ou um "
+                    "reims-ctl que repasse --add-kext."
                 )
+            util_source = runtime.get("reims_update_opencore_kext_mode_source")
+            if not isinstance(util_source, str) or not util_source:
+                raise RuntimeError("Não foi possível resolver o reims-util que será usado pelo reims-ctl.")
+            child_env = dict(os.environ)
+            existing_override = child_env.get("REIMS_CTL_UTIL")
+            if existing_override and Path(existing_override).expanduser() != Path(util_source).expanduser():
+                raise RuntimeError("REIMS_CTL_UTIL diverge do utilitário selecionado no inventory; atualização recusada.")
+            child_env["REIMS_CTL_UTIL"] = util_source
         except RuntimeError:
             raise
         except Exception as exc:
@@ -2701,15 +2735,29 @@ class WebAgentService:
                 raise RuntimeError("A VM ou o catálogo mudou antes da regeneração; nenhuma imagem foi alterada.")
             context.phase("Regenerando OpenCore com a identidade atual", 10)
             context.checkpoint("opencore_regeneration_started", {"vm_id": vm_id, "boot_selection": desired})
-            # Read the pre-mutation kext set while the image is still untouched.
-            # Do this before creating the backup: a failure here mutates nothing,
-            # so it must not leave an orphan `.opencore-before-picker.qcow2`.
+            # The current EFI must be a known profile whose enabled kext set is
+            # exactly the declared one. Picker cannot request a profile change:
+            # `update-opencore` has no profile argument, so the EFI profile must
+            # already match the QEMU that will boot it. Read before the backup so
+            # a failure here leaves no orphan `.opencore-before-picker.qcow2`.
             try:
                 before = self._opencore_enabled_kexts(image)
+                source_profile = self._graphics_profile_from_kexts(before)
             except Exception as exc:
                 raise RuntimeError(
-                    "Não foi possível ler os kexts da EFI antes de regenerar; nada foi alterado."
+                    "Não foi possível validar os kexts da EFI antes de regenerar; nada foi alterado."
                 ) from exc
+            if source_profile is None:
+                raise RuntimeError("O perfil gráfico da EFI é desconhecido ou ambíguo; nada foi alterado.")
+            if source_profile != graphics_profile:
+                raise RuntimeError(
+                    f"A EFI está no perfil {source_profile}, mas o QEMU selecionado é {graphics_profile}; "
+                    "o picker não migra perfil e update-opencore não aceita perfil. Nada foi alterado."
+                )
+            if before != self._expected_opencore_kexts(source_profile):
+                raise RuntimeError(
+                    "O conjunto de kexts da EFI não corresponde exatamente ao perfil declarado; nada foi alterado."
+                )
             # Snapshot for rollback. It is still taken before the mutation; it is
             # only skipped when the image could not be inspected at all.
             backup = resolved_directory / ".opencore-before-picker.qcow2"
@@ -2724,6 +2772,7 @@ class WebAgentService:
             try:
                 result = subprocess.run(
                     [binary, "update-opencore", vm_id, "--boot-selection", str(desired).lower()],
+                    env=child_env,
                     capture_output=True,
                     text=True,
                     timeout=1800,
@@ -2745,12 +2794,11 @@ class WebAgentService:
                     "O Reims terminou a regeneração, mas a EFI resultante não pôde ser inspecionada; "
                     "a imagem anterior foi restaurada e o picker não foi marcado como atualizado."
                 ) from exc
-            if bool(before - after):  # FIX nomes
+            if after != self._expected_opencore_kexts(source_profile):
                 self._restore_opencore_image(image, backup, context)
-                lost = ", ".join(sorted(before - after)) or "(nomes indisponíveis)"
                 raise RuntimeError(
-                    "O Reims terminou a regeneração, mas a EFI resultante perdeu kexts habilitados "
-                    f"({len(before)} → {len(after)}: {lost}); a imagem anterior foi restaurada. "
+                    "O Reims terminou a regeneração, mas o conjunto de kexts da EFI não corresponde "
+                    "exatamente ao perfil preservado; a imagem anterior foi restaurada. "
                     "Verifique o par reims-ctl/reims-util."
                 )
             context.phase("Atualizando o catálogo da VM", 90)
@@ -3254,6 +3302,17 @@ class WebAgentService:
 
         request_payload = dict(payload)
         request_payload["installer_policy"] = InstallerPolicy(request_payload["installer_policy"])
+        # The runtime inventory already knows which graphics profile the installed
+        # QEMU selects; feed it so provisioning does not depend on a second
+        # autodetection. Only paid here (the vm.provision job), never on service
+        # construction. A None result stays None: "unknown" must still fall
+        # through to the generator's own autodetect/refusal.
+        if not request_payload.get("graphics_profile"):
+            from core.runtime_inventory import inspect_runtime
+
+            detected = inspect_runtime().get("qemu_graphics_profile")
+            if detected:
+                request_payload["graphics_profile"] = detected
         raw_topology = request_payload.get("cpu_topology")
         if raw_topology is not None:
             from core.config import CpuTopologyConfig
@@ -3357,18 +3416,20 @@ class WebAgentService:
             if not binary:
                 raise RuntimeError("Os binários foram instalados, mas reims-ctl não está disponível.")
 
-            # The regenerated EFI only keeps its kexts when the paired reims-util
-            # embeds them ("embedded"). An "add-kext" util needs the caller to
-            # pass --add-kext, and this reims-ctl does not; "unknown" cannot be
-            # trusted. Refuse the whole batch before touching any VM.
+            # Resolve the installed runtime once. The regenerated EFI only
+            # keeps its kexts when the paired reims-util embeds them; an
+            # "add-kext" util needs a caller that passes --add-kext and this
+            # reims-ctl does not, so refuse the whole batch before any VM.
             try:
                 from core.runtime_inventory import inspect_runtime
 
-                kext_mode = inspect_runtime(use_cache=False).get("reims_update_opencore_kext_mode")
+                runtime = inspect_runtime(use_cache=False)
+                kext_mode = runtime.get("reims_update_opencore_kext_mode")
+                destination_profile = runtime.get("qemu_graphics_profile")
+                util_source = runtime.get("reims_update_opencore_kext_mode_source")
             except Exception as exc:
                 raise RuntimeError(
-                    "Não foi possível confirmar o modo de kexts do reims-util instalado; "
-                    "nenhuma VM foi modificada."
+                    "Não foi possível confirmar o runtime Reims instalado; nenhuma VM foi modificada."
                 ) from exc
             if kext_mode != "embedded":
                 raise RuntimeError(
@@ -3376,6 +3437,17 @@ class WebAgentService:
                     "a regeneração do OpenCore deixaria as VMs sem paravirtualização. Nenhuma VM foi "
                     "modificada; use um reims-util com kexts embutidos ou um reims-ctl que repasse --add-kext."
                 )
+            if destination_profile not in {"apple-gfx-pci", "reims-graphics-pci"}:
+                raise RuntimeError(
+                    "Não foi possível identificar o perfil gráfico do QEMU instalado; nenhuma VM foi modificada."
+                )
+            if not isinstance(util_source, str) or not util_source:
+                raise RuntimeError("Não foi possível resolver o reims-util usado pelo reims-ctl.")
+            child_env = dict(os.environ)
+            existing_override = child_env.get("REIMS_CTL_UTIL")
+            if existing_override and Path(existing_override).expanduser() != Path(util_source).expanduser():
+                raise RuntimeError("REIMS_CTL_UTIL diverge do utilitário selecionado no inventory; atualização recusada.")
+            child_env["REIMS_CTL_UTIL"] = util_source
 
             self._refresh_catalog()
             managed_root = (self.store.config_dir / "vms").resolve(strict=False)
@@ -3438,6 +3510,27 @@ class WebAgentService:
                         before_kexts = self._opencore_enabled_kexts(resolved_image)
                     except Exception as exc:
                         raise RuntimeError("não foi possível ler os kexts da EFI antes de atualizar") from exc
+                    # Exact-equality preconditions against the installed QEMU's
+                    # profile. `update-opencore` takes no profile argument, so a
+                    # VM whose EFI was built for another profile must be skipped,
+                    # never silently rewritten into the wrong guest kexts.
+                    source_profile = self._graphics_profile_from_kexts(before_kexts)
+                    if source_profile is None:
+                        raise RuntimeError("o perfil gráfico da EFI é desconhecido ou ambíguo")
+                    if source_profile != destination_profile:
+                        skipped.append(vm.id)
+                        context.log(
+                            f"{vm.name}: ignorada; EFI no perfil {source_profile} difere do QEMU {destination_profile} "
+                            "e update-opencore não migra perfil."
+                        )
+                        context.checkpoint(
+                            "reims_vm_opencore_skipped",
+                            {"vm_id": vm.id, "reason": "profile-mismatch"},
+                            completed=True,
+                        )
+                        continue
+                    if before_kexts != self._expected_opencore_kexts(source_profile):
+                        raise RuntimeError("o conjunto de kexts da EFI difere do perfil declarado")
                     # Create the backup only after the image was inspected: a
                     # failed inspection never mutated anything and must not leave
                     # an orphan `.opencore-before-{tag}.qcow2`. It is still taken
@@ -3462,6 +3555,7 @@ class WebAgentService:
                     outcome = context.run_subprocess(
                         [str(binary), "update-opencore", vm.id],
                         timeout=1800,
+                        env=child_env,
                         check=False,
                     )
                     if outcome.returncode != 0:
@@ -3474,12 +3568,11 @@ class WebAgentService:
                             "update-opencore retornou sucesso, mas a EFI não pôde ser inspecionada; "
                             "a imagem anterior foi restaurada"
                         ) from exc
-                    if bool(before_kexts - after_kexts):  # FIX nomes
+                    if after_kexts != self._expected_opencore_kexts(source_profile):
                         self._restore_opencore_image(resolved_image, backup, context)
-                        lost = ", ".join(sorted(before_kexts - after_kexts)) or "(nomes indisponíveis)"
                         raise RuntimeError(
-                            "update-opencore retornou sucesso, mas a EFI perdeu kexts habilitados "
-                            f"({len(before_kexts)} → {len(after_kexts)}: {lost}); a imagem anterior foi restaurada"
+                            "update-opencore retornou sucesso, mas o conjunto de kexts da EFI não "
+                            "corresponde exatamente ao perfil; a imagem anterior foi restaurada"
                         )
                     updated.append(vm.id)
                     context.log(

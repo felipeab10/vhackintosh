@@ -1022,6 +1022,10 @@ class RuntimeInventory(Contract):
     qemu_options: list[str] = Field(default_factory=list)
     qemu_command_options: list[str] = Field(default_factory=list)
     qemu_devices: list[str] = Field(default_factory=list)
+    # Graphics profile of the QEMU binary Control would boot: the discriminator
+    # for the OpenCore EFI profile and for exact kext-set validation.
+    qemu_graphics_profile: str | None = None
+    qemu_graphics_profile_source: str | None = None
     qemu_machine_types: list[str] = Field(default_factory=list)
     qemu_cpu_models: list[str] = Field(default_factory=list)
     qemu_audio_backends: list[str] = Field(default_factory=list)

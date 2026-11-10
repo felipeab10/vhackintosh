@@ -56,3 +56,28 @@ installed fleet `reims-ctl`. The fork's `origin/master` has since moved to
 fleet `reims-ctl` migrates, the correct set becomes those five and this one
 becomes wrong; the choice follows the installed `reims-ctl` binary, not a
 permanent constant.
+
+## `reims-graphics-pci` profile bundles
+
+The five bundles under `reims-graphics-pci/` are copied verbatim from
+`steelbrain/reims-vgpu` commit `eef1c88da0b3de5cdb161b44c24087e367ee23b9`,
+`guest/prebuilt/`. Source metadata is the adjacent `set.toml` and `sources.toml`;
+they were copied from the same commit. `set.toml` declares each bundle's
+executable SHA-256 and the OpenCore gates `MinKernel=25.4.0`,
+`MaxKernel=25.99.99`. Each executable was checked both against `set.toml` and
+the source blob at that commit. The LICENSE at that commit offers
+GPL-2.0-or-later OR LGPL-3.0-or-later; see the upstream `LICENSE` and the full
+texts already included in `LICENSES/` above. These five bundles use
+`com.steelbrain.*` identifiers (not `com.apple.*`).
+
+| Bundle | CFBundleIdentifier | Executable SHA-256 | Bundle tree SHA-256 |
+| --- | --- | --- | --- |
+| `ReimsGraphicsLoader.kext` | `com.steelbrain.ReimsGraphicsLoader` | `b4ba581f334b060d4b42d0c7d61353242197b5cfbe1ea36cd895d229ac7981d0` | `466bb3475e28970f93e37af19c9b827b19fe83be1a2a8605d19d96b534a32b23` |
+| `RgfxIOGraphicsFamilyBridge.kext` | `com.steelbrain.RgfxIOGraphicsFamilyBridge` | `347b0d81deeb1aba5a6bb2640c9f69bce68607b88b3d7fc5b7f43687ce365253` | `cd77e6b679164aaabf7cfad7c31ca3589f296796d0c2bf00e5b43c92a0d57d21` |
+| `RgfxAppleGraphicsDeviceControlBridge.kext` | `com.steelbrain.RgfxAppleGraphicsDeviceControlBridge` | `12bded4c6d70f1177662195121927ca9ce0af450a80f3fcf79ba1b555887f95d` | `bdcb3ee46ccb6297e63bf10ee5168e4b16825184c7fec923500d307e06e5a084` |
+| `ReimsGraphics.kext` | `com.steelbrain.ReimsGraphics` | `b091b773681dc6771d7cd807f877cd5c682e6cca3a21cd1c6ae61e8342473c89` | `cd5baf48aeb932117c728b76c407fbfbc6026e97f3522657cc344bad4946f249` |
+| `RgfxGate.kext` | `com.steelbrain.RgfxGate` | `44d238921f7b5e20afd64649c464ad2a8748d7e35b89ea0c2e08a66b4c4af0b7` | `1114dc5b5e7d54ca931a2ccd627e30921309d6abb02f7dcec6c8410acce5a224` |
+
+The `set.toml`/`sources.toml` files are retained alongside the bundles for
+upstream build-input provenance. The project does not modify `reims-vgpu` or
+its generated kexts.

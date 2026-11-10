@@ -31,6 +31,53 @@ def make_bundle(root: Path, *, content: str, runtime: str = "v1.0.0") -> Path:
 
 
 class WebBundleTests(unittest.TestCase):
+    def test_packaged_bundle_activates_with_the_vendored_kexts_present(self):
+        """O bundle do pacote tem de ativar com os kexts vendorizados dentro dele.
+
+        O `stage-app.sh` copia `resources/reims-kexts/` para o bundle antes da
+        ativação. Se a copia sumir, o `reims-util` novo recusa gerar a EFI no
+        host empacotado — então a ativação do bundle e a presença dos kexts são
+        o mesmo contrato.
+        """
+        from core import reims_util
+
+        with tempfile.TemporaryDirectory() as temporary:
+            web_root = Path(temporary) / "opt/vhackintosh/web"
+            versions = web_root / "bundles"
+            versions.mkdir(parents=True)
+            candidate = make_bundle(versions / ".control-staging", content="control",
+                                    runtime="control-independent")
+            kexts = candidate / "resources" / "reims-kexts"
+            kexts.mkdir(parents=True)
+            for name, _minimum in reims_util.VENDORED_KEXTS:
+                (kexts / name / "Contents").mkdir(parents=True)
+                (kexts / name / "Contents" / "Info.plist").write_text(
+                    f"<plist>{name}</plist>", encoding="utf-8"
+                )
+            # O manifesto é reescrito depois da cópia dos kexts, como no
+            # `refresh-control-bundle.py` do staging do pacote.
+            write_bundle_metadata(candidate, runtime_release="control-independent")
+            initial_metadata = json.loads((candidate / "BUNDLE.json").read_text(encoding="utf-8"))
+            source = versions / initial_metadata["bundle_id"]
+            candidate.rename(source)
+            current = web_root / "current"
+            current.symlink_to(f"bundles/{source.name}")
+
+            metadata = bind_current_bundle_runtime(web_root, runtime_release="v1.5.0")
+
+            active = current.resolve()
+            self.assertEqual(active.name, metadata.bundle_id)
+            manifest = (active / "MANIFEST.sha256").read_text(encoding="ascii")
+            vendored = active / "resources" / "reims-kexts"
+            self.assertEqual(len(reims_util.VENDORED_KEXTS), 8)
+            for name, _minimum in reims_util.VENDORED_KEXTS:
+                with self.subTest(kext=name):
+                    self.assertTrue((vendored / name / "Contents" / "Info.plist").is_file())
+                    self.assertIn(
+                        f"resources/reims-kexts/{name}/Contents/Info.plist",
+                        manifest,
+                    )
+
     def test_runtime_binding_rehashes_bundle_and_updates_current_pointer(self):
         with tempfile.TemporaryDirectory() as temporary:
             web_root = Path(temporary) / "opt/vhackintosh/web"

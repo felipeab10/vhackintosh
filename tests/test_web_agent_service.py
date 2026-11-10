@@ -11,9 +11,41 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.config import AdditionalDiskConfig, SMBIOSConfig, VMConfig, VMManagerStore
+from core.graphics_profiles import EMBEDDED_KEXTS, GRAPHICS_PROFILES
 from core.web_rpc import RpcRemoteError
+
+LEGACY_PROFILE = "apple-gfx-pci"
+REIMS_PROFILE = "reims-graphics-pci"
+
+
+def _profile_kexts(profile):
+    return set(EMBEDDED_KEXTS) | {bundle for bundle, _minimum in GRAPHICS_PROFILES[profile]}
+
+
+def _release_runtime(profile=LEGACY_PROFILE, kext_mode="embedded"):
+    return {
+        "reims_update_opencore_kext_mode": kext_mode,
+        "reims_update_opencore_kext_mode_source": "/managed/reims-util",
+        "qemu_graphics_profile": profile,
+        "qemu_graphics_profile_source": "/managed/qemu-system-x86_64",
+    }
 from core.web_agent import WebAgentService, _allowed_agent_client_uids
 
+
+class _FakeProvisionContext:
+    """Minimal JobContext for driving `_run_provision_job` directly."""
+
+    def phase(self, stage, progress=None):
+        return None
+
+    def checkpoint(self, stage, payload, **_kwargs):
+        return None
+
+    def log(self, message):
+        return None
+
+    def check_cancelled(self):
+        return None
 
 class FakeTelemetry:
     def sample_host(self):
@@ -1572,13 +1604,13 @@ class WebAgentServiceTests(unittest.TestCase):
                     return SimpleNamespace(returncode=0, stdout="Usage: reims-ctl update-opencore <NAME>", stderr="")
                 if command[0] == "guestfish" and "download" in command:
                     seen["n"] += 1
-                    bundles = ("Lilu.kext", "ReimsGfx.kext") if seen["n"] == 1 else ("Lilu.kext",)
-                    plist = {"Kernel": {"Add": [{"BundlePath": n, "Enabled": True} for n in bundles]}}
+                    bundles = _profile_kexts(LEGACY_PROFILE) if seen["n"] == 1 else {"Lilu.kext"}
+                    plist = {"Kernel": {"Add": [{"BundlePath": n, "Enabled": True} for n in sorted(bundles)]}}
                     Path(command[-1]).write_bytes(plistlib.dumps(plist))
                     return SimpleNamespace(returncode=0, stdout="", stderr="")
                 if command[0] == "guestfish" and "ls" in command:
-                    out = "Lilu.kext\nReimsGfx.kext\n" if seen["n"] == 1 else "Lilu.kext\n"
-                    return SimpleNamespace(returncode=0, stdout=out, stderr="")
+                    bundles = _profile_kexts(LEGACY_PROFILE) if seen["n"] == 1 else {"Lilu.kext"}
+                    return SimpleNamespace(returncode=0, stdout="\n".join(sorted(bundles)) + "\n", stderr="")
                 raise AssertionError(command)
 
             with patch("core.reims_release.update_from_release", return_value=UpdateResult(
@@ -1592,7 +1624,7 @@ class WebAgentServiceTests(unittest.TestCase):
                  ), patch(
                      "core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}
                  ), patch("core.web_agent.shutil.which", return_value="/usr/bin/guestfish"), patch(
-                     "core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_kext_mode": "embedded"}
+                     "core.runtime_inventory.inspect_runtime", return_value=_release_runtime()
                  ), patch("core.web_agent.subprocess.run", side_effect=fake_run):
                 with self.assertRaisesRegex(RuntimeError, r"com falha em 1 \(Studio\)"):
                     service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
@@ -1609,8 +1641,8 @@ class WebAgentServiceTests(unittest.TestCase):
         import plistlib
         from core.reims_release import UpdateResult
 
-        before_bundles = ("Lilu.kext", "ReimsGfx.kext")
-        after_bundles = ("Lilu.kext", "RgfxGate.kext")
+        before_bundles = sorted(_profile_kexts(LEGACY_PROFILE))
+        after_bundles = sorted(_profile_kexts(REIMS_PROFILE))
 
         class Context:
             def __init__(self): self.events = []
@@ -1647,7 +1679,7 @@ class WebAgentServiceTests(unittest.TestCase):
                     return SimpleNamespace(returncode=0, stdout="", stderr="")
                 if command[0] == "guestfish" and "ls" in command:
                     bundles = before_bundles if seen["n"] == 1 else after_bundles
-                    return SimpleNamespace(returncode=0, stdout="\n".join(bundles), stderr="")
+                    return SimpleNamespace(returncode=0, stdout="\n".join(bundles) + "\n", stderr="")
                 raise AssertionError(command)
 
             with patch("core.reims_release.update_from_release", return_value=UpdateResult(
@@ -1663,7 +1695,7 @@ class WebAgentServiceTests(unittest.TestCase):
                  ), patch("core.web_agent.shutil.which", return_value="/usr/bin/guestfish"), patch(
                      "core.web_agent.subprocess.run", side_effect=fake_run
                  ), patch(
-                     "core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_kext_mode": "embedded"}
+                     "core.runtime_inventory.inspect_runtime", return_value=_release_runtime()
                  ):
                 with self.assertRaisesRegex(RuntimeError, r"com falha em 1 \(Studio\)"):
                     service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
@@ -1715,7 +1747,7 @@ class WebAgentServiceTests(unittest.TestCase):
                  ), patch("core.web_agent.shutil.which", return_value=None), patch(
                      "core.web_agent.subprocess.run", side_effect=fake_run
                  ), patch(
-                     "core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_kext_mode": "embedded"}
+                     "core.runtime_inventory.inspect_runtime", return_value=_release_runtime()
                  ):
                 with self.assertRaisesRegex(RuntimeError, r"com falha em 1 \(Studio\)"):
                     service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
@@ -1760,7 +1792,7 @@ class WebAgentServiceTests(unittest.TestCase):
                  ), patch("core.reims_build.install_prebuilt", return_value=True), patch(
                      "core.reims_ctl.reims_ctl_bin", return_value="/managed/reims-ctl"
                  ), patch(
-                     "core.runtime_inventory.inspect_runtime", return_value={"reims_update_opencore_kext_mode": "add-kext"}
+                     "core.runtime_inventory.inspect_runtime", return_value=_release_runtime(kext_mode="add-kext")
                  ), patch("core.web_agent.subprocess.run", side_effect=fake_run):
                 with self.assertRaisesRegex(RuntimeError, "sem kexts embutidos"):
                     service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
@@ -2138,6 +2170,67 @@ class WebAgentServiceTests(unittest.TestCase):
                 with self.subTest(payload=payload), self.assertRaises(RpcRemoteError) as caught:
                     service.list_jobs(payload)
                 self.assertEqual(caught.exception.code, "invalid_job_query")
+
+    def test_provision_job_feeds_the_inventory_graphics_profile_to_the_service(self):
+        """The web path must pass the runtime's profile, not leave it to the disk.py."""
+        from core.vm_provisioning import ProvisioningEvent
+
+        class RecordingProvisioner:
+            def __init__(self):
+                self.request = None
+
+            def provision(self, request, *, on_event=None, cancel_event=None, job_context=None):
+                self.request = request
+                if on_event:
+                    on_event(ProvisioningEvent("disk_opencore", "completed", 90, "Pronto", request.vm_id))
+                return SimpleNamespace(
+                    vm=SimpleNamespace(id=request.vm_id, name=request.name, disk_path="/vm/disk.qcow2")
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            provisioner = RecordingProvisioner()
+            service = WebAgentService(
+                Path(directory) / "vms.json", jobs_db_path=Path(directory) / "jobs.sqlite",
+                provisioning_service=provisioner,
+            )
+            try:
+                with patch(
+                    "core.runtime_inventory.inspect_runtime",
+                    return_value={"qemu_graphics_profile": REIMS_PROFILE},
+                ):
+                    service._run_provision_job(
+                        {"vm_id": "profile-vm", "name": "Profile VM", "macos_version": "tahoe",
+                         "vcpus": 2, "ram_gb": 4, "installer_policy": "none"},
+                        _FakeProvisionContext(),
+                    )
+                self.assertEqual(provisioner.request.graphics_profile, REIMS_PROFILE)
+
+                # A caller-supplied profile must win over the inventory value.
+                with patch(
+                    "core.runtime_inventory.inspect_runtime",
+                    return_value={"qemu_graphics_profile": REIMS_PROFILE},
+                ):
+                    service._run_provision_job(
+                        {"vm_id": "pinned-vm", "name": "Pinned VM", "macos_version": "tahoe",
+                         "vcpus": 2, "ram_gb": 4, "installer_policy": "none",
+                         "graphics_profile": LEGACY_PROFILE},
+                        _FakeProvisionContext(),
+                    )
+                self.assertEqual(provisioner.request.graphics_profile, LEGACY_PROFILE)
+
+                # No evidence: stay None so the generator autodetects/refuses.
+                with patch(
+                    "core.runtime_inventory.inspect_runtime",
+                    return_value={"qemu_graphics_profile": None},
+                ):
+                    service._run_provision_job(
+                        {"vm_id": "unknown-vm", "name": "Unknown VM", "macos_version": "tahoe",
+                         "vcpus": 2, "ram_gb": 4, "installer_policy": "none"},
+                        _FakeProvisionContext(),
+                    )
+                self.assertIsNone(provisioner.request.graphics_profile)
+            finally:
+                service.close_jobs()
 
     def test_explicit_retry_reuses_job_id_and_completed_checkpoints(self):
         class RetryProvisioner:

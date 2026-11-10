@@ -82,6 +82,7 @@ class VMProvisioningRequest:
     network_enabled: bool = True
     network_mac: str | None = None
     network_ssh_port: int = 0
+    graphics_profile: str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,7 @@ class VMProvisioningService:
         cached_installer: Callable[[str], Path | None] | None = None,
         prepare_installer: Callable[[str], Path | None] | None = None,
         gpu_validator: GPUValidator | None = None,
+        graphics_profile_provider: Callable[[], str | None] | None = None,
         storage_root: str | Path | None = None,
         clock: Callable[[], float] = time.monotonic,
         id_factory: Callable[[], str] | None = None,
@@ -143,6 +145,7 @@ class VMProvisioningService:
         self.cached_installer = cached_installer
         self.prepare_installer = prepare_installer
         self.gpu_validator = gpu_validator or self._validate_gpu_selection
+        self.graphics_profile_provider = graphics_profile_provider
         self.storage_root = Path(storage_root) if storage_root is not None else CONFIG_DIR / "vms"
         self.clock = clock
         self.id_factory = id_factory or (lambda: secrets.token_hex(8))
@@ -230,10 +233,14 @@ class VMProvisioningService:
                 from core.disk import DiskProvisioner
 
                 disk_provisioner = DiskProvisioner
+            profile = request.graphics_profile
+            if profile is None and self.graphics_profile_provider is not None:
+                profile = self.graphics_profile_provider()
+            extra = {"graphics_profile": profile} if profile is not None else {}
             if job_context is None:
-                bundle = disk_provisioner.provision(vm, installer_img=installer)
+                bundle = disk_provisioner.provision(vm, installer_img=installer, **extra)
             else:
-                bundle = disk_provisioner.provision(vm, installer_img=installer, job_context=job_context)
+                bundle = disk_provisioner.provision(vm, installer_img=installer, job_context=job_context, **extra)
         except Exception as exc:
             # Preserve job control flow so the runner records cancelled,
             # timed-out, and interrupted states instead of disk failure.

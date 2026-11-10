@@ -35,7 +35,9 @@ esac
 esac
 ''')
 
-            with patch("core.reims_release.current_release", return_value="v1.4.0"), patch.dict("os.environ", {"PATH": ""}, clear=False):
+            with patch("core.reims_release.current_release", return_value="v1.4.0"), \
+                 patch("core.reims_util.find_reims_util", return_value=None), \
+                 patch.dict("os.environ", {"REIMS_CTL_UTIL": ""}, clear=False):
                 result = inspect_runtime(reims_binary=reims, qemu_binary=qemu, use_cache=False)
 
         self.assertEqual(result["status"], "available")
@@ -97,8 +99,9 @@ esac
   -audiodev) echo 'Available audio drivers:'; echo 'none' ;;
 esac
 ''')
-            path = str(util_dir) + os.pathsep + os.environ.get("PATH", "")
-            with patch("core.runtime_inventory._cache", None), patch.dict("os.environ", {"PATH": path}, clear=False):
+            with patch("core.runtime_inventory._cache", None), \
+                 patch("core.reims_util.find_reims_util", return_value=util_dir / "reims-util"), \
+                 patch.dict("os.environ", {"REIMS_CTL_UTIL": ""}, clear=False):
                 result = inspect_runtime(reims_binary=reims, qemu_binary=qemu, use_cache=False)
         self.assertEqual(result["reims_update_opencore_kext_mode"], "embedded")
         self.assertEqual(result["reims_update_opencore_kext_mode_source"], str(util_dir / "reims-util"))

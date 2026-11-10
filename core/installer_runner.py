@@ -122,7 +122,13 @@ class ABInstallerTest:
             opencore_show_picker=True,
         )
 
-        bundle = DiskProvisioner.provision(vm, installer_img=installer_img)
+        bundle = DiskProvisioner.provision(
+            vm,
+            installer_img=installer_img,
+            # A instalação limpa roda antes de existir runtime/QEMU no host, então
+            # não há device para autodetectar: a frota é legada por definição.
+            graphics_profile="apple-gfx-pci",
+        )
 
         # 6. Execução do Boot — delegada ao reims-ctl (árvore nova do
         # reims-vgpu): o appliance grava o vm.toml e registra a VM, o QEMU é

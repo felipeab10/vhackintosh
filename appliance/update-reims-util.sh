@@ -7,6 +7,16 @@ REF="${REIMS_UTIL_REF:-master}"
 DEST="${REIMS_UTIL_BIN:-}"
 REFRESH_OPENCORE=0
 
+# Pin único compartilhado com o pacote do Control (packaging/reims-util.pin).
+# Por padrão este script instala o SHA pinado, para que o binário do host case
+# com o do pacote — que é o que o build da ISO exige. `--ref` continua
+# disponível para experimentos, mas nesse caso o sidecar aponta o commit
+# resolvido e o build da ISO só aceita se casar com o pin.
+PIN_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../packaging/common" && pwd)/reims-util-pin.sh"
+. "$PIN_SCRIPT"
+reims_util_pin_load || exit 1
+REF="${REIMS_UTIL_REV}"
+
 usage() {
     echo "Uso: $0 [--ref BRANCH|TAG] [--refresh-opencore]"
     echo "Atualiza reims-util do repositório oficial, compila em diretório temporário"

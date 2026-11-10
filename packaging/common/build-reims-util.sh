@@ -2,9 +2,14 @@
 set -euo pipefail
 
 OUT="${1:?usage: build-reims-util.sh OUTPUT_DIR}"
-REPO="https://github.com/steelbrain/reims-util.git"
-REV="0b9c3780a3ec2aa312a448b09b18320e5a2c9251"
-TOOLCHAIN="1.98.1"
+# Fonte única da tríade repositório+SHA+toolchain, compartilhada com o build da
+# ISO (appliance/build-iso.sh). Não redefina REV/TOOLCHAIN aqui: a consistência
+# pacote↔ISO depende deste único arquivo.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/reims-util-pin.sh"
+reims_util_pin_load || exit 1
+REPO="${REIMS_UTIL_REPO}"
+REV="${REIMS_UTIL_REV}"
+TOOLCHAIN="${REIMS_UTIL_TOOLCHAIN}"
 WORK="$(mktemp -d)"
 trap 'rm -rf -- "$WORK"' EXIT
 
@@ -37,9 +42,9 @@ install -m 0755 "$BIN" "$OUT/reims-util"
 install -m 0644 "$WORK/source/LICENSE" "$OUT/LICENSE"
 cat > "$OUT/PROVENANCE.txt" <<EOF
 Project: reims-util
-Repository: https://github.com/steelbrain/reims-util
-Commit: $REV
-Rust toolchain: $TOOLCHAIN
+Repository: ${REPO}
+Commit: ${REV}
+Rust toolchain: ${TOOLCHAIN}
 License: GPL-2.0-or-later OR LGPL-3.0-or-later
 The upstream source for this exact binary is available at the repository commit above.
 EOF

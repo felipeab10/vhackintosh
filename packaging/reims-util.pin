@@ -1,0 +1,28 @@
+# Fonte única de procedência do binário `reims-util`.
+#
+# Este arquivo é lido por DOIS caminhos que antes divergiam:
+#   - packaging/common/build-reims-util.sh  (compila o reims-util do pacote do Control)
+#   - packaging/common/reims-util-pin.sh    (usado pelo build da ISO do appliance)
+#
+# Regra: a ISO do appliance e o pacote do Control têm de levar o binário do MESMO
+# commit. Antes o pacote compilava do SHA fixado abaixo, enquanto a ISO aceitava
+# qualquer `reims-util` achado no host e gravava `commit=unknown` quando o host
+# não tinha o sidecar `.commit` — duas origens, duas versões possíveis.
+#
+# Formato: linhas `CHAVE=VALOR`. Comentários (`#`) e linhas vazias são ignorados.
+# Chaves obrigatórias: REPO, REV, TOOLCHAIN (todas não vazias).
+
+REPO=https://github.com/steelbrain/reims-util.git
+REV=0b9c3780a3ec2aa312a448b09b18320e5a2c9251
+TOOLCHAIN=1.98.1
+
+# Perfil gráfico que a ISO EMBARCA. É uma declaração a priori do que a ISO
+# instala — NÃO uma detecção pelo QEMU do host de build, que não existe no
+# momento em que o OpenCore é gerado (o QEMU da release só é baixado depois) e
+# que já foi a fonte de um abort em host limpo.
+#
+# Valor medido hoje: toda release de QEMU instalada nesta máquina traz o device
+# `apple-gfx-pci` (8 ocorrências, 0 de `reims-graphics-pci`), que é o default do
+# reims-ctl da frota. Quando a frota migrar para `reims-graphics-pci`, mude este
+# valor — o build da ISO confere ao final que o QEMU embarcado casa com ele.
+GRAPHICS_PROFILE=apple-gfx-pci

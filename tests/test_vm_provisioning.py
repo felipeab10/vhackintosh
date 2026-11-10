@@ -37,9 +37,10 @@ class FakeDiskProvisioner:
         self.after_provision = after_provision
         self.calls = []
 
-    def provision(self, vm, *, installer_img=None, job_context=None):
+    def provision(self, vm, *, installer_img=None, job_context=None, graphics_profile=None):
         self.calls.append((vm, installer_img))
         self.last_job_context = job_context
+        self.last_graphics_profile = graphics_profile
         vm_dir = self.root / vm.id
         vm_dir.mkdir(parents=True, exist_ok=True)
         disk = vm_dir / "macos.qcow2"
@@ -224,6 +225,24 @@ class VMProvisioningServiceTests(unittest.TestCase):
             self.service.provision(make_request(installer_policy=InstallerPolicy.CACHED))
         self.assertEqual(self.downloads, [])
         self.assertEqual(self.disk.calls, [])
+
+    def test_request_graphics_profile_reaches_the_disk_provisioner(self):
+        self.service.provision(make_request(graphics_profile="reims-graphics-pci"))
+        self.assertEqual(self.disk.last_graphics_profile, "reims-graphics-pci")
+
+    def test_injected_provider_supplies_the_runtime_graphics_profile(self):
+        self.service.graphics_profile_provider = lambda: "apple-gfx-pci"
+        self.service.provision(make_request())
+        self.assertEqual(self.disk.last_graphics_profile, "apple-gfx-pci")
+
+    def test_request_profile_wins_over_the_provider(self):
+        self.service.graphics_profile_provider = lambda: "apple-gfx-pci"
+        self.service.provision(make_request(graphics_profile="reims-graphics-pci"))
+        self.assertEqual(self.disk.last_graphics_profile, "reims-graphics-pci")
+
+    def test_without_request_or_provider_the_profile_is_omitted_for_autodetection(self):
+        self.service.provision(make_request())
+        self.assertIsNone(self.disk.last_graphics_profile)
 
     def test_rejects_gpu_selection_that_cannot_be_uniquely_applied(self):
         self.service.gpu_validator = lambda slot: (False, "ambiguous ICD")

@@ -256,9 +256,174 @@ class ReimsUtilTests(unittest.TestCase):
         for name, minimum in vendored.items():
             self.assertEqual(minimum, REQUIRED_KEXTS[name])
             self.assertTrue(
-                (reims_util.VENDORED_KEXTS_DIR / name / "Contents" / "Info.plist").is_file(),
+                (reims_util.profile_kext_dir("apple-gfx-pci") / name / "Contents" / "Info.plist").is_file(),
                 f"bundle ausente: {name}",
             )
+
+    def test_graphics_profiles_match_builder_table(self):
+        """Core e builder têm de concordar na tabela de perfis, ou as duas EFIs divergem."""
+        from appliance import build_opencore
+
+        self.assertEqual(reims_util.GRAPHICS_PROFILES, build_opencore.GRAPHICS_PROFILES)
+        for profile, bundles in reims_util.GRAPHICS_PROFILES.items():
+            directory = reims_util.profile_kext_dir(profile)
+            for name, _minimum in bundles:
+                with self.subTest(profile=profile, name=name):
+                    self.assertTrue((directory / name / "Contents" / "Info.plist").is_file())
+
+    def test_generate_opencore_injects_the_requested_profile_from_the_real_directory(self):
+        """Cada perfil monta --add-kext a partir do diretório REAL (sem mock de path).
+
+        Só roda quando o binário master (com --add-kext) existe; o binário embutido da
+        frota não exercita este caminho.
+        """
+        master = Path("/tmp/ru-check/target/release/reims-util")
+        if not master.is_file():
+            self.skipTest("binário master do reims-util indisponível")
+        with patch("core.reims_util.find_reims_util", return_value=master):
+            help_text = subprocess.run(
+                [str(master), "opencore", "--help"], capture_output=True, text=True
+            ).stdout
+            self.assertIn("--add-kext", help_text)
+            with tempfile.TemporaryDirectory() as td:
+                for profile, bundles in reims_util.GRAPHICS_PROFILES.items():
+                    with self.subTest(profile=profile):
+                        dest = Path(td) / f"{profile}.qcow2"
+                        self.assertTrue(
+                            reims_util.generate_opencore(
+                                dest, self.sample_smbios, graphics_profile=profile
+                            )
+                        )
+                        listing = subprocess.run(
+                            ["guestfish", "--ro", "-a", str(dest), "-m", "/dev/sda1",
+                             "ls", "/EFI/OC/Kexts"],
+                            check=True, capture_output=True, text=True,
+                        ).stdout.splitlines()
+                        expected = {"Lilu.kext"} | {name for name, _ in bundles}
+                        self.assertEqual(set(listing), expected)
+
+    def test_unknown_graphics_profile_is_refused_even_by_an_embeddding_binary(self):
+        """Perfil desconhecido falha ANTES da geração, mesmo se o binário ignora o argumento."""
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "OpenCore.qcow2"
+            def fake_run(command, **_kwargs):
+                if command[1:3] == ["opencore", "--help"]:
+                    return Mock(returncode=0, stdout="  --no-apv-arm64-port  legacy", stderr="")
+                Path(command[command.index("-o") + 1]).write_bytes(b"MOCK")
+                return Mock(returncode=0, stdout="", stderr="")
+
+            with patch("core.reims_util.find_reims_util", return_value=Path("/bin/reims-util")), patch(
+                "subprocess.run", side_effect=fake_run
+            ) as mock_run:
+                self.assertFalse(
+                    reims_util.generate_opencore(
+                        dest, self.sample_smbios, graphics_profile="perfil-inventado"
+                    )
+                )
+                # Nem chega a rodar opencore: o perfil é validado antes.
+                self.assertEqual(len(mock_run.call_args_list), 0)
+
+    def test_mutation_new_profile_directory_missing_fails_generation(self):
+        """Mutação: renomear o diretório do perfil novo tem de derrubar a geração dele.
+
+        Usa o diretório REAL (renomeia e restaura), não um mock de path.
+        """
+        master = Path("/tmp/ru-check/target/release/reims-util")
+        if not master.is_file():
+            self.skipTest("binário master do reims-util indisponível")
+        real_dir = reims_util.profile_kext_dir("reims-graphics-pci")
+        mutated = real_dir.with_name(real_dir.name + ".MUTATED")
+        self.assertTrue(real_dir.is_dir(), "o diretório do perfil novo tem de existir")
+        with patch("core.reims_util.find_reims_util", return_value=master):
+            with tempfile.TemporaryDirectory() as td:
+                dest = Path(td) / "OpenCore.qcow2"
+                real_dir.rename(mutated)
+                try:
+                    self.assertFalse(
+                        reims_util.generate_opencore(
+                            dest, self.sample_smbios, graphics_profile="reims-graphics-pci"
+                        )
+                    )
+                    self.assertFalse(dest.exists())
+                finally:
+                    mutated.rename(real_dir)
+
+    def test_generate_opencore_autodetects_new_profile_from_qemu(self):
+        """Sem graphics_profile, o perfil vem do device do QEMU (não é legado silencioso)."""
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "OpenCore.qcow2"
+            qemu = Path(td) / "qemu"
+            qemu.write_bytes(b"prefix reims-graphics-pci suffix")
+            def fake_run(command, **_kwargs):
+                if command[1:3] == ["opencore", "--help"]:
+                    return Mock(returncode=0, stdout="  --add-kext <PATH>", stderr="")
+                if "-o" in command:
+                    Path(command[command.index("-o") + 1]).write_bytes(b"MOCK")
+                return Mock(returncode=0, stdout="", stderr="")
+
+            with patch("core.reims_util.find_reims_util", return_value=Path("/bin/reims-util")), patch(
+                "appliance.build_opencore._candidate_qemu_binaries", return_value=[qemu]
+            ), patch("subprocess.run", side_effect=fake_run) as mock_run:
+                self.assertTrue(reims_util.generate_opencore(dest, self.sample_smbios))
+                gen_cmd = next(
+                    call.args[0] for call in mock_run.call_args_list if "-o" in call.args[0]
+                )
+                given = [
+                    gen_cmd[i + 1].rsplit("/", 1)[1].split(",")[0]
+                    for i, arg in enumerate(gen_cmd) if arg == "--add-kext"
+                ]
+                self.assertEqual(
+                    given, [name for name, _ in reims_util.GRAPHICS_PROFILES["reims-graphics-pci"]]
+                )
+
+    def test_generate_opencore_autodetect_refuses_without_qemu_instead_of_assuming_legacy(self):
+        """Sem QEMU legível NÃO assume o legado: recusa, como o builder.
+
+        O ponto de provisionamento (`core/disk.py`) chama sem perfil; assumir legado num host
+        cujo QEMU espera `reims-graphics-pci` entrega a VM sem aceleração e o sintoma só
+        aparece no guest. Mesmo sentido de `detect_graphics_profile` (RuntimeError).
+        """
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "OpenCore.qcow2"
+            def fake_run(command, **_kwargs):
+                if command[1:3] == ["opencore", "--help"]:
+                    return Mock(returncode=0, stdout="  --add-kext <PATH>", stderr="")
+                if "-o" in command:
+                    Path(command[command.index("-o") + 1]).write_bytes(b"MOCK")
+                return Mock(returncode=0, stdout="", stderr="")
+
+            with patch("core.reims_util.find_reims_util", return_value=Path("/bin/reims-util")), patch(
+                "appliance.build_opencore._candidate_qemu_binaries", return_value=[]
+            ), patch("subprocess.run", side_effect=fake_run) as mock_run:
+                self.assertFalse(reims_util.generate_opencore(dest, self.sample_smbios))
+                self.assertFalse(dest.exists())
+                self.assertFalse(any("-o" in call.args[0] for call in mock_run.call_args_list))
+
+    def test_generate_opencore_explicit_legacy_profile_still_works_without_qemu(self):
+        """O legado continua disponível quando o CHAMADOR o pede — não como consolo."""
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "OpenCore.qcow2"
+            def fake_run(command, **_kwargs):
+                if command[1:3] == ["opencore", "--help"]:
+                    return Mock(returncode=0, stdout="  --add-kext <PATH>", stderr="")
+                if "-o" in command:
+                    Path(command[command.index("-o") + 1]).write_bytes(b"MOCK")
+                return Mock(returncode=0, stdout="", stderr="")
+
+            with patch("core.reims_util.find_reims_util", return_value=Path("/bin/reims-util")), patch(
+                "appliance.build_opencore._candidate_qemu_binaries", return_value=[]
+            ), patch("subprocess.run", side_effect=fake_run) as mock_run:
+                self.assertTrue(
+                    reims_util.generate_opencore(
+                        dest, self.sample_smbios, graphics_profile="apple-gfx-pci"
+                    )
+                )
+                gen_cmd = next(
+                    call.args[0] for call in mock_run.call_args_list if "-o" in call.args[0]
+                )
+                self.assertTrue(
+                    any("ReimsVgpu.kext,25.0.0,25.99.99" in arg for arg in gen_cmd), gen_cmd
+                )
 
     def test_generate_opencore_failure_handling(self):
         with tempfile.TemporaryDirectory() as td:

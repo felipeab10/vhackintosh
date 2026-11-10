@@ -13,7 +13,9 @@ on:
       - "appliance/archiso/airootfs/usr/local/bin/vhackintosh-wait-wayland"
       - "packaging/**"
       - "resources/macserial/**"
-      - "resources/reims-util/**"
+      - "resources/reims-kexts/**"
+      - "tests/test_control_package_payload.py"
+      - "tests/test_reims_util_pin.py"
       - "tests/test_web_api.py"
       - "tests/test_web_appliance_packaging.py"
   push:
@@ -61,9 +63,20 @@ jobs:
           /opt/vhackintosh/resources/macserial/macserial -v 2>&1 | grep -q '2.1.8'
           test -s /opt/vhackintosh/web/current/templates/OVMF_VARS.fd
           test -s /opt/vhackintosh/web/current/templates/OVMF_CODE_4M.fd
+          kext_root="$(readlink -f /opt/vhackintosh/web/current)/resources/reims-kexts"
+          for kext in ReimsVgpu.kext AppleGraphicsDeviceControlBridge.kext \
+            AppleParavirtGPULoader.kext AppleParavirtIOSurface.kext IOGPUFamilyBridge.kext \
+            AppleParavirtGPUIOGPUFamily.kext IOGraphicsFamilyBridge.kext APVDisplayPort.kext; do
+            test -s "$kext_root/$kext/Contents/Info.plist"
+          done
+          test "$(find "$kext_root" -mindepth 1 -maxdepth 1 -type d -name '*.kext' | wc -l)" -eq 8
+          grep -q 'reims-kexts' /opt/vhackintosh/web/current/core/reims_util.py
           test -x /opt/vhackintosh/resources/reims-util/reims-util
           /opt/vhackintosh/resources/reims-util/reims-util --version | grep -q '^reims-util '
           /opt/vhackintosh/resources/reims-util/reims-util opencore --help | grep -q -- '--add-kext'
+          pinned_rev="$(sed -n 's/^REV=//p' packaging/reims-util.pin | head -n1)"
+          test -n "$pinned_rev"
+          grep -q "Commit: ${pinned_rev}" /opt/vhackintosh/resources/reims-util/PROVENANCE.txt
           sudo systemctl is-active vhackintosh-agent.service
           sudo systemctl is-active vhackintosh-web.service
           sudo systemctl is-active vhackintosh-http-redirect.service
