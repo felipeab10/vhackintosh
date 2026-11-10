@@ -37,6 +37,10 @@ reims_util_pin_load() {
     REIMS_UTIL_REV=""
     REIMS_UTIL_TOOLCHAIN=""
     REIMS_UTIL_GRAPHICS_PROFILE=""
+    REIMS_CTL_REPO=""
+    REIMS_CTL_RELEASE=""
+    REIMS_CTL_ASSET=""
+    REIMS_CTL_BUNDLE_REL=""
     local line key value
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
@@ -49,6 +53,10 @@ reims_util_pin_load() {
             REV) REIMS_UTIL_REV="$value" ;;
             TOOLCHAIN) REIMS_UTIL_TOOLCHAIN="$value" ;;
             GRAPHICS_PROFILE) REIMS_UTIL_GRAPHICS_PROFILE="$value" ;;
+            CTL_REPO) REIMS_CTL_REPO="$value" ;;
+            CTL_RELEASE) REIMS_CTL_RELEASE="$value" ;;
+            CTL_ASSET) REIMS_CTL_ASSET="$value" ;;
+            CTL_BUNDLE_REL) REIMS_CTL_BUNDLE_REL="$value" ;;
             *) echo "unknown key in reims-util pin: $key" >&2; return 1 ;;
         esac
     done < "$file"
@@ -65,6 +73,24 @@ reims_util_pin_load() {
     if ! printf '%s' "$REIMS_UTIL_REV" | grep -Eq '^[0-9a-f]{40}$'; then
         echo "reims-util pin REV is not a full 40-char commit SHA: $REIMS_UTIL_REV" >&2
         return 1
+    fi
+    # O motor: se UMA das chaves do par aparecer, todas têm de aparecer. Um pin
+    # pela metade empacotaria o par descasado de novo em silêncio.
+    local ctl_keys="${REIMS_CTL_REPO}${REIMS_CTL_RELEASE}${REIMS_CTL_ASSET}${REIMS_CTL_BUNDLE_REL}"
+    if [ -n "$ctl_keys" ]; then
+        local ctl_missing=""
+        [ -n "$REIMS_CTL_REPO" ] || ctl_missing="${ctl_missing} CTL_REPO"
+        [ -n "$REIMS_CTL_RELEASE" ] || ctl_missing="${ctl_missing} CTL_RELEASE"
+        [ -n "$REIMS_CTL_ASSET" ] || ctl_missing="${ctl_missing} CTL_ASSET"
+        [ -n "$REIMS_CTL_BUNDLE_REL" ] || ctl_missing="${ctl_missing} CTL_BUNDLE_REL"
+        if [ -n "$ctl_missing" ]; then
+            echo "reims-util pin declares the motor partially, missing:${ctl_missing} (${file})" >&2
+            return 1
+        fi
+        if [ "$REIMS_CTL_BUNDLE_REL" != "bin/reims-ctl" ]; then
+            echo "reims-util pin CTL_BUNDLE_REL must be bin/reims-ctl, got: $REIMS_CTL_BUNDLE_REL" >&2
+            return 1
+        fi
     fi
     return 0
 }

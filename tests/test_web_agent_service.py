@@ -1571,8 +1571,7 @@ class WebAgentServiceTests(unittest.TestCase):
             self.assertIn(("reims_release_update_started", {"tag": "v1.2.3"}), context.events)
 
     def test_reims_release_update_fails_and_restores_the_vm_when_kexts_shrink(self):
-        """rc=0 per VM is not success: a shrunken EFI must abort the update."""
-        import plistlib
+        """A successful generator call is not success: a shrunken EFI must be restored."""
         from core.reims_release import UpdateResult
 
         class Context:
@@ -1582,10 +1581,7 @@ class WebAgentServiceTests(unittest.TestCase):
             def checkpoint(self, name, payload, **_kwargs): self.events.append((name, payload))
             def log(self, message, level=None): self.events.append(("log", message, level))
             def run_subprocess(self, command, **_kwargs):
-                if command[1] == "update-opencore":
-                    (vm_dir / "OpenCore.qcow2").write_bytes(b"regenerated with Lilu only")
-                    return SimpleNamespace(returncode=0, stdout="", stderr="")
-                raise AssertionError(command)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with tempfile.TemporaryDirectory() as directory:
             service = WebAgentService(Path(directory) / "vms.json", gpu_inventory=lambda: [])
@@ -1597,21 +1593,17 @@ class WebAgentServiceTests(unittest.TestCase):
             (vm_dir / "OpenCore.qcow2").write_bytes(b"original image")
             fake_tree = Path(directory) / "release"
             fake_tree.mkdir()
-            seen = {"n": 0}
+            reads = {"n": 0}
 
-            def fake_run(command, **_kwargs):
-                if command[1:3] == ["update-opencore", "--help"]:
-                    return SimpleNamespace(returncode=0, stdout="Usage: reims-ctl update-opencore <NAME>", stderr="")
-                if command[0] == "guestfish" and "download" in command:
-                    seen["n"] += 1
-                    bundles = _profile_kexts(LEGACY_PROFILE) if seen["n"] == 1 else {"Lilu.kext"}
-                    plist = {"Kernel": {"Add": [{"BundlePath": n, "Enabled": True} for n in sorted(bundles)]}}
-                    Path(command[-1]).write_bytes(plistlib.dumps(plist))
-                    return SimpleNamespace(returncode=0, stdout="", stderr="")
-                if command[0] == "guestfish" and "ls" in command:
-                    bundles = _profile_kexts(LEGACY_PROFILE) if seen["n"] == 1 else {"Lilu.kext"}
-                    return SimpleNamespace(returncode=0, stdout="\n".join(sorted(bundles)) + "\n", stderr="")
-                raise AssertionError(command)
+            def fake_kexts(_image):
+                reads["n"] += 1
+                if reads["n"] == 1:
+                    return _profile_kexts(LEGACY_PROFILE)
+                return {"Lilu.kext"}
+
+            def fake_generate(path, _smbios, **_kwargs):
+                Path(path).write_bytes(b"regenerated with Lilu only")
+                return True
 
             with patch("core.reims_release.update_from_release", return_value=UpdateResult(
                      ok=True, tag="v1.2.3", previous="v1.2.2", message="updated", changed=True,
@@ -1620,12 +1612,15 @@ class WebAgentServiceTests(unittest.TestCase):
                  ), patch(
                      "core.reims_build.prebuilt_reims_util", return_value=fake_tree / "bin/reims-util"
                  ), patch("core.reims_build.install_prebuilt", return_value=True), patch(
-                     "core.reims_ctl.reims_ctl_bin", return_value="/managed/reims-ctl"
-                 ), patch(
                      "core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}
                  ), patch("core.web_agent.shutil.which", return_value="/usr/bin/guestfish"), patch(
                      "core.runtime_inventory.inspect_runtime", return_value=_release_runtime()
-                 ), patch("core.web_agent.subprocess.run", side_effect=fake_run):
+                 ), patch.object(
+                     WebAgentService, "_opencore_enabled_kexts", staticmethod(fake_kexts)
+                 ), patch.object(
+                     WebAgentService, "_opencore_regeneration_inputs",
+                     staticmethod(lambda _image: (SMBIOSConfig(model="iMac20,1"), False, None)),
+                 ), patch("core.reims_util.generate_opencore", side_effect=fake_generate):
                 with self.assertRaisesRegex(RuntimeError, r"com falha em 1 \(Studio\)"):
                     service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
             self.assertEqual((vm_dir / "OpenCore.qcow2").read_bytes(), b"original image")
@@ -1638,11 +1633,10 @@ class WebAgentServiceTests(unittest.TestCase):
         A swap that keeps the count is just as broken as a shrink, and the EFI
         must be restored either way.
         """
-        import plistlib
         from core.reims_release import UpdateResult
 
-        before_bundles = sorted(_profile_kexts(LEGACY_PROFILE))
-        after_bundles = sorted(_profile_kexts(REIMS_PROFILE))
+        before_bundles = _profile_kexts(LEGACY_PROFILE)
+        after_bundles = _profile_kexts(REIMS_PROFILE)
 
         class Context:
             def __init__(self): self.events = []
@@ -1755,8 +1749,63 @@ class WebAgentServiceTests(unittest.TestCase):
             self.assertEqual({entry.name for entry in vm_dir.iterdir()}, {"vm.toml", "OpenCore.qcow2"})
             service.close_jobs()
 
-    def test_reims_release_update_aborts_the_whole_batch_on_add_kext_util(self):
-        """An add-kext util without a ctl that forwards --add-kext must abort before any VM."""
+    def test_reims_release_update_proceeds_when_the_util_needs_add_kext(self):
+        """An `--add-kext` util is fine: Control's generator injects the bundles.
+
+        The ctl does not own the legacy profile, so the release path no longer
+        runs `update-opencore`; it regenerates with `generate_opencore`, which
+        passes the vendored bundles for both profiles. The pair gate must NOT
+        refuse merely because the util is not in `embedded` mode.
+        """
+        from core.reims_release import UpdateResult
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = WebAgentService(Path(directory) / "vms.json", gpu_inventory=lambda: [])
+            vm = VMConfig(id="macos-studio", name="Studio", macos_version="tahoe")
+            service.store.add_vm(vm)
+            vm_dir = service.store.config_dir / "vms" / vm.id
+            vm_dir.mkdir(parents=True)
+            (vm_dir / "vm.toml").write_text('[q35]\nopencore = "OpenCore.qcow2"\n', encoding="utf-8")
+            (vm_dir / "OpenCore.qcow2").write_bytes(b"original image")
+            fake_tree = Path(directory) / "release"
+            fake_tree.mkdir()
+            generated = []
+
+            class Context:
+                def check_cancelled(self): return None
+                def phase(self, *args, **kwargs): return None
+                def checkpoint(self, *args, **kwargs): return None
+                def log(self, *args, **kwargs): return None
+                def run_subprocess(self, *args, **kwargs): return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with patch("core.reims_release.update_from_release", return_value=UpdateResult(
+                     ok=True, tag="v1.2.3", previous="v1.2.2", message="updated", changed=True,
+                 )), patch("core.update_guard.maintenance_window"), patch(
+                     "core.reims_build.prebuilt_reims_ctl", return_value=fake_tree / "bin/reims-ctl"
+                 ), patch(
+                     "core.reims_build.prebuilt_reims_util", return_value=fake_tree / "bin/reims-util"
+                 ), patch("core.reims_build.install_prebuilt", return_value=True), patch(
+                     "core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}
+                 ), patch.object(
+                     WebAgentService, "_opencore_enabled_kexts",
+                     staticmethod(lambda image: _profile_kexts(LEGACY_PROFILE)),
+                 ), patch.object(
+                     WebAgentService, "_opencore_regeneration_inputs",
+                     staticmethod(lambda image: (SMBIOSConfig(model="iMac20,1"), False, "keepsyms=1")),
+                 ), patch(
+                     "core.reims_util.generate_opencore",
+                     side_effect=lambda *a, **k: (generated.append(k), True)[1],
+                 ), patch(
+                     "core.runtime_inventory.inspect_runtime", return_value=_release_runtime(kext_mode="add-kext")
+                 ):
+                result = service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
+            self.assertEqual(result["opencore_updated"], [vm.id])
+            self.assertTrue(generated)
+            self.assertEqual(generated[0]["graphics_profile"], LEGACY_PROFILE)
+            service.close_jobs()
+
+    def test_reims_release_update_aborts_the_whole_batch_when_no_path_delivers_kexts(self):
+        """An unknown kext mode means neither embedding nor --add-kext: abort before any VM."""
         from core.reims_release import UpdateResult
 
         with tempfile.TemporaryDirectory() as directory:
@@ -1778,10 +1827,45 @@ class WebAgentServiceTests(unittest.TestCase):
                 def run_subprocess(self, *args, **kwargs):
                     raise AssertionError("nenhuma VM pode ser tocada")
 
-            def fake_run(command, **_kwargs):
-                if command[1:3] == ["update-opencore", "--help"]:
-                    return SimpleNamespace(returncode=0, stdout="Usage: reims-ctl update-opencore <NAME>", stderr="")
-                raise AssertionError(command)
+            with patch("core.reims_release.update_from_release", return_value=UpdateResult(
+                     ok=True, tag="v1.2.3", previous="v1.2.2", message="updated", changed=True,
+                 )), patch("core.update_guard.maintenance_window"), patch(
+                     "core.reims_build.prebuilt_reims_ctl", return_value=fake_tree / "bin/reims-ctl"
+                 ), patch(
+                     "core.reims_build.prebuilt_reims_util", return_value=fake_tree / "bin/reims-util"
+                 ), patch("core.reims_build.install_prebuilt", return_value=True), patch(
+                     "core.runtime_inventory.inspect_runtime", return_value=_release_runtime(kext_mode="unknown")
+                 ):
+                with self.assertRaisesRegex(RuntimeError, "não sabe entregar os kexts"):
+                    service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
+            self.assertEqual((vm_dir / "OpenCore.qcow2").read_bytes(), b"original image")
+            service.close_jobs()
+
+    def test_reims_release_update_preserves_the_custom_boot_args_of_the_efi(self):
+        """A user's boot-args must survive regeneration, never fall back to the default.
+
+        The generator takes `boot_args=None` as "use the constant default", so the
+        value read from the EFI is the only thing that keeps a custom setting.
+        """
+        from core.reims_release import UpdateResult
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = WebAgentService(Path(directory) / "vms.json", gpu_inventory=lambda: [])
+            vm = VMConfig(id="macos-studio", name="Studio", macos_version="tahoe")
+            service.store.add_vm(vm)
+            vm_dir = service.store.config_dir / "vms" / vm.id
+            vm_dir.mkdir(parents=True)
+            (vm_dir / "vm.toml").write_text('[q35]\nopencore = "OpenCore.qcow2"\n', encoding="utf-8")
+            (vm_dir / "OpenCore.qcow2").write_bytes(b"original image")
+            fake_tree = Path(directory) / "release"
+            fake_tree.mkdir()
+            generated = []
+
+            class Context:
+                def check_cancelled(self): return None
+                def phase(self, *args, **kwargs): return None
+                def checkpoint(self, *args, **kwargs): return None
+                def log(self, *args, **kwargs): return None
 
             with patch("core.reims_release.update_from_release", return_value=UpdateResult(
                      ok=True, tag="v1.2.3", previous="v1.2.2", message="updated", changed=True,
@@ -1790,16 +1874,23 @@ class WebAgentServiceTests(unittest.TestCase):
                  ), patch(
                      "core.reims_build.prebuilt_reims_util", return_value=fake_tree / "bin/reims-util"
                  ), patch("core.reims_build.install_prebuilt", return_value=True), patch(
-                     "core.reims_ctl.reims_ctl_bin", return_value="/managed/reims-ctl"
+                     "core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}
+                 ), patch.object(
+                     WebAgentService, "_opencore_enabled_kexts",
+                     staticmethod(lambda image: _profile_kexts(LEGACY_PROFILE)),
+                 ), patch.object(
+                     WebAgentService, "_opencore_regeneration_inputs",
+                     staticmethod(lambda image: (SMBIOSConfig(model="iMac20,1"), True, "keepsyms=1 -v debug=0x100")),
+                 ), patch(
+                     "core.reims_util.generate_opencore",
+                     side_effect=lambda *a, **k: (generated.append(k), True)[1],
                  ), patch(
                      "core.runtime_inventory.inspect_runtime", return_value=_release_runtime(kext_mode="add-kext")
-                 ), patch("core.web_agent.subprocess.run", side_effect=fake_run):
-                with self.assertRaisesRegex(RuntimeError, "sem kexts embutidos"):
-                    service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
-            self.assertEqual((vm_dir / "OpenCore.qcow2").read_bytes(), b"original image")
+                 ):
+                service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
+            self.assertEqual(generated[0]["boot_args"], "keepsyms=1 -v debug=0x100")
+            self.assertTrue(generated[0]["show_picker"])
             service.close_jobs()
-
-    def test_control_release_catalog_and_update_job_are_allowlisted(self):
         from core.control_release import ControlRelease
 
         release = ControlRelease(
@@ -2307,3 +2398,19 @@ class WebAgentServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def setUpModule() -> None:
+    """Isola os testes do pacote REAL instalado no host.
+
+    `install_prebuilt` recusa quando `/opt/vhackintosh/resources/` traz só
+    metade do par reims-ctl/reims-util. Um host de desenvolvimento com o pacote
+    instalado (só util, dos pacotes antigos) faria os fixtures dispararem essa
+    guarda. Neutraliza apontando a raiz para um diretório vazio.
+    """
+    import tempfile as _tf
+    from core import reims_build as _rb
+
+    _tmp = _tf.TemporaryDirectory()
+    _rb.PACKAGED_RESOURCES_DIR = Path(_tmp.name)
+    globals()["_packaged_resources_tmp"] = _tmp

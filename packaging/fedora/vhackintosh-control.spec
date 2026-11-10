@@ -77,6 +77,7 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 /opt/vhackintosh/web/bundles
 /opt/vhackintosh/resources/macserial
 /opt/vhackintosh/resources/reims-util
+/opt/vhackintosh/resources/reims-ctl
 /usr/lib/systemd/system/vhackintosh-agent.service
 /usr/lib/systemd/system/vhackintosh-display.service
 /usr/lib/systemd/system/vhackintosh-vm@.service

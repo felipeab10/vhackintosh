@@ -10,11 +10,28 @@
 # não tinha o sidecar `.commit` — duas origens, duas versões possíveis.
 #
 # Formato: linhas `CHAVE=VALOR`. Comentários (`#`) e linhas vazias são ignorados.
-# Chaves obrigatórias: REPO, REV, TOOLCHAIN (todas não vazias).
+# Chaves obrigatórias: REPO, REV, TOOLCHAIN, GRAPHICS_PROFILE.
+# Chaves do MOTOR (reims-ctl), lidas por quem empacota o par: CTL_REPO, CTL_RELEASE.
 
 REPO=https://github.com/steelbrain/reims-util.git
 REV=0b9c3780a3ec2aa312a448b09b18320e5a2c9251
 TOOLCHAIN=1.98.1
+
+# O MOTOR (`reims-ctl`) não vem do steelbrain/reims-util: ele é do fork
+# felipeab10/reims-vgpu e viaja, com o QEMU e as ROMs, no asset de release
+# `reims-vgpu-linux-x86_64.tar.gz` — em `bin/reims-ctl` E `bin/reims-util`.
+# O pacote do Control tem de levar o motor da MESMA release que a ISO embarca:
+# um `reims-ctl` velho sobe as VMs e registra os discos, e o par descasado (util
+# novo que repassa `--add-kext` + motor velho que não conhece a flag) derruba a
+# tarefa `reims.release.update`. Fonte única: quem empacota lê CTL_RELEASE daqui.
+CTL_REPO=felipeab10/reims-vgpu
+CTL_RELEASE=v1.6.0-test.1
+CTL_ASSET=reims-vgpu-linux-x86_64.tar.gz
+
+# Caminho do motor dentro do tarball da release. Tem de ser o mesmo
+# `PREBUILT_REIMS_CTL_RELS[0]` de core/reims_build.py — é onde `install_prebuilt()`
+# procura e onde `appliance/lib/bundle_checks.sh` confere.
+CTL_BUNDLE_REL=bin/reims-ctl
 
 # Perfil gráfico que a ISO EMBARCA. É uma declaração a priori do que a ISO
 # instala — NÃO uma detecção pelo QEMU do host de build, que não existe no

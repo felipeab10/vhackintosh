@@ -75,6 +75,19 @@ PREBUILT_REIMS_UTIL_RELS = (
     Path("bin/reims-util"),
     Path("reims-util"),
 )
+# O motor que o PACOTE do Control instala, ao lado do `resources/reims-util/`.
+# É o mesmo binário que a release do fork publica em `bin/reims-ctl`, empacotado
+# para o host que não traz a árvore `/opt/reims-vgpu` (o pacote deb/rpm/arch).
+# Fica como ÚLTIMO recurso: a árvore da release em `reims_dir` sempre vence.
+PACKAGED_REIMS_CTL = Path("/opt/vhackintosh/resources/reims-ctl/reims-ctl")
+# O companheiro empacotado do motor. O pacote do Control instala os dois juntos
+# em `/opt/vhackintosh/resources/`; se um faltar, o par está quebrado no DISCO, e
+# não apenas ausente como numa release antiga.
+PACKAGED_REIMS_UTIL = Path("/opt/vhackintosh/resources/reims-util/reims-util")
+# Raiz dos recursos empacotados: um único ponto de override (testes) para os
+# dois caminhos acima. Sem isto, um host de desenvolvimento com o pacote
+# instalado (só util, do pacote antigo) contaminaria os fixtures.
+PACKAGED_RESOURCES_DIR = Path("/opt/vhackintosh/resources")
 
 
 def prebuilt_qemu(reims_dir: Path) -> Optional[Path]:
@@ -193,6 +206,7 @@ def prebuilt_reims_ctl(reims_dir: Path) -> Optional[Path]:
     fatal por si só, mas `decide_reimsctl` vai recusar o lançamento se não houver
     nenhum `reims-ctl` utilizável, então quem chama deve avisar em vez de seguir
     calado.
+
     """
     for rel in PREBUILT_REIMS_CTL_RELS:
         candidato = reims_dir / rel
@@ -646,6 +660,22 @@ def install_prebuilt(
         print(
             f"  instalação do runtime recusada: a release contém {present}, mas não contém "
             f"o par compatível {missing}."
+        )
+        return False
+    # Um pacote que instalou só METADE do par não é uma release antiga: é o
+    # defeito em que o instalador aceitava a ausência do motor em silêncio e o
+    # `reims-ctl` velho de ~/.cargo/bin sobrevivia. Só recusa quando o par
+    # empacotado existe pela metade; os dois ausentes segue sendo válido.
+    packaged_ctl = PACKAGED_RESOURCES_DIR.joinpath("reims-ctl/reims-ctl").is_file()
+    packaged_util = PACKAGED_RESOURCES_DIR.joinpath("reims-util/reims-util").is_file()
+    if not packaged_ctl and not packaged_util:
+        pass
+    elif packaged_ctl != packaged_util:
+        missing = "reims-util" if not packaged_util else "reims-ctl"
+        present = "reims-ctl" if packaged_ctl else "reims-util"
+        print(
+            f"  instalação do runtime recusada: o pacote instalou {present}, mas não o par "
+            f"compatível {missing} em /opt/vhackintosh/resources/."
         )
         return False
     ctl_dest = reims_ctl_install_dir() / "reims-ctl"

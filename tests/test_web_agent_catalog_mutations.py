@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import plistlib
 import shutil
 import subprocess
 import unittest
@@ -26,6 +27,16 @@ def _runtime(profile=LEGACY, kext_mode="embedded"):
         "reims_update_opencore_kext_mode_source": "/managed/reims-util",
         "qemu_graphics_profile": profile,
         "qemu_graphics_profile_source": "/managed/qemu-system-x86_64",
+    }
+
+def _identity_plist():
+    """`PlatformInfo > Generic` a regeneration must reproduce, as plist values."""
+    return {
+        "SystemProductName": "iMac20,1",
+        "SystemSerialNumber": "C02TEST12345",
+        "MLB": "C02TEST1234567890",
+        "SystemUUID": "11111111-2222-3333-4444-555555555555",
+        "ROM": bytes.fromhex("020000000001"),
     }
 
 
@@ -799,21 +810,44 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
             def release(self):
                 pass
 
+        generated = {}
+
+        def fake_generate(output, smbios, **kwargs):
+            generated.update(kwargs, smbios=smbios)
+            return True
+
+        def fake_run(command, **_kwargs):
+            # Only `_read_opencore_config` shells out here: `_opencore_enabled_kexts`
+            # is patched. It must produce the plist the reader parses.
+            if "download" in command:
+                plist = {
+                    "Kernel": {"Add": [{"BundlePath": name, "Enabled": True} for name in sorted(_kexts(LEGACY))]},
+                    "PlatformInfo": {"Generic": _identity_plist()},
+                    "Misc": {"Boot": {"ShowPicker": False}},
+                }
+                Path(command[-1]).write_bytes(plistlib.dumps(plist))
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"comando inesperado: {command}")
+
         with patch("core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}), \
              patch("core.reims_ctl.reims_ctl_bin", return_value="/managed/reims-ctl"), \
              patch("core.runtime_inventory.inspect_runtime", return_value=_runtime()), \
              patch("core.web_agent.shutil.which", return_value="/usr/bin/guestfish"), \
-             patch.object(self.service, "_opencore_enabled_kexts", side_effect=[_kexts(LEGACY), _kexts(LEGACY)]) as verify, \
+             patch("core.reims_util.generate_opencore", side_effect=fake_generate), \
+             patch.object(WebAgentService, "_opencore_enabled_kexts", side_effect=[_kexts(LEGACY), _kexts(LEGACY)]) as verify, \
              patch("core.config.ExclusiveVMLock", Lock), \
-             patch("subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="serial=PRIVATE", stderr="")) as run:
+             patch("subprocess.run", side_effect=fake_run):
             result = self.service._run_vm_opencore_picker_job({
                 "vm_id": vm.id, "boot_selection": True, "expected_revision": expected,
             }, Context())
 
         self.assertEqual(result, {"vm_id": vm.id, "boot_selection": True, "message": "OpenCore regenerado com a identidade SMBIOS preservada."})
         self.assertEqual(verify.call_count, 2)
-        self.assertEqual(run.call_args.args[0], ["/managed/reims-ctl", "update-opencore", vm.id, "--boot-selection", "true"])
-        self.assertEqual(run.call_args.kwargs["env"]["REIMS_CTL_UTIL"], "/managed/reims-util")
+        # Control regenerates through its own generator, never `update-opencore`:
+        # the ctl does not own the legacy profile and would strip its kexts.
+        self.assertEqual(generated["graphics_profile"], LEGACY)
+        self.assertTrue(generated["show_picker"])
+        self.assertEqual(generated["smbios"].serial_number, "C02TEST12345")
         self.assertNotIn("PRIVATE", str(result))
         self.assertTrue(self.service.store.get_vm(vm.id).opencore_show_picker)
         self.assertEqual(checkpoints[0][0], "opencore_regeneration_started")
@@ -859,13 +893,13 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
         seen = {"n": 0}
 
         def fake_run(command, **_kwargs):
-            if command[:2] == ["/managed/reims-ctl", "update-opencore"]:
-                image.write_bytes(b"EFI with only Lilu")
-                return SimpleNamespace(returncode=0, stdout="", stderr="")
             if command[0] == "guestfish" and "download" in command:
                 seen["n"] += 1
                 bundles = _kexts(LEGACY) if seen["n"] == 1 else {"Lilu.kext"}
-                plist = {"Kernel": {"Add": [{"BundlePath": name, "Enabled": True} for name in sorted(bundles)]}}
+                plist = {
+                    "Kernel": {"Add": [{"BundlePath": name, "Enabled": True} for name in sorted(bundles)]},
+                    "PlatformInfo": {"Generic": _identity_plist()},
+                }
                 Path(command[-1]).write_bytes(plistlib.dumps(plist))
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             if command[0] == "guestfish" and "ls" in command:
@@ -873,26 +907,30 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
                 return SimpleNamespace(returncode=0, stdout="\n".join(sorted(bundles)) + "\n", stderr="")
             raise AssertionError(f"comando inesperado: {command}")
 
+        def fake_generate(output, *_args, **_kwargs):
+            # The generator "succeeds" but leaves only Lilu: the exact-set
+            # postcondition must restore the snapshot and fail the job.
+            Path(output).write_bytes(b"EFI with only Lilu")
+            return True
+
         with patch("core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}), \
              patch("core.reims_ctl.reims_ctl_bin", return_value="/managed/reims-ctl"), \
              patch("core.runtime_inventory.inspect_runtime", return_value=_runtime()), \
              patch("core.web_agent.shutil.which", return_value="/usr/bin/guestfish"), \
+             patch("core.reims_util.generate_opencore", side_effect=fake_generate), \
              patch("core.config.ExclusiveVMLock", Lock), \
-             patch("subprocess.run", side_effect=fake_run) as run:
+             patch("subprocess.run", side_effect=fake_run):
             with self.assertRaisesRegex(RuntimeError, "não corresponde exatamente ao perfil"):
                 self.service._run_vm_opencore_picker_job({
                     "vm_id": vm.id, "boot_selection": True, "expected_revision": expected,
                 }, Context())
 
-        commands = [call.args[0] for call in run.call_args_list]
-        update_index = next(i for i, command in enumerate(commands) if command[:2] == ["/managed/reims-ctl", "update-opencore"])
-        # The pre-mutation snapshot must be read before the mutation runs.
-        self.assertTrue(all(command[0] == "guestfish" for command in commands[:update_index]))
-        self.assertNotEqual(image.read_bytes(), b"EFI with only Lilu")
+        # The pre-mutation snapshot was restored, so the VM keeps its old image.
+        self.assertEqual(image.read_bytes(), b"old image")
         self.assertFalse(self.service.store.get_vm(vm.id).opencore_show_picker)
 
-    def test_picker_regeneration_refuses_add_kext_mode_before_starting_reims(self):
-        """An add-kext util needs a caller that passes --add-kext; this ctl does not."""
+    def test_picker_regeneration_aborts_when_the_util_cannot_deliver_kexts(self):
+        """A util in `unknown` mode neither embeds nor accepts --add-kext: refuse early."""
         vm = VMConfig(id="macos-studio", name="Studio", macos_version="tahoe", opencore_show_picker=False)
         self.service.store.add_vm(vm)
         vm_dir = self.service.store.config_dir / "vms" / vm.id
@@ -906,9 +944,9 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
                 return None
 
         with patch("core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}), \
-             patch("core.runtime_inventory.inspect_runtime", return_value=_runtime(kext_mode="add-kext")), \
+             patch("core.runtime_inventory.inspect_runtime", return_value=_runtime(kext_mode="unknown")), \
              patch("subprocess.run") as run:
-            with self.assertRaisesRegex(RuntimeError, "sem kexts embutidos|opera no modo"):
+            with self.assertRaisesRegex(RuntimeError, "não sabe entregar os kexts"):
                 self.service._run_vm_opencore_picker_job({
                     "vm_id": vm.id, "boot_selection": True, "expected_revision": self.service.store.revision,
                 }, Context())

@@ -143,6 +143,28 @@ install -m 0755 "${UTIL_BUILD}/reims-util" "${UTIL_DIR}/reims-util"
 install -m 0644 "${UTIL_BUILD}/LICENSE" "${UTIL_DIR}/LICENSE"
 install -m 0644 "${UTIL_BUILD}/PROVENANCE.txt" "${UTIL_DIR}/PROVENANCE.txt"
 
+# O MOTOR (`reims-ctl`) do MESMO par: baixado da release pinada do fork
+# reims-vgpu (packaging/reims-util.pin, chaves CTL_*). Sem ele o pacote instala
+# só o util e deixa o motor velho do host sobreviver, descasando o par — foi o
+# que derrubou a tarefa reims.release.update. Não compilamos o motor: ele tem de
+# ser o binário publicado junto do QEMU/ROM da MESMA release.
+echo "[1.6/4] Baixando o motor reims-ctl da release pinada do reims-vgpu"
+CTL_BUILD="${WORK}/reims-ctl-build"
+mkdir -p "$CTL_BUILD"
+"$ENGINE" run --rm \
+  --volume "${ROOT}:/src:ro" \
+  --volume "${CTL_BUILD}:/out:rw" \
+  ubuntu:24.04 bash -euc '
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq --no-install-recommends ca-certificates curl binutils tar
+    bash /src/packaging/common/build-reims-ctl.sh /out
+  '
+CTL_DIR="${PAYLOAD_BASE}/opt/vhackintosh/resources/reims-ctl"
+install -d -m 0755 "$CTL_DIR"
+install -m 0755 "${CTL_BUILD}/reims-ctl" "${CTL_DIR}/reims-ctl"
+install -m 0644 "${CTL_BUILD}/PROVENANCE.txt" "${CTL_DIR}/PROVENANCE.txt"
+
 container_build() {
   local image="$1" payload="$2"; shift 2
   "$ENGINE" run --rm \

@@ -293,15 +293,15 @@ class PickerProfileMismatchTests(unittest.TestCase):
 
 
 class ReleaseProfileMismatchTests(unittest.TestCase):
-    """A VM built for another profile must be skipped, never rewritten.
+    """A VM built for another profile is MIGRATED, not skipped.
 
-    The release batch regenerates every managed EFI with the freshly installed
-    QEMU. When a VM's EFI profile differs, `update-opencore` cannot migrate it,
-    so the batch must skip it and leave the image byte-identical.
+    Control no longer relies on `update-opencore` (which cannot migrate a
+    profile): it regenerates through `core.reims_util.generate_opencore`, which
+    builds the EFI for the installed QEMU's profile. A mismatched EFI must come
+    out with the installed QEMU's exact kext set, identity and boot-args kept.
     """
 
-    def test_release_skips_a_vm_whose_efi_profile_differs_from_the_installed_qemu(self):
-        import plistlib
+    def test_release_migrates_a_vm_whose_efi_profile_differs_from_the_installed_qemu(self):
         from core.reims_release import UpdateResult
 
         with tempfile.TemporaryDirectory() as directory:
@@ -315,7 +315,9 @@ class ReleaseProfileMismatchTests(unittest.TestCase):
             image.write_bytes(b"original image")
             fake_tree = Path(directory) / "release"
             fake_tree.mkdir()
-            legacy_bundles = sorted(_bundle_names(LEGACY) | set(EMBEDDED_KEXTS))
+            legacy_bundles = _bundle_names(LEGACY) | set(EMBEDDED_KEXTS)
+            reims_bundles = _bundle_names(REIMS) | set(EMBEDDED_KEXTS)
+            seen: list[dict] = []
 
             class Context:
                 def __init__(self): self.events = []
@@ -323,19 +325,24 @@ class ReleaseProfileMismatchTests(unittest.TestCase):
                 def phase(self, name, progress=None): self.events.append((name, progress))
                 def checkpoint(self, name, payload, **_k): self.events.append((name, payload))
                 def log(self, message, level=None): self.events.append(("log", message, level))
-                def run_subprocess(self, *_a, **_k):
-                    raise AssertionError("update-opencore must not run for a skipped VM")
-
-            def fake_run(command, **_kwargs):
-                if command[1:3] == ["update-opencore", "--help"]:
-                    return SimpleNamespace(returncode=0, stdout="Usage: reims-ctl update-opencore <NAME>", stderr="")
-                if command[0] == "guestfish" and "download" in command:
-                    plist = {"Kernel": {"Add": [{"BundlePath": n, "Enabled": True} for n in legacy_bundles]}}
-                    Path(command[-1]).write_bytes(plistlib.dumps(plist))
+                def run_subprocess(self, command, **_k):
+                    seen.append({"command": command})
                     return SimpleNamespace(returncode=0, stdout="", stderr="")
-                if command[0] == "guestfish" and "ls" in command:
-                    return SimpleNamespace(returncode=0, stdout="\n".join(legacy_bundles) + "\n", stderr="")
-                raise AssertionError(command)
+
+            def fake_generate(path, smbios, **kwargs):
+                seen.append({"smbios": smbios, **kwargs})
+                return True
+
+            kext_reads = {"n": 0}
+
+            def fake_kexts(_image):
+                kext_reads["n"] += 1
+                return set(reims_bundles) if kext_reads["n"] > 1 else set(legacy_bundles)
+
+            smbios_in = SMBIOSConfig(
+                model="iMac20,1", serial_number="C02ABCDEFGHI", board_serial="C020000000000001",
+                smuuid="11111111-2222-3333-4444-555555555555", rom="aabbccddeeff",
+            )
 
             with patch("core.reims_release.update_from_release", return_value=UpdateResult(
                      ok=True, tag="v1.2.3", previous="v1.2.2", message="updated", changed=True,
@@ -344,21 +351,26 @@ class ReleaseProfileMismatchTests(unittest.TestCase):
                  ), patch(
                      "core.reims_build.prebuilt_reims_util", return_value=fake_tree / "bin/reims-util"
                  ), patch("core.reims_build.install_prebuilt", return_value=True), patch(
-                     "core.reims_ctl.reims_ctl_bin", return_value="/managed/reims-ctl"
-                 ), patch(
                      "core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}
-                 ), patch("core.web_agent.shutil.which", return_value="/usr/bin/guestfish"), patch(
-                     "core.web_agent.subprocess.run", side_effect=fake_run
-                 ), patch(
+                 ), patch("core.web_agent.shutil.which", return_value="/usr/bin/guestfish"), patch.object(
+                     WebAgentService, "_opencore_enabled_kexts", staticmethod(fake_kexts)
+                 ), patch.object(
+                     WebAgentService, "_opencore_regeneration_inputs",
+                     staticmethod(lambda _image: (smbios_in, False, "keepsyms=1")),
+                 ), patch("core.reims_util.generate_opencore", side_effect=fake_generate), patch(
                      "core.runtime_inventory.inspect_runtime", return_value=_runtime_dict(REIMS)
-                 ):
+                 ), patch("core.web_agent.os.environ", {"REIMS_UTIL_BIN": "/managed/reims-util"}):
                 result = service._run_reims_release_update_job({"tag": "v1.2.3"}, Context())
-                remaining = image.read_bytes()
             service.close_jobs()
 
-        self.assertEqual(result["opencore_skipped"], [vm.id])
-        self.assertEqual(result["opencore_updated"], [])
-        self.assertEqual(remaining, b"original image")
+        self.assertEqual(result["opencore_updated"], [vm.id])
+        self.assertEqual(result["opencore_skipped"], [])
+        generated = next(item for item in seen if "smbios" in item)
+        self.assertEqual(generated["graphics_profile"], REIMS)
+        self.assertEqual(generated["smbios"].serial_number, "C02ABCDEFGHI")
+        self.assertEqual(generated["boot_args"], "keepsyms=1")
+        self.assertFalse(generated["show_picker"])
+        self.assertEqual(generated["no_ovmf"], True)
 
 
 def _runtime_dict(profile):
@@ -373,3 +385,19 @@ def _runtime_dict(profile):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def setUpModule() -> None:
+    """Isola os testes do pacote REAL instalado no host.
+
+    `install_prebuilt` recusa quando `/opt/vhackintosh/resources/` traz só
+    metade do par reims-ctl/reims-util. Um host de desenvolvimento com o pacote
+    instalado (só util, dos pacotes antigos) faria os fixtures dispararem essa
+    guarda. Neutraliza apontando a raiz para um diretório vazio.
+    """
+    import tempfile as _tf
+    from core import reims_build as _rb
+
+    _tmp = _tf.TemporaryDirectory()
+    _rb.PACKAGED_RESOURCES_DIR = Path(_tmp.name)
+    globals()["_packaged_resources_tmp"] = _tmp

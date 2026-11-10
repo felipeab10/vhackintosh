@@ -3368,3 +3368,96 @@ class AArvorePreCompiladaEhEncontradaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PackagedPairGuardTests(unittest.TestCase):
+    """O pacote não pode instalar METADE do par reims-ctl/reims-util.
+
+    Defeito medido no deb `control-v1.0.0-beta.25`: só `resources/reims-util/`
+    era instalado. Como `ctl_src is None` valia `True`, o instalador declarava o
+    par pronto e o `reims-ctl` velho de `~/.cargo/bin` (anterior ao suporte a
+    `--add-kext`) sobrevivia — o par descasado que derrubou a tarefa
+    `reims.release.update`. Estes testes fixam a distinção: metade do par
+    EMPACOTADO recusa; os dois ausentes (release antiga / --from-source) segue.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.reims = self.root / "opt" / "reims-vgpu"
+        _make_release_tree(self.reims)
+        (self.reims / ".release").write_text("v1.0.1\n", encoding="utf-8")
+        self.data = self.root / "data"
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.resources = self.root / "opt" / "vhackintosh" / "resources"
+        self.resources.mkdir(parents=True)
+        self._patch_packaged(self.resources)
+
+    def _patch_packaged(self, where: Path):
+        patcher = patch.object(reims_build, "PACKAGED_RESOURCES_DIR", where)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write(self, rel: str) -> None:
+        target = self.resources / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("#!/bin/sh\necho bin\n", encoding="utf-8")
+        target.chmod(0o755)
+
+    def test_packaged_util_without_the_motor_is_refused(self):
+        # O estado exato do beta.25: o pacote trouxe o util e nenhum motor.
+        self._write("reims-util/reims-util")
+        with patch.object(reims_build, "qemu_data_dir", lambda: self.data), patch.dict(
+            os.environ, {"HOME": str(self.home)}
+        ), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertFalse(reims_build.install_prebuilt(self.reims))
+        self.assertIn("o pacote instalou reims-util", output.getvalue())
+        self.assertIn("reims-ctl", output.getvalue())
+        self.assertEqual(sorted((self.data / "qemu").glob("*/bin/qemu-system-x86_64")), [])
+
+    def test_packaged_motor_without_the_util_is_refused(self):
+        self._write("reims-ctl/reims-ctl")
+        with patch.object(reims_build, "qemu_data_dir", lambda: self.data), patch.dict(
+            os.environ, {"HOME": str(self.home)}
+        ), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertFalse(reims_build.install_prebuilt(self.reims))
+        self.assertIn("o pacote instalou reims-ctl", output.getvalue())
+        self.assertIn("reims-util", output.getvalue())
+
+    def test_both_packaged_halves_absent_is_still_valid(self):
+        """Release antiga / --from-source não têm par empacotado: não é defeito."""
+        (self.reims / "bin").mkdir(parents=True, exist_ok=True)
+        with patch.object(reims_build, "qemu_data_dir", lambda: self.data), patch.dict(
+            os.environ, {"HOME": str(self.home)}
+        ):
+            self.assertTrue(reims_build.install_prebuilt(self.reims))
+
+    def test_both_packaged_halves_present_installs_normally(self):
+        self._write("reims-util/reims-util")
+        self._write("reims-ctl/reims-ctl")
+        with patch.object(reims_build, "qemu_data_dir", lambda: self.data), patch.dict(
+            os.environ, {"HOME": str(self.home)}
+        ):
+            self.assertTrue(reims_build.install_prebuilt(self.reims))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+def setUpModule() -> None:
+    """Isola os testes do pacote REAL instalado no host.
+
+    `install_prebuilt` recusa quando `/opt/vhackintosh/resources/` traz só
+    metade do par reims-ctl/reims-util. Um host de desenvolvimento com o pacote
+    instalado (só util, dos pacotes antigos) faria os fixtures dispararem essa
+    guarda. Neutraliza apontando a raiz para um diretório vazio.
+    """
+    import tempfile as _tf
+    from core import reims_build as _rb
+
+    _tmp = _tf.TemporaryDirectory()
+    _rb.PACKAGED_RESOURCES_DIR = Path(_tmp.name)
+    globals()["_packaged_resources_tmp"] = _tmp

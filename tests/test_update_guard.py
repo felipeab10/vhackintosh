@@ -141,3 +141,19 @@ class MaintenanceGuardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def setUpModule() -> None:
+    """Isola os testes do pacote REAL instalado no host.
+
+    `install_prebuilt` recusa quando `/opt/vhackintosh/resources/` traz só
+    metade do par reims-ctl/reims-util. Um host de desenvolvimento com o pacote
+    instalado (só util, dos pacotes antigos) faria os fixtures dispararem essa
+    guarda. Neutraliza apontando a raiz para um diretório vazio.
+    """
+    import tempfile as _tf
+    from core import reims_build as _rb
+
+    _tmp = _tf.TemporaryDirectory()
+    _rb.PACKAGED_RESOURCES_DIR = Path(_tmp.name)
+    globals()["_packaged_resources_tmp"] = _tmp

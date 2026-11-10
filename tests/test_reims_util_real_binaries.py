@@ -104,23 +104,32 @@ class RealReimsUtilGateTests(unittest.TestCase):
             )
 
     @unittest.skipUnless(PIN_BINARY.is_file(), f"binário pin ausente em {PIN_BINARY}")
-    def test_gate_accepts_the_pinned_binary_that_embeds_the_kexts(self):
-        """O pin antigo entra pelo caminho 'kexts embutidos' e sai com as 9."""
+    def test_gate_accepts_the_pinned_binary_that_forwards_the_kexts(self):
+        """O pin atual é o master add-kext: entra por `--add-kext` e sai com as 9.
+
+        O pin antigo embutia os kexts e expunha `--no-apv-arm64-port`; o pin
+        instalado hoje (fe9bfe1) não conhece a flag aposentada e exige os
+        `--add-kext` vendorizados. Conteúdo pós-migração, mesma cobertura.
+        """
         help_text = _help_text(PIN_BINARY)
         self.assertIn(
-            reims_util._LEGACY_APV_FLAG,
-            help_text,
-            "o pin deveria expor a flag aposentada no --help; o critério do gate mudou",
-        )
-        self.assertNotIn(
             reims_util._ADD_KEXT_FLAG,
             help_text,
-            "o pin não conhece --add-kext; se isto falhar, é outro binário",
+            "o pin deveria expor --add-kext; é o critério atual do gate",
+        )
+        self.assertNotIn(
+            reims_util._LEGACY_APV_FLAG,
+            help_text,
+            "a flag aposentada não está no --help do pin add-kext",
         )
         with tempfile.TemporaryDirectory() as td:
             ok, output = self._generate(PIN_BINARY, td)
             self.assertTrue(ok, "o gate recusou o pin, que é o binário em produção")
-            self.assertEqual(_kexts_in_image(output), EXPECTED_KEXTS)
+            self.assertEqual(
+                _kexts_in_image(output),
+                EXPECTED_KEXTS,
+                "o pin não embute os kexts: eles têm de vir pelos --add-kext vendorizados",
+            )
 
     @unittest.skipUnless(MASTER_BINARY.is_file(), f"binário master ausente em {MASTER_BINARY}")
     def test_gate_accepts_the_master_binary_that_dropped_the_kexts(self):

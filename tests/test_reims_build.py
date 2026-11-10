@@ -98,13 +98,20 @@ def test_install_script_publishes_the_qemu_build_atomically():
     rom = text.index("ReimsVgpu.rom", binary)
     publish = text.index('mv "$STAGE$PREFIX" "$DATA/qemu/$ID"', rom)
     activate = text.index('ln -sfn "$ID" "$DATA/qemu/current"', publish)
-    in_use = text.index("in_use", activate)
-    record = text.index("__record-install", in_use)
-    assert staged < binary < rom < publish < activate < in_use < record
+    # O carimbo da instalação é gravado por último, depois de `current` já
+    # apontar para o build publicado e a limpeza ter rodado.
+    record = text.index("__record-install", activate)
+    assert staged < binary < rom < publish < activate < record
+
     # A limpeza dos builds antigos respeita uma VM em execução: apagar o QEMU de
-    # uma VM viva a mata no meio.
-    cleanup = text[in_use:record]
-    assert 'grep -qF "$old"' in cleanup and "rm -rf" in cleanup
+    # uma VM viva a mata no meio. O `prune_qemu` roda depois de publicar e usa
+    # `qemu_executables` para preservar os diretórios de processos vivos.
+    prune_start = text.index("prune_qemu()")
+    prune_stop = text.index("\n}", prune_start)
+    cleanup = text[prune_start:prune_stop]
+    assert 'qemu_executables' in text, "a limpeza perdeu a checagem de VM em execução"
+    assert 'grep -qF "$real/${old##*/}/"' in cleanup and "rm -rf" in cleanup
+    assert text.index("prune_qemu \"$DATA/qemu\"", activate) > activate
 
 class ReimsBuildStampTests(unittest.TestCase):
     def test_stamp_lifecycle_and_invalidation(self):
