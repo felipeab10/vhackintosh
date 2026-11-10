@@ -179,6 +179,68 @@ class ControlPackagePayloadTests(unittest.TestCase):
         self.assertRegex(spec, r"(?m)^/opt/vhackintosh/resources/macserial$")
         self.assertRegex(spec, r"(?m)^/usr/lib/systemd/system/vhackintosh-http-redirect\.service$")
 
+    def test_release_workflow_kext_guard_checks_the_runtime_table_not_a_stale_grep(self):
+        """O guarda de kexts do release não pode ser um `grep` textual morto.
+
+        A frente B moveu a resolução de kexts de `core/reims_util.py` para
+        `core/graphics_profiles.py`. O guarda antigo
+        (`grep -q 'reims-kexts' .../core/reims_util.py`) passou a dar 0 matches
+        com um payload SAUDÁVEL e derrubou o Release beta.23. O novo guarda importa
+        a tabela no runtime instalado e confere que os kexts estão ao lado do
+        bundle — um contrato de runtime, não uma substring.
+        """
+        workflow_text = (ROOT / ".github/workflows/release-control.yml").read_text(
+            encoding="utf-8"
+        )
+        # O defeito raiz: não voltar a grepar o arquivo errado.
+        self.assertNotIn("grep -q 'reims-kexts'", workflow_text)
+        self.assertIn("import core.graphics_profiles", workflow_text)
+
+        guard = [
+            line.strip()
+            for line in workflow_text.splitlines()
+            if line.strip().startswith("python3 -c '") and "core.graphics_profiles" in line
+        ]
+        self.assertEqual(len(guard), 1, "esperado exatamente um guarda de runtime")
+        guard_cmd = guard[0]
+
+        def run_guard(bundle: Path) -> subprocess.CompletedProcess[str]:
+            program = f'bundle_root="{bundle}"; {guard_cmd}'
+            return subprocess.run(
+                ["bash", "-c", program],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60,
+                cwd=str(ROOT),
+            )
+
+        profile_module = (ROOT / "core/graphics_profiles.py").read_text(encoding="utf-8")
+        expected = (
+            "ReimsVgpu.kext",
+            "AppleGraphicsDeviceControlBridge.kext",
+            "AppleParavirtGPULoader.kext",
+            "AppleParavirtIOSurface.kext",
+            "IOGPUFamilyBridge.kext",
+            "AppleParavirtGPUIOGPUFamily.kext",
+            "IOGraphicsFamilyBridge.kext",
+            "APVDisplayPort.kext",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary) / "bundle"
+            (bundle / "core").mkdir(parents=True)
+            (bundle / "core/graphics_profiles.py").write_text(profile_module, encoding="utf-8")
+            kext_root = bundle / "resources/reims-kexts"
+            for name in expected:
+                (kext_root / name).mkdir(parents=True)
+
+            ok = run_guard(bundle)
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+
+            # Defeito real: o bundle perde os kexts vendorizados. O guarda antigo
+            # (grep textual) passaria aqui onde não há kext nenhum; este não.
+            (kext_root / expected[0]).rmdir()
+            failed = run_guard(bundle)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn(expected[0], failed.stderr + failed.stdout)
+
     def test_desktop_vm_unit_uses_the_logged_in_display_instead_of_seizing_a_vt(self):
         unit_path = ROOT / "packaging/systemd/vhackintosh-vm@.service"
         unit_text = unit_path.read_text(encoding="utf-8")

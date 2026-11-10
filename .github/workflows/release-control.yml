@@ -70,7 +70,14 @@ jobs:
             test -s "$kext_root/$kext/Contents/Info.plist"
           done
           test "$(find "$kext_root" -mindepth 1 -maxdepth 1 -type d -name '*.kext' | wc -l)" -eq 8
-          grep -q 'reims-kexts' /opt/vhackintosh/web/current/core/reims_util.py
+          # A tabela de kexts tem de estar utilizável no runtime INSTALADO. Um
+          # `grep` textual em core/reims_util.py passou a mentir quando a frente B
+          # moveu a resolução de kexts para core/graphics_profiles.py (o grep virou
+          # 0 matches com o payload saudável). Importar o módulo prova o contrato
+          # real: o bundle leva kexts vendorizados e o caminho resolve para dentro
+          # do PRÓPRIO bundle (não para um diretório ausente).
+          bundle_root="$(readlink -f /opt/vhackintosh/web/current)"
+          python3 -c 'import os,sys; b=os.path.realpath(sys.argv[1]); sys.path.insert(0,b); import core.graphics_profiles as g; assert g.VENDORED_KEXTS, "tabela de kexts vendorizados vazia"; r=os.path.realpath(str(g.VENDORED_KEXTS_DIR)); assert r.startswith(b+os.sep), f"VENDORED_KEXTS_DIR fora do bundle: {r} (bundle {b})"; m=[n for n,_ in g.VENDORED_KEXTS if not (g.VENDORED_KEXTS_DIR/n).is_dir()]; assert not m, f"kexts vendorizados ausentes no bundle: {m}"' "$bundle_root"
           test -x /opt/vhackintosh/resources/reims-util/reims-util
           /opt/vhackintosh/resources/reims-util/reims-util --version | grep -q '^reims-util '
           /opt/vhackintosh/resources/reims-util/reims-util opencore --help | grep -q -- '--add-kext'
