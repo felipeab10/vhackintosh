@@ -139,7 +139,20 @@ jobs:
             --volume /tmp/vh-arch-upgrade/old:/old:ro \
             archlinux:base bash -euc '
               pacman -Sy --noconfirm >/dev/null
-              pacman -U --noconfirm --nodeps /old/*.pkg.tar.zst >/dev/null
+              # O pacote LEGADO e nossos pacotes declaram `depend = openssl`; o
+              # `openssl` atual do archlinux:base PROVE os sonames
+              # `libcrypto.so=3-64` e `libssl.so=3-64` e e dono dos arquivos
+              # `/usr/lib/libcrypto.so.3` e `/usr/lib/libssl.so.3`. Desde que o
+              # base passou a openssl 3.6, instalar um pacote nosso de meses atras
+              # colide nesses dois .so mesmo com `--nodeps` (o pacman confere a
+              # posse dos sonames providos). `--overwrite` nos DOIS sonames
+              # exatos libera apenas esse conflito de runtime compartilhado —
+              # este passo prova o UPGRADE DO DIRETORIO LEGADO, nao a resolucao
+              # de dependencias do openssl, entao nao mascara o que ele mede.
+              pacman -U --noconfirm --nodeps \
+                --overwrite /usr/lib/libcrypto.so.3 \
+                --overwrite /usr/lib/libssl.so.3 \
+                /old/*.pkg.tar.zst >/dev/null
               mkdir -p /opt/vhackintosh/web/current
               echo legacy > /opt/vhackintosh/web/current/unmanaged-file
               pacman -U --noconfirm --nodeps /new/*.pkg.tar.zst

@@ -252,5 +252,53 @@ class ControlInstallTests(unittest.TestCase):
         self.native_run.assert_not_called()
 
 
+class ArchUpgradeWorkflowContractTests(unittest.TestCase):
+    """O passo de upgrade do diretório legado tem de medir o UPGRADE, não falhar por drift.
+
+    Desde que o `archlinux:base` passou a `openssl 3.6` (que PROVE os sonames
+    `libcrypto.so=3-64`/`libssl.so=3-64` e é dono dos `/usr/lib/lib*.so.3`),
+    instalar um pacote NOSSO de meses atrás colide nesses dois arquivos mesmo com
+    `--nodeps`. Testado em container: beta.11 e beta.23 colidem igual; a receita
+    com `--overwrite` nos dois sonames instala o legado, faz o upgrade e mantém
+    as três asserções. Reproduzir: `podman run --rm archlinux:base` com os
+    pacotes das releases.
+    """
+
+    WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/release-control.yml"
+
+    def _step(self) -> str:
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        marker = "- name: Verify Arch upgrade from legacy directory install"
+        self.assertIn(marker, text)
+        after = text.split(marker, 1)[1]
+        # O bloco do passo termina no próximo `- name:` de nível equivalente.
+        return after.split("\n      - name:", 1)[0]
+
+    def test_legacy_install_overwrites_only_the_two_openssl_sonames(self):
+        step = self._step()
+        self.assertIn("--overwrite /usr/lib/libcrypto.so.3", step)
+        self.assertIn("--overwrite /usr/lib/libssl.so.3", step)
+        # Não relaxar com um curinga: o conflito é só desses dois sonames.
+        self.assertNotIn("--overwrite='*'", step)
+        self.assertNotIn('--overwrite="*"', step)
+
+    def test_upgrade_assertions_remain_enforced(self):
+        step = self._step()
+        self.assertIn("test -L /opt/vhackintosh/web/current", step)
+        self.assertIn('test -s "$target/templates/OVMF_CODE_4M.fd"', step)
+        self.assertIn(
+            'find /opt/vhackintosh/web/bundles -path "*/unmanaged-file" -exec grep -qx legacy {} \\;',
+            step,
+        )
+        # O upgrade de verdade continua sendo instalado depois do legado.
+        self.assertLess(
+            step.index("/old/*.pkg.tar.zst"), step.index("/new/*.pkg.tar.zst")
+        )
+
+    def test_both_pacman_u_actions_remain_dependency_free_and_noninteractive(self):
+        step = self._step()
+        self.assertEqual(step.count("pacman -U --noconfirm --nodeps"), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
