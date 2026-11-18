@@ -530,6 +530,11 @@ h1 { margin: 8px 0 5px; color: var(--text-primary); font-size: clamp(25px, 3vw, 
 .vm-advanced summary strong { color: #edf2fa; font-size: 12px; }
 .vm-advanced summary small { color: #9ba9bd; font-size: 10px; }
 .vm-editor-advanced-content { border-top: 1px solid var(--border-subtle); padding: 17px 18px 20px; }
+.vm-smbios-model { display: grid; gap: 8px; align-content: start; min-width: 0; }
+.vm-smbios-generate { width: 100%; justify-content: center; text-align: center; white-space: normal; }
+.vm-smbios-actions { display: grid; gap: 8px; margin-top: 15px; }
+.vm-smbios-actions .button-row { flex-wrap: wrap; }
+.vm-smbios-actions .vm-field-hint { margin: 0; }
 .qemu-editor-host { grid-column: 1 / -1; min-width: 0; }
 .qemu-token-editor { display: grid; gap: 10px; min-width: 0; }
 .qemu-editor-title { display: flex; align-items: center; gap: 8px; color: #c7d5e6; font-size: 12px; }

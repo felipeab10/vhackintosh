@@ -312,6 +312,9 @@ class DiskProvisioner:
         opencore_path: Path,
         vm: VMConfig,
         show_picker: Optional[bool] = None,
+        *,
+        smbios: Optional[SMBIOSConfig] = None,
+        job_context=None,
     ) -> None:
         """
         Extrai o config.plist de dentro do OpenCore.qcow2 via guestfish,
@@ -320,9 +323,12 @@ class DiskProvisioner:
         """
         if show_picker is None:
             show_picker = getattr(vm, "opencore_show_picker", False)
+        identity = smbios if smbios is not None else vm.smbios
+        if job_context is not None and not cls._check_qcow2_disk(Path(opencore_path), job_context=job_context):
+            raise RuntimeError("OpenCore image failed integrity check before injection")
 
         original_image = Path(opencore_path)
-        if shutil.which("qemu-img"):
+        if job_context is None and shutil.which("qemu-img"):
             check = subprocess.run(["qemu-img", "check", str(original_image)], capture_output=True, text=True)
             if check.returncode:
                 raise RuntimeError("OpenCore image failed integrity check before injection")
@@ -339,14 +345,17 @@ class DiskProvisioner:
             # Preserve a EFI inteira (drivers, recursos e kexts); alteramos
             # somente o config.plist para manter a identidade por VM.
             shutil.copy2(original_image, staged_image)
-            cls._inject_opencore_config_in_place(staged_image, vm, show_picker)
+            cls._inject_opencore_config_in_place(staged_image, vm, show_picker, smbios=identity, job_context=job_context)
 
             backup_fd, backup_name = tempfile.mkstemp(prefix=f".{original_image.name}.", suffix=".backup", dir=original_image.parent)
             os.close(backup_fd)
             shutil.copy2(original_image, backup_name)
             os.replace(staged_image, original_image)
             try:
-                if shutil.which("qemu-img"):
+                if job_context is not None:
+                    if not cls._check_qcow2_disk(original_image, job_context=job_context):
+                        raise RuntimeError("OpenCore image failed integrity check after identity injection")
+                elif shutil.which("qemu-img"):
                     check = subprocess.run(["qemu-img", "check", str(original_image)], capture_output=True, text=True)
                     if check.returncode:
                         raise RuntimeError("OpenCore image failed integrity check after identity injection")
@@ -362,7 +371,24 @@ class DiskProvisioner:
                 Path(backup_name).unlink(missing_ok=True)
 
     @classmethod
-    def _inject_opencore_config_in_place(cls, opencore_path: Path, vm: VMConfig, show_picker: Optional[bool]) -> None:
+    def _inject_opencore_config_in_place(
+        cls,
+        opencore_path: Path,
+        vm: VMConfig,
+        show_picker: Optional[bool],
+        *,
+        smbios: Optional[SMBIOSConfig] = None,
+        job_context=None,
+    ) -> None:
+        identity = smbios if smbios is not None else vm.smbios
+        if job_context is None:
+            run = subprocess.run
+        else:
+            run = lambda argv, **kwargs: job_context.run_subprocess(
+                argv,
+                check=kwargs.get("check", False),
+                timeout=kwargs.get("timeout"),
+            )
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_plist = Path(tmp_dir) / "config.plist"
 
@@ -373,14 +399,14 @@ class DiskProvisioner:
                 "-m", "/dev/sda1",
                 "download", "/EFI/OC/config.plist", str(tmp_plist),
             ]
-            res_dl = subprocess.run(cmd_download, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            res_dl = run(cmd_download, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
             if res_dl.returncode != 0:
                 # Tenta partição raiz /dev/sda se não for particionado.
                 cmd_download[4] = "/dev/sda"
-                subprocess.run(cmd_download, check=True)
+                run(cmd_download, check=True)
 
-            # 2. Injeta os seriais e ajustes de áudio no plist
-            GenSMBIOS.inject_into_config_plist(tmp_plist, vm.smbios, show_picker=show_picker)
+            # Só injeta PlatformInfo.Generic e limpa duplicatas SMBIOS.
+            GenSMBIOS.inject_into_config_plist(tmp_plist, identity, show_picker=show_picker)
 
             # 3. Upload do config.plist atualizado de volta para a imagem
             cmd_upload = [
@@ -389,22 +415,22 @@ class DiskProvisioner:
                 "-m", "/dev/sda1",
                 "upload", str(tmp_plist), "/EFI/OC/config.plist",
             ]
-            res_up = subprocess.run(cmd_upload, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            res_up = run(cmd_upload, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
             if res_up.returncode != 0:
                 cmd_upload[4] = "/dev/sda"
-                subprocess.run(cmd_upload, check=True)
+                run(cmd_upload, check=True)
             else:
                 cmd_upload[4] = "/dev/sda1"
-            verify = subprocess.run(
+            verify = run(
                 ["guestfish", "--ro", "-a", str(opencore_path), "-m", "/dev/sda1",
                  "download", "/EFI/OC/config.plist", str(tmp_plist)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
             )
             if verify.returncode:
-                verify = subprocess.run(
+                verify = run(
                     ["guestfish", "--ro", "-a", str(opencore_path), "-m", "/dev/sda",
                      "download", "/EFI/OC/config.plist", str(tmp_plist)],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
                 )
             if verify.returncode:
                 raise RuntimeError("Unable to verify OpenCore EFI after identity injection")
@@ -412,11 +438,11 @@ class DiskProvisioner:
             with tmp_plist.open("rb") as fh:
                 generic = plistlib.load(fh).get("PlatformInfo", {}).get("Generic", {})
             if not (
-                generic.get("SystemProductName") == vm.smbios.model
-                and generic.get("SystemSerialNumber") == vm.smbios.serial_number
-                and generic.get("MLB") == vm.smbios.board_serial
-                and generic.get("SystemUUID") == vm.smbios.smuuid
-                and generic.get("ROM") == bytes.fromhex(vm.smbios.rom)
+                generic.get("SystemProductName") == identity.model
+                and generic.get("SystemSerialNumber") == identity.serial_number
+                and generic.get("MLB") == identity.board_serial
+                and generic.get("SystemUUID") == identity.smuuid
+                and generic.get("ROM") == bytes.fromhex(identity.rom)
             ):
                 raise RuntimeError("OpenCore EFI identity verification failed")
 

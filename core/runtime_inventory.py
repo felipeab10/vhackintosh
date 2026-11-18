@@ -581,6 +581,13 @@ def inspect_runtime(
         ),
         "reims_update_opencore_kext_mode": reims_util_kext_mode,
         "reims_update_opencore_kext_mode_source": str(reims_util_path) if reims_util_path else None,
+        "reims_util_opencore_identity_flags": bool(
+            reims_util_help
+            and all(
+                flag in reims_util_help
+                for flag in ("--model", "--serial", "--mlb", "--uuid", "--rom")
+            )
+        ),
         "binary_fingerprint": binary_fingerprint,
     }
     if use_cache:

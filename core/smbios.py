@@ -6,8 +6,9 @@ import secrets
 import shutil
 import subprocess
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from core.config import SMBIOSConfig
 
@@ -18,9 +19,73 @@ MACSERIAL_CANDIDATES = (
     Path(__file__).resolve().parent.parent / "bin" / "macserial",
 )
 
+# Models a user may pick when minting an identity for a VM. Each entry is the
+# newest macOS the model can install, measured against Apple's compatibility
+# pages (Tahoe 26, Sequoia 15, Sonoma 14, Ventura 13). A model absent from this
+# table is refused instead of guessed: `macserial -a` lists 121 models back to
+# MacBook1,1 (2006), so it is a serial generator, not an allowlist.
+#
+# The identity is now injected into the existing config.plist
+# (`core/disk.py::inject_opencore_config`), so the EFI builder is no longer in
+# this path and its `--model` list is not a constraint here. Two measurements
+# still are, and a test enforces both:
+#   1. `macserial -m <model> -g -n 1` returns a pair whose `--info` decode is the
+#      same model (all nine below verified 2026-11-18);
+#   2. Apple's current compatibility list still includes the model for the macOS
+#      versions the appliance offers (floor Ventura 13).
+# The only remaining `reims-util` constraint is the neutral ISO EFI, built with
+# `--model iMac20,1` in `appliance/build_opencore.py:209`; it does not limit
+# which model a single VM may claim.
+EDIT_MODEL_MAX_MACOS: dict[str, str] = {
+    "iMac18,3": "ventura",
+    "iMac19,1": "sequoia",
+    "iMac20,1": "tahoe",
+    "iMac20,2": "tahoe",
+    "iMacPro1,1": "sequoia",
+    "MacBookPro15,1": "sequoia",
+    "MacBookPro16,1": "tahoe",
+    "Macmini8,1": "sequoia",
+    "MacPro7,1": "tahoe",
+}
+
+# Ordered release ranks. macOS 26 (Tahoe) follows 15, so the numbers are not
+# contiguous on purpose; only their order is used.
+MACOS_VERSION_RANK: dict[str, int] = {
+    "ventura": 13,
+    "sonoma": 14,
+    "sequoia": 15,
+    "tahoe": 26,
+}
+
+# Factory prefixes macserial emits for the models above and that the appliance
+# has shipped (C02/F5K/C07 measured; D25/G08/C17 from the vendored generator
+# table in the ISO payload). A serial with another prefix is refused.
+EDIT_FACTORY_CODES = frozenset({"C02", "C07", "D25", "F5K", "G08", "C17"})
+
+# The neutral identity burned into the ISO EFI (appliance/build_opencore.py).
+# Every VM starts from it, so it must never be applied as a per-VM identity.
+NEUTRAL_SERIALS = frozenset({"C02VHA000001"})
+NEUTRAL_MLBS = frozenset({"C02VHA00000000001"})
+NIL_UUID = "00000000-0000-0000-0000-000000000000"
+
+EDIT_FIELDS = ("model", "serial_number", "board_serial", "smuuid", "rom")
+
 
 class SMBIOSError(RuntimeError):
     """Identity could not be safely generated or applied."""
+
+
+class SMBIOSEditError(SMBIOSError):
+    """A user-supplied identity cannot be applied to an existing VM."""
+
+
+@dataclass(frozen=True)
+class SMBIOSEditValidation:
+    """Normalized identity plus what the caller should show and audit."""
+
+    identity: SMBIOSConfig
+    warnings: tuple[str, ...] = ()
+    changed_fields: tuple[str, ...] = ()
 
 
 class GenSMBIOS:
@@ -124,6 +189,23 @@ class GenSMBIOS:
 
     @classmethod
     def inject_into_config_plist(cls, config_plist_path: str | Path, smbios: SMBIOSConfig, show_picker: bool = False) -> bool:
+        """Write the identity into an existing config.plist, in place.
+
+        This is the whole identity edit when the EFI is not rebuilt: with
+        `PlatformInfo.Automatic = true`, OpenCore derives Board-ID and
+        FirmwareFeatures from `SystemProductName` and rewrites the platform
+        NVRAM variables from `Generic`, so the five fields below are the only
+        thing that has to change and `DataHub`/`PlatformNVRAM`/`SMBIOS` must only
+        be cleaned of stale duplicates.
+
+        `Generic` is created when the config does not have it yet (an EFI whose
+        identity lived in the legacy sections); a missing `PlatformInfo` is
+        still refused, because that is a config this code cannot reason about.
+
+        `show_picker` is accepted for call-site compatibility and deliberately
+        not applied: an identity edit must not change boot behavior, so
+        `Misc > Boot > ShowPicker` and every other key stay as they are.
+        """
         import plistlib
         cls.validate(smbios)
         path = Path(config_plist_path)
@@ -139,9 +221,9 @@ class GenSMBIOS:
         platform["UpdateNVRAM"] = True
         platform["UpdateSMBIOS"] = True
         platform["UpdateSMBIOSMode"] = "Create"
-        if not isinstance(platform.get("Generic"), dict):
+        if "Generic" in platform and not isinstance(platform["Generic"], dict):
             raise SMBIOSError("OpenCore PlatformInfo.Generic is not a dictionary")
-        generic = platform["Generic"]
+        generic = platform.setdefault("Generic", {})
         generic.update({
             "SystemProductName": smbios.model,
             "SystemSerialNumber": smbios.serial_number,
@@ -150,7 +232,9 @@ class GenSMBIOS:
             "ROM": bytes.fromhex(smbios.rom),
         })
         for section in ("DataHub", "PlatformNVRAM", "SMBIOS"):
-            values = platform.setdefault(section, {})
+            values = platform.get(section)
+            if not isinstance(values, dict):
+                continue
             for key in ("SystemSerialNumber", "SystemUUID", "MLB", "ROM", "BoardSerialNumber"):
                 values.pop(key, None)
         tmp = path.with_name(path.name + ".tmp")
@@ -158,8 +242,14 @@ class GenSMBIOS:
             with tmp.open("wb") as fh:
                 plistlib.dump(data, fh, sort_keys=False)
             with tmp.open("rb") as fh:
-                check = plistlib.load(fh)["PlatformInfo"]["Generic"]
-            if check.get("SystemSerialNumber") != smbios.serial_number or check.get("MLB") != smbios.board_serial:
+                check = plistlib.load(fh).get("PlatformInfo", {}).get("Generic", {})
+            if not (
+                check.get("SystemProductName") == smbios.model
+                and check.get("SystemSerialNumber") == smbios.serial_number
+                and check.get("MLB") == smbios.board_serial
+                and check.get("SystemUUID") == smbios.smuuid
+                and check.get("ROM") == bytes.fromhex(smbios.rom)
+            ):
                 raise SMBIOSError("OpenCore identity post-write validation failed")
             tmp.replace(path)
         except Exception:
@@ -214,3 +304,217 @@ class GenSMBIOS:
         except (TypeError, ValueError):
             matches = False
         return {"ok": matches, "reason": "local SMBIOS fields match" if matches else "identity fields missing or differ; Apple activation remains unverified"}
+
+    @classmethod
+    def require_supported_model(cls, model: str, macos_version: Optional[str] = None) -> str:
+        """Refuse a model whose identity cannot be presented coherently.
+
+        The table is the allowlist, not `macserial -a`: that command reports 121
+        models since 2006 and generating a pair for MacBook1,1 would produce a
+        serial that no current macOS installs on. A model may also be too old for
+        the macOS version already chosen for the VM. Since the identity is
+        injected in place, the EFI builder's model list plays no part here.
+        """
+        clean = (model or "").strip()
+        if clean not in EDIT_MODEL_MAX_MACOS:
+            raise SMBIOSEditError(
+                f"Model {clean!r} is not on the supported edit list; "
+                "add it only after macserial -l and Apple's current macOS compatibility list confirm it"
+            )
+        if macos_version:
+            requested = MACOS_VERSION_RANK.get(macos_version.strip().lower())
+            newest = MACOS_VERSION_RANK[EDIT_MODEL_MAX_MACOS[clean]]
+            if requested is not None and requested > newest:
+                raise SMBIOSEditError(
+                    f"{clean} cannot run {macos_version}; its newest supported macOS is "
+                    f"{EDIT_MODEL_MAX_MACOS[clean]}"
+                )
+        return clean
+
+    @classmethod
+    def generate_for_model(cls, model: str, macos_version: str = "sequoia") -> SMBIOSConfig:
+        """Mint a fresh identity for a model the user picked (never persists it)."""
+        cls.require_supported_model(model, macos_version)
+        return cls.generate(macos_version, model_override=model.strip())
+
+    @staticmethod
+    def _normalize_identity(candidate: SMBIOSConfig) -> tuple[SMBIOSConfig, tuple[str, ...]]:
+        """Uppercase/canonicalize the four editable strings; report what changed."""
+        if not isinstance(candidate, SMBIOSConfig):
+            raise SMBIOSEditError("SMBIOS identity must be an SMBIOSConfig")
+        raw = {
+            "model": candidate.model,
+            "serial_number": candidate.serial_number,
+            "board_serial": candidate.board_serial,
+            "smuuid": candidate.smuuid,
+            "rom": candidate.rom,
+        }
+        for name, value in raw.items():
+            if not isinstance(value, str):
+                raise SMBIOSEditError(f"SMBIOS {name} must be a string")
+        identity = SMBIOSConfig(
+            model=raw["model"].strip(),
+            serial_number=raw["serial_number"].strip().upper(),
+            board_serial=raw["board_serial"].strip().upper(),
+            rom=raw["rom"].strip().upper().replace(":", "").replace("-", ""),
+            smuuid="",
+        )
+        try:
+            identity.smuuid = str(uuid.UUID(raw["smuuid"].strip())).upper()
+        except (ValueError, AttributeError):
+            raise SMBIOSEditError("SMBIOS UUID is missing or malformed") from None
+        normalized = tuple(
+            name
+            for name in ("serial_number", "board_serial", "rom", "smuuid")
+            if raw[name].strip() != getattr(identity, name)
+        )
+        warnings = tuple(f"{name} was normalized before applying" for name in normalized)
+        return identity, warnings
+
+    @classmethod
+    def validate_for_edit(
+        cls,
+        candidate: SMBIOSConfig,
+        *,
+        previous: Optional[SMBIOSConfig] = None,
+        macos_version: Optional[str] = None,
+        other_identities: Iterable[SMBIOSConfig] = (),
+    ) -> SMBIOSEditValidation:
+        """Validate a user-typed identity for an existing VM. Pure: no I/O.
+
+        This is shape and coherence only; it deliberately does not replace
+        `validate`, which stays the syntax gate used by generation and
+        injection. The serial<->model decode and the MLB checksum need the
+        macserial binary, so they live in `verify_with_macserial`.
+        """
+        identity, warnings = cls._normalize_identity(candidate)
+
+        model = cls.require_supported_model(identity.model, macos_version)
+
+        serial = identity.serial_number
+        if not re.fullmatch(r"[A-Z0-9]{12}", serial):
+            raise SMBIOSEditError("SMBIOS serial must be 12 uppercase letters or digits")
+        if serial[:3] not in EDIT_FACTORY_CODES:
+            raise SMBIOSEditError(f"SMBIOS serial factory code {serial[:3]!r} is not a known Apple code")
+        if serial in NEUTRAL_SERIALS:
+            raise SMBIOSEditError("The ISO neutral serial cannot be applied to a VM")
+
+        mlb = identity.board_serial
+        if not re.fullmatch(r"[A-Z0-9]{17}", mlb):
+            raise SMBIOSEditError("SMBIOS MLB must be 17 uppercase letters or digits")
+        if mlb in NEUTRAL_MLBS:
+            raise SMBIOSEditError("The ISO neutral MLB cannot be applied to a VM")
+        if mlb == serial or len(set(mlb)) == 1:
+            raise SMBIOSEditError("SMBIOS MLB is not a plausible board serial")
+        if mlb[:3] != serial[:3]:
+            raise SMBIOSEditError(
+                "SMBIOS MLB must start with the same 3-character factory code as the serial"
+            )
+
+        if identity.smuuid == NIL_UUID:
+            raise SMBIOSEditError("SMBIOS UUID cannot be the nil UUID")
+
+        rom = identity.rom
+        if not re.fullmatch(r"[0-9A-F]{12}", rom):
+            raise SMBIOSEditError("SMBIOS ROM must be 6 bytes of uppercase hex")
+        first_octet = int(rom[:2], 16)
+        if rom == "000000000000" or rom == "FFFFFFFFFFFF":
+            raise SMBIOSEditError("SMBIOS ROM cannot be all zero or the broadcast address")
+        if first_octet & 0x01:
+            raise SMBIOSEditError("SMBIOS ROM is a multicast/broadcast address")
+        if not first_octet & 0x02:
+            raise SMBIOSEditError("SMBIOS ROM must be a locally administered address")
+        if first_octet != 0x02:
+            warnings = warnings + (
+                "ROM uses a locally administered prefix other than 02; the appliance generator always uses 02",
+            )
+
+        if previous is not None and previous.model != model and (previous.serial_number or "").strip().upper() == serial:
+            raise SMBIOSEditError(
+                "Changing the model requires a new serial/MLB pair; generate a fresh identity"
+            )
+
+        for other in other_identities:
+            conflicts = [
+                name
+                for name in ("serial_number", "board_serial", "smuuid", "rom")
+                if getattr(identity, name)
+                and getattr(identity, name).lower() == (getattr(other, name) or "").lower()
+            ]
+            if conflicts:
+                raise SMBIOSEditError(
+                    "SMBIOS identity conflicts with another VM on " + ", ".join(conflicts)
+                )
+
+        changed: tuple[str, ...] = ()
+        if previous is not None:
+            changed = tuple(
+                name
+                for name in EDIT_FIELDS
+                if (getattr(identity, name) or "").lower() != (getattr(previous, name) or "").strip().lower()
+            )
+        return SMBIOSEditValidation(identity=identity, warnings=warnings, changed_fields=changed)
+
+    @classmethod
+    def decode_serial(cls, serial: str) -> dict:
+        """Decode a serial with macserial --info (the authoritative model check).
+
+        macserial exits 0 even for a serial it flags as invalid, so the model is
+        read from the decoded line instead of the return code.
+        """
+        tool = cls._macserial()
+        try:
+            result = subprocess.run(
+                [str(tool), "--info", serial],
+                capture_output=True, text=True, check=False, timeout=20,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SMBIOSError("macserial could not decode the serial") from exc
+        output = (result.stdout or "") + (result.stderr or "")
+        decoded = re.search(r"^\s*Model:\s*(\S{1,6})\s*-\s*(.+?)\s*$", output, re.MULTILINE)
+        system = re.search(r"^\s*SystemModel:\s*(.+?)\s*$", output, re.MULTILINE)
+        if decoded is None:
+            raise SMBIOSError("macserial did not decode the serial")
+        model_code, model = decoded.group(1), decoded.group(2)
+        return {
+            "model_code": model_code,
+            "model": None if model.lower().startswith("unknown") else model,
+            "system_model": system.group(1) if system else None,
+            "warnings": [line.strip() for line in output.splitlines() if line.strip().startswith("WARN")],
+        }
+
+    @classmethod
+    def verify_with_macserial(cls, smbios: SMBIOSConfig) -> dict:
+        """Check serial<->model and the MLB checksum with the pinned binary.
+
+        Fail closed: an unavailable or unparseable macserial means `ok` is False,
+        because the caller is about to rewrite a VM's Apple identity.
+        """
+        try:
+            decoded = cls.decode_serial(smbios.serial_number)
+        except SMBIOSError as exc:
+            return {"ok": False, "model_matches": None, "mlb_checksum": "unavailable", "reason": str(exc)}
+        model_matches = decoded["model"] == smbios.model and not decoded["warnings"]
+        try:
+            tool = cls._macserial()
+            result = subprocess.run(
+                [str(tool), "--verify", smbios.board_serial],
+                capture_output=True, text=True, check=False, timeout=20,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return {"ok": False, "model_matches": model_matches, "mlb_checksum": "unavailable",
+                    "reason": "macserial could not verify the MLB"}
+        output = ((result.stdout or "") + (result.stderr or "")).lower()
+        if "invalid mlb checksum" in output:
+            mlb_checksum = "invalid"
+        elif "valid mlb checksum" in output:
+            mlb_checksum = "valid"
+        else:
+            mlb_checksum = "unavailable"
+        ok = bool(model_matches) and mlb_checksum == "valid"
+        reason = "identity matches the decoded serial and the MLB checksum"
+        if not model_matches:
+            reason = f"serial decodes to {decoded['model']!r}, not {smbios.model!r}"
+        elif mlb_checksum != "valid":
+            reason = "MLB checksum is not valid"
+        return {"ok": ok, "model_matches": model_matches, "mlb_checksum": mlb_checksum, "reason": reason}

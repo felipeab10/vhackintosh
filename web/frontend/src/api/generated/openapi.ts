@@ -325,6 +325,7 @@ export interface components {
   "reims_update_opencore_picker"?: boolean;
   "reims_update_opencore_kext_mode"?: string;
   "reims_update_opencore_kext_mode_source"?: (string) | (null);
+  "reims_util_opencore_identity_flags"?: boolean;
   "capability_inventory"?: {
   [key: string]: unknown;
 };
@@ -637,8 +638,23 @@ export interface components {
   "truncated"?: boolean;
   "message"?: (string) | (null);
 };
+    "VmSmbiosApplyRequest": {
+  "smbios": components["schemas"]["SmbiosConfig"];
+  "confirmation": string;
+  "idempotency_key": string;
+};
     "VmSmbiosDiagnosticRequest": {
   "idempotency_key": string;
+};
+    "VmSmbiosGenerateRequest": {
+  "model": string;
+};
+    "VmSmbiosGenerateResponse": {
+  "model": string;
+  "serial_number": string;
+  "board_serial": string;
+  "smuuid": string;
+  "rom": string;
 };
     "VmSupervisorStatus": {
   "unit": string;
@@ -924,6 +940,37 @@ export interface operations {
     };
   };
 };
+  "generate_vm_smbios_api_v1_vms__vm_id__smbios_generate_post": {
+  path: {
+    "vm_id": string;
+  };
+  requestBody: components["schemas"]["VmSmbiosGenerateRequest"];
+  responses: {
+    "200": {
+      content: components["schemas"]["VmSmbiosGenerateResponse"];
+    };
+    "422": {
+      content: components["schemas"]["ApiError"];
+    };
+    "500": {
+      content: components["schemas"]["ApiError"];
+    };
+  };
+};
+  "generate_vm_smbios_legacy_api_v1_vms_smbios_generate_post": {
+  requestBody: components["schemas"]["VmSmbiosGenerateRequest"];
+  responses: {
+    "200": {
+      content: components["schemas"]["VmSmbiosGenerateResponse"];
+    };
+    "422": {
+      content: components["schemas"]["ApiError"];
+    };
+    "500": {
+      content: components["schemas"]["ApiError"];
+    };
+  };
+};
   "get_vm_config_api_v1_vms__vm_id__config_get": {
   path: {
     "vm_id": string;
@@ -996,6 +1043,23 @@ export interface operations {
     "vm_id": string;
   };
   requestBody: components["schemas"]["VmSmbiosDiagnosticRequest"];
+  responses: {
+    "202": {
+      content: components["schemas"]["JobAccepted"];
+    };
+    "422": {
+      content: components["schemas"]["ApiError"];
+    };
+    "500": {
+      content: components["schemas"]["ApiError"];
+    };
+  };
+};
+  "apply_vm_smbios_api_v1_vms__vm_id__smbios_apply_post": {
+  path: {
+    "vm_id": string;
+  };
+  requestBody: components["schemas"]["VmSmbiosApplyRequest"];
   responses: {
     "202": {
       content: components["schemas"]["JobAccepted"];
@@ -1580,6 +1644,12 @@ export interface paths {
   "/api/v1/vms/runtime": {
     get: operations["list_vm_runtimes_api_v1_vms_runtime_get"];
   };
+  "/api/v1/vms/{vm_id}/smbios/generate": {
+    post: operations["generate_vm_smbios_api_v1_vms__vm_id__smbios_generate_post"];
+  };
+  "/api/v1/vms/smbios/generate": {
+    post: operations["generate_vm_smbios_legacy_api_v1_vms_smbios_generate_post"];
+  };
   "/api/v1/vms/{vm_id}/config": {
     get: operations["get_vm_config_api_v1_vms__vm_id__config_get"];
     put: operations["update_vm_api_v1_vms__vm_id__config_put"];
@@ -1592,6 +1662,9 @@ export interface paths {
   };
   "/api/v1/vms/{vm_id}/smbios/diagnostics": {
     post: operations["diagnose_vm_smbios_api_v1_vms__vm_id__smbios_diagnostics_post"];
+  };
+  "/api/v1/vms/{vm_id}/smbios/apply": {
+    post: operations["apply_vm_smbios_api_v1_vms__vm_id__smbios_apply_post"];
   };
   "/api/v1/vms/{vm_id}": {
     delete: operations["delete_vm_api_v1_vms__vm_id__delete"];
