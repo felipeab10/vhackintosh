@@ -1036,6 +1036,9 @@ class RuntimeInventory(Contract):
     reims_update_opencore_picker: bool = False
     reims_update_opencore_kext_mode: str = "unknown"
     reims_update_opencore_kext_mode_source: str | None = None
+    # The selected generator's `opencore --help` lists the identity flags, so a
+    # Control-driven identity rewrite can populate all five SMBIOS fields.
+    reims_util_opencore_identity_flags: bool = False
     # Versioned, evidence-backed report from the selected binary CLI help.
     # Values are inventory only; this contract never treats help output as
     # proof that a device or option works in a guest.
@@ -1139,6 +1142,41 @@ class VmSmbiosDiagnosticRequest(Contract):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     idempotency_key: str = Field(pattern=r"^[0-9a-f-]{36}$")
+
+class VmSmbiosApplyRequest(Contract):
+    """Explicit, target-bound request to rewrite a stopped VM's Apple identity."""
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True,
+        json_schema_extra={"examples": [{
+            "smbios": {
+                "model": "MacPro7,1", "serial_number": "F5KCR1ZPP7QM",
+                "board_serial": "F5K021701GUK3F7FB",
+                "smuuid": "11111111-2222-3333-4444-555555555555",
+                "rom": "020000000001",
+            },
+            "confirmation": "macos-tahoe",
+            "idempotency_key": "00000000-0000-4000-8000-000000000003",
+        }]},
+    )
+    smbios: SmbiosConfig
+    confirmation: str = Field(min_length=1, max_length=63)
+    idempotency_key: str = Field(pattern=r"^[0-9a-f-]{36}$")
+
+class VmSmbiosGenerateRequest(Contract):
+    """Preview generation of an identity for a user-chosen Mac model."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    model: str = Field(min_length=1, max_length=32)
+
+class VmSmbiosGenerateResponse(Contract):
+    """Five identity fields for the UI; nothing is persisted."""
+
+    model: str
+    serial_number: str
+    board_serial: str
+    smuuid: str
+    rom: str
 
 
 class JobState(StrEnum):

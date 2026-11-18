@@ -882,7 +882,7 @@ const taskStateLabels: Record<JobView['state'], string> = {
 };
 
 function jobKindLabel(kind: string): string {
-  return translate(({ 'vm.provision': 'Criar máquina virtual', 'vm.start': 'Iniciar máquina virtual', 'vm.shutdown': 'Desligar máquina virtual', 'vm.force_stop': 'Parada forçada da máquina virtual', 'vm.restart': 'Reiniciar máquina virtual', 'vm.opencore.picker': 'Regenerar OpenCore', 'vm.smbios.diagnose': 'Verificar identidade SMBIOS', 'vm.backup.restore': 'Restaurar backup de máquina virtual', 'vm.clone': 'Clonar máquina virtual', 'media.import': 'Importar mídia', 'media.convert': 'Converter mídia', 'media.apple.download': 'Baixar Recovery Apple' } as Record<string, string>)[kind] ?? kind);
+  return translate(({ 'vm.provision': 'Criar máquina virtual', 'vm.start': 'Iniciar máquina virtual', 'vm.shutdown': 'Desligar máquina virtual', 'vm.force_stop': 'Parada forçada da máquina virtual', 'vm.restart': 'Reiniciar máquina virtual', 'vm.opencore.picker': 'Regenerar OpenCore', 'vm.smbios.apply': 'Aplicar identidade SMBIOS', 'vm.smbios.diagnose': 'Verificar identidade SMBIOS', 'vm.backup.restore': 'Restaurar backup de máquina virtual', 'vm.clone': 'Clonar máquina virtual', 'media.import': 'Importar mídia', 'media.convert': 'Converter mídia', 'media.apple.download': 'Baixar Recovery Apple' } as Record<string, string>)[kind] ?? kind);
 }
 
 type TaskFilter = 'all' | 'active' | 'succeeded' | 'attention';

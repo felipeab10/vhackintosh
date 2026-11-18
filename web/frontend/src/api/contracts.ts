@@ -114,6 +114,7 @@ export interface CapabilitiesResponse {
     qemu_device_categories: Record<string, string[]>;
     reims_set_options: string[];
     reims_create_options: string[];
+    reims_util_opencore_identity_flags?: boolean;
     binary_fingerprint: string;
   } | null;
 }
@@ -275,6 +276,33 @@ export interface PrivateTransferListResponse {
   min_free_bytes: number;
 }
 
+export interface SmbiosIdentity {
+  model: string;
+  serial_number: string;
+  board_serial: string;
+  smuuid: string;
+  rom: string;
+}
+
+/**
+ * Body for `POST /vms/{vm_id}/smbios/apply` (job `vm.smbios.apply`).
+ * `confirmation` must equal the VM id; the server validates the identity again.
+ * The client only rejects obvious format mistakes before queueing the job.
+ */
+export interface VmSmbiosApplyRequest {
+  confirmation: string;
+  idempotency_key: string;
+  smbios: SmbiosIdentity;
+}
+
+/** Body for the read-only `vms.smbios.generate` preview (demanda 005 §6). */
+export interface VmSmbiosGenerateRequest {
+  model: string;
+}
+
+/** The preview returns the five validated fields (optionally wrapped in `smbios`). */
+export type VmSmbiosGenerateResponse = SmbiosIdentity | { smbios: SmbiosIdentity };
+
 export interface VmConfig {
   id: string;
   name: string;
@@ -309,7 +337,7 @@ export interface VmConfig {
   opencore_show_picker: boolean;
   created_at: string;
   last_booted_at: string | null;
-  smbios: { model: string; serial_number: string; board_serial: string; smuuid: string; rom: string };
+  smbios: SmbiosIdentity;
   install_reboots: number;
   install_evidence: string;
   usb_auto_attach: string[];

@@ -59,7 +59,10 @@ from .contracts import (
     VmActionRequest,
     VmInstallConfirmRequest,
     VmOpenCorePickerRequest,
+    VmSmbiosApplyRequest,
     VmSmbiosDiagnosticRequest,
+    VmSmbiosGenerateRequest,
+    VmSmbiosGenerateResponse,
     VmBackupRequest,
     VmBackupRestoreRequest,
     VmCloneRequest,
@@ -130,6 +133,8 @@ class AgentClient(Protocol):
     def patch_vm_config(self, vm_id: str, fields: dict[str, Any], expected_revision: str) -> VmConfigEnvelope: ...
     def update_vm_opencore_picker(self, vm_id: str, request: VmOpenCorePickerRequest, expected_revision: str) -> JobAccepted: ...
     def diagnose_vm_smbios(self, vm_id: str, request: VmSmbiosDiagnosticRequest, expected_revision: str) -> JobAccepted: ...
+    def apply_vm_smbios(self, vm_id: str, request: VmSmbiosApplyRequest, expected_revision: str) -> JobAccepted: ...
+    def generate_vm_smbios(self, vm_id: str | None, model: str) -> VmSmbiosGenerateResponse: ...
     def vm_action(self, vm_id: str, action: VmActionRequest) -> JobAccepted: ...
 
 
@@ -1301,6 +1306,40 @@ def create_app(
             raise _dependency_unavailable("O agente ainda não fornece o estado das VMs.")
         return VmRuntimeList.model_validate(await _call(method))
 
+    async def _generate_vm_smbios_impl(
+        vm_id: str | None, payload: VmSmbiosGenerateRequest, request: Request, svc: AgentClient,
+    ) -> VmSmbiosGenerateResponse:
+        # Preview only: mints an identity for the UI to review, persists nothing,
+        # and the audit trail records the action without the generated values.
+        method = getattr(svc, "generate_vm_smbios", None)
+        if method is None:
+            raise _dependency_unavailable("O agente ainda não gera identidades SMBIOS.")
+        if vm_id is not None and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", vm_id):
+            raise HTTPException(status_code=422, detail={"code": "invalid_vm_id", "message": "Identificador da VM inválido."})
+        result = VmSmbiosGenerateResponse.model_validate(await _call(method, vm_id, payload.model))
+        request.state.audit_action = "vm.smbios.generate"
+        request.state.audit_target = vm_id
+        return result
+
+    @app.post("/api/v1/vms/{vm_id}/smbios/generate", response_model=VmSmbiosGenerateResponse)
+    async def generate_vm_smbios(
+        vm_id: str,
+        payload: VmSmbiosGenerateRequest,
+        request: Request,
+        _: dict[str, Any] = Depends(require_csrf),
+        svc: AgentClient = Depends(get_agent),
+    ) -> VmSmbiosGenerateResponse:
+        return await _generate_vm_smbios_impl(vm_id, payload, request, svc)
+
+    @app.post("/api/v1/vms/smbios/generate", response_model=VmSmbiosGenerateResponse)
+    async def generate_vm_smbios_legacy(
+        payload: VmSmbiosGenerateRequest,
+        request: Request,
+        _: dict[str, Any] = Depends(require_csrf),
+        svc: AgentClient = Depends(get_agent),
+    ) -> VmSmbiosGenerateResponse:
+        return await _generate_vm_smbios_impl(None, payload, request, svc)
+
     @app.get("/api/v1/vms/{vm_id}/config", response_model=VmConfigEnvelope)
     async def get_vm_config(vm_id: str, response: Response, _: dict[str, Any] = Depends(require_session), svc: AgentClient = Depends(get_agent)) -> VmConfigEnvelope:
         item = await _call(svc.get_vm_config, vm_id)
@@ -1415,6 +1454,31 @@ def create_app(
             raise _dependency_unavailable("O agente ainda não oferece diagnóstico de SMBIOS.")
         result = JobAccepted.model_validate(await _call(method, vm_id, payload, expected))
         request.state.audit_action = "vm.smbios.check"
+        request.state.audit_target = vm_id
+        request.state.operation_id = result.job_id
+        return result
+
+    @app.post("/api/v1/vms/{vm_id}/smbios/apply", response_model=JobAccepted, status_code=202)
+    async def apply_vm_smbios(
+        vm_id: str,
+        payload: VmSmbiosApplyRequest,
+        request: Request,
+        _: dict[str, Any] = Depends(require_csrf),
+        svc: AgentClient = Depends(get_agent),
+    ) -> JobAccepted:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", vm_id):
+            raise HTTPException(status_code=422, detail={"code": "invalid_vm_id", "message": "Identificador da VM inválido."})
+        if payload.confirmation != vm_id:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "confirmation_required", "message": "Confirme informando o identificador exato da VM."},
+            )
+        expected = _require_if_match(request)
+        method = getattr(svc, "apply_vm_smbios", None)
+        if method is None:
+            raise _dependency_unavailable("O agente ainda não aplica identidade SMBIOS em uma VM existente.")
+        result = JobAccepted.model_validate(await _call(method, vm_id, payload, expected))
+        request.state.audit_action = "vm.smbios.apply"
         request.state.audit_target = vm_id
         request.state.operation_id = result.job_id
         return result

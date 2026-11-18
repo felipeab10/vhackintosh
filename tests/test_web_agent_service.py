@@ -579,6 +579,8 @@ class WebAgentServiceTests(unittest.TestCase):
                 "vms.backup.restore",
                 "vms.clone",
                 "vms.opencore.picker",
+                "vms.smbios.generate",
+                "vms.smbios.apply",
                 "vms.smbios.diagnose",
                 "vms.config.get", "vms.config.create", "vms.config.update", "vms.config.patch", "vms.config.delete",
                 "vms.autostart.get", "vms.autostart.set",

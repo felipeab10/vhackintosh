@@ -39,6 +39,8 @@ from .contracts import (
     ReimsImportRequest,
     VmOpenCorePickerRequest,
     VmSmbiosDiagnosticRequest,
+    VmSmbiosApplyRequest,
+    VmSmbiosGenerateResponse,
 )
 
 
@@ -120,6 +122,20 @@ class RpcAgentClient:
             **request.model_dump(mode="json"),
             "expected_revision": expected_revision,
         }))
+
+    def apply_vm_smbios(self, vm_id: str, request: VmSmbiosApplyRequest, expected_revision: str) -> JobAccepted:
+        return JobAccepted.model_validate(self.rpc.call("vms.smbios.apply", {
+            "vm_id": vm_id,
+            **request.model_dump(mode="json"),
+            "expected_revision": expected_revision,
+        }))
+
+    def generate_vm_smbios(self, vm_id: str | None, model: str) -> VmSmbiosGenerateResponse:
+        payload: dict[str, Any] = {"model": model}
+        if vm_id is not None:
+            payload["vm_id"] = vm_id
+        result = self.rpc.call("vms.smbios.generate", payload)
+        return VmSmbiosGenerateResponse.model_validate(result)
 
     def delete_vm_config(self, vm_id: str, expected_revision: str, delete_disk: bool = False) -> VmDeleteResponse:
         result = self.rpc.call("vms.config.delete", {

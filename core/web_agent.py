@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import platform
 import socket
@@ -63,6 +64,8 @@ from web.api.contracts import (
 
 VM_SHUTDOWN_TIMEOUT_SECONDS = 180
 VM_START_READY_TIMEOUT_SECONDS = 30
+SMBIOS_APPLY_KIND = "vm.smbios.apply"
+SMBIOS_IDENTITY_FIELDS = ("model", "serial_number", "board_serial", "smuuid", "rom")
 
 
 def _qcow2_virtual_size(path: Path, expected_stat: os.stat_result) -> int | None:
@@ -203,7 +206,7 @@ class WebAgentService:
             self.job_store = JobStore(jobs_db_path)
             self.job_runner = self.job_runner or WebJobRunner(
                 self.job_store, workers=1, queue_size=8, checkpoint_timeout=3600,
-                reconcile_kinds={"vm.provision", "vm.shutdown", "vm.backup", "vm.backup.verify", "vm.backup.restore", "vm.clone", "vm.start", "vm.restart", "vm.opencore.picker", "vm.smbios.diagnose", "reims.release.update"},
+                reconcile_kinds={"vm.provision", "vm.shutdown", "vm.backup", "vm.backup.verify", "vm.backup.restore", "vm.clone", "vm.start", "vm.restart", "vm.opencore.picker", "vm.smbios.diagnose", SMBIOS_APPLY_KIND, "reims.release.update"},
             )
             # Graceful shutdown jobs intentionally wait for macOS to exit and
             # may occupy the normal VM worker for up to three minutes. Forced
@@ -229,6 +232,7 @@ class WebAgentService:
             self.job_runner.register("vm.clone", self._run_vm_clone_job)
             self.job_runner.register("vm.opencore.picker", self._run_vm_opencore_picker_job)
             self.job_runner.register("vm.smbios.diagnose", self._run_vm_smbios_diagnostic_job)
+            self.job_runner.register(SMBIOS_APPLY_KIND, self._run_vm_smbios_apply_job)
             self.job_runner.register("reims.release.update", self._run_reims_release_update_job)
             self.job_runner.register("control.release.update", self._run_control_release_update_job)
             self.media_job_runner.register("media.import", self._run_media_import_job)
@@ -269,6 +273,8 @@ class WebAgentService:
             "vms.config.patch": self.patch_vm_config,
             "vms.opencore.picker": self.submit_vm_opencore_picker,
             "vms.smbios.diagnose": self.submit_vm_smbios_diagnostic,
+            "vms.smbios.apply": self.submit_vm_smbios_apply,
+            "vms.smbios.generate": self.generate_vm_smbios,
             "vms.config.delete": self.delete_vm_config,
             "vms.autostart.get": self.get_auto_start_vm,
             "vms.autostart.set": self.set_auto_start_vm,
@@ -698,6 +704,16 @@ class WebAgentService:
         network_available = network_available and {"--network", "--mac"}.issubset(reims_options)
         gpu_identity_available = {"gpu_identity", "gpu_inventory_json"}.issubset(reims_schema_features)
         gpu_json_available = "gpu_inventory_json" in reims_schema_features
+        try:
+            from core.smbios import GenSMBIOS as _GenSMBIOS
+            _GenSMBIOS._macserial()
+            smbios_edit_available = bool(
+                self.job_runner is not None
+                and shutil.which("guestfish")
+                and shutil.which("qemu-img")
+            )
+        except Exception:
+            smbios_edit_available = False
         gpu_items = [device.as_dict() if hasattr(device, "as_dict") else device for device in self.gpu_inventory()]
         selectable_gpus = [item for item in gpu_items if isinstance(item, dict) and item.get("selection_supported") is True]
         inventory_error = getattr(self.gpu_inventory, "last_error", None)
@@ -829,10 +845,13 @@ class WebAgentService:
                 ),
             ),
             Capability(
-                id="vm.smbios.edit", label="Editar identidade SMBIOS", supported=False,
-                available=False, requires_stopped_vm=True,
-                description="A regeneração segura do OpenCore conserva a identidade da imagem atual; não altera serial, MLB, UUID ou ROM.",
-                limitation="O Reims selecionado ainda não oferece atualização estruturada de SMBIOS. A edição deve permanecer bloqueada até o runtime suportar aplicação e verificação da EFI.",
+                id="vm.smbios.edit", label="Editar identidade SMBIOS", supported=True,
+                available=smbios_edit_available,
+                requires_stopped_vm=True,
+                description="Aplica uma nova identidade SMBIOS (modelo, série, MLB, UUID, ROM) na EFI OpenCore de uma VM parada por injeção do config.plist, preservando kexts, SIP e patches, com backup, qemu-img check e releitura da identidade.",
+                limitation=None if smbios_edit_available else (
+                    "A edição exige o serviço persistente de tarefas e os utilitários guestfish, qemu-img e macserial instalados."
+                ),
             ),
             Capability(
                 id="vm.qemu_extra_args", label="Argumentos QEMU personalizados", supported=True,
@@ -1182,7 +1201,16 @@ class WebAgentService:
         vm_id = self._vm_id(payload)
         expected = self._expected_revision(payload)
         patch = payload.get("fields")
-        allowed = {"usb_auto_attach", "install_phase", "install_reboots", "install_evidence", "smbios"}
+        # `smbios` is deliberately NOT patchable here: a catalog-only identity
+        # edit would diverge from the EFI OpenCore actually boots. Identity
+        # changes go through the `vm.smbios.apply` job, which rewrites the EFI
+        # first and updates the catalog only after verification.
+        allowed = {"usb_auto_attach", "install_phase", "install_reboots", "install_evidence"}
+        if "smbios" in patch:
+            raise RpcRemoteError(
+                "smbios_patch_forbidden",
+                "A identidade SMBIOS não pode ser alterada diretamente no catálogo; use a tarefa vm.smbios.apply, que aplica a identidade na EFI OpenCore.",
+            )
         if not isinstance(patch, dict) or not patch or set(patch) - allowed:
             raise RpcRemoteError("invalid_vm_patch", "A alteração contém campos não permitidos.")
         self._refresh_catalog()
@@ -2614,25 +2642,15 @@ class WebAgentService:
         return cls._opencore_kext_bundles(image, cls._read_opencore_config(image))
 
     @classmethod
-    def _opencore_regeneration_inputs(cls, image: Path) -> tuple["SMBIOSConfig", bool, str | None]:
-        """Read the identity and user settings a Python regeneration must preserve.
+    def _opencore_identity(cls, image: Path) -> "SMBIOSConfig":
+        """Read the SMBIOS identity `PlatformInfo > Generic` carries, fail closed.
 
-        The Control regenerates the EFI itself (the ctl is not the owner of the
-        legacy profile), so it must reproduce the existing identity and settings
-        instead of minting new ones:
-          - SMBIOS: `PlatformInfo > Generic` -> model, serial, board serial, UUID, ROM.
-          - picker: `Misc > Boot > ShowPicker`.
-          - boot-args: `NVRAM > Add > 7C436110-... > boot-args`; `None` keeps the
-            generator default, so a custom boot-args is never overwritten by the
-            constant default.
+        Used both to preserve the identity across picker/boot-args regeneration
+        and to verify that an SMBIOS edit actually landed in the generated EFI.
         """
         from core.config import SMBIOSConfig
 
-        config = cls._read_opencore_config(image)
-        platform = config.get("PlatformInfo")
-        generic = platform.get("Generic") if isinstance(platform, dict) else None
-        if not isinstance(generic, dict):
-            raise RuntimeError("A EFI não traz PlatformInfo.Generic; a identidade não pode ser preservada.")
+        generic = cls._opencore_generic_platform(image)
 
         def _text(key: str) -> str:
             value = generic.get(key)
@@ -2647,7 +2665,7 @@ class WebAgentService:
             rom = rom_value
         else:
             raise RuntimeError("A EFI não traz ROM; a identidade não pode ser preservada.")
-        smbios = SMBIOSConfig(
+        return SMBIOSConfig(
             model=_text("SystemProductName"),
             serial_number=_text("SystemSerialNumber"),
             board_serial=_text("MLB"),
@@ -2655,6 +2673,26 @@ class WebAgentService:
             rom=rom,
         )
 
+    @classmethod
+    def _opencore_generic_platform(cls, image: Path) -> dict[str, Any]:
+        """Return `PlatformInfo > Generic` of the EFI's config.plist, fail closed."""
+        config = cls._read_opencore_config(image)
+        platform = config.get("PlatformInfo")
+        generic = platform.get("Generic") if isinstance(platform, dict) else None
+        if not isinstance(generic, dict):
+            raise RuntimeError("A EFI não traz PlatformInfo.Generic; a identidade não pode ser preservada.")
+        return generic
+
+    @classmethod
+    def _opencore_user_settings(cls, image: Path) -> tuple[bool, str | None]:
+        """Read the user settings a Python regeneration must preserve.
+
+          - picker: `Misc > Boot > ShowPicker`.
+          - boot-args: `NVRAM > Add > 7C436110-... > boot-args`; `None` keeps the
+            generator default, so a custom boot-args is never overwritten by the
+            constant default.
+        """
+        config = cls._read_opencore_config(image)
         misc = config.get("Misc")
         boot = misc.get("Boot") if isinstance(misc, dict) else None
         show_picker = bool(boot.get("ShowPicker")) if isinstance(boot, dict) else False
@@ -2670,6 +2708,23 @@ class WebAgentService:
                         if isinstance(candidate, str):
                             boot_args = candidate
                     break
+        return show_picker, boot_args
+
+    @classmethod
+    def _opencore_regeneration_inputs(cls, image: Path) -> tuple["SMBIOSConfig", bool, str | None]:
+        """Read the identity and user settings a Python regeneration must preserve.
+
+        The Control regenerates the EFI itself (the ctl is not the owner of the
+        legacy profile), so it must reproduce the existing identity and settings
+        instead of minting new ones:
+          - SMBIOS: `PlatformInfo > Generic` -> model, serial, board serial, UUID, ROM.
+          - picker: `Misc > Boot > ShowPicker`.
+          - boot-args: `NVRAM > Add > 7C436110-... > boot-args`; `None` keeps the
+            generator default, so a custom boot-args is never overwritten by the
+            constant default.
+        """
+        smbios = cls._opencore_identity(image)
+        show_picker, boot_args = cls._opencore_user_settings(image)
         return smbios, show_picker, boot_args
 
     @staticmethod
@@ -2722,8 +2777,9 @@ class WebAgentService:
         expected_profile: str,
         context: Any,
         util_source: str | None,
+        expected_identity: Any | None = None,
     ) -> None:
-        """Regenerate the EFI with Control's generator, then enforce the exact kext set.
+        """Regenerate the EFI with Control's generator, then enforce exact postconditions.
 
         Why the Python path and not `reims-ctl update-opencore`: the ctl is not the
         owner of the legacy profile. `kext_args(AppleGfx)` returns `Vec::new()` by
@@ -2732,10 +2788,12 @@ class WebAgentService:
         bundles for BOTH profiles from the installed companion, so it is the only
         single path that is safe for `apple-gfx-pci` and `reims-graphics-pci`.
 
-        The exact-set comparison against `expected_profile` is the primary
-        guarantee; a mismatch restores the backup and re-raises. `util_source`
-        pins `REIMS_UTIL_BIN` to the release-installed companion so the resolved
-        generator is the one the inventory validated, not a stale PATH copy.
+        The exact-set comparison against `expected_profile` is the primary kext
+        guarantee; when `expected_identity` is given (SMBIOS edit), the generated
+        EFI is re-read and all five identity fields are compared too. Any mismatch
+        restores the backup and re-raises. `util_source` pins `REIMS_UTIL_BIN` to
+        the release-installed companion so the resolved generator is the one the
+        inventory validated, not a stale PATH copy.
         """
         from core import reims_util
 
@@ -2774,6 +2832,25 @@ class WebAgentService:
             raise RuntimeError(
                 "A EFI regenerada não corresponde exatamente ao perfil; a imagem anterior foi restaurada."
             )
+        if expected_identity is not None:
+            try:
+                generated_identity = WebAgentService._opencore_identity(image)
+            except Exception as exc:
+                WebAgentService._restore_opencore_image(image, backup, context)
+                raise RuntimeError(
+                    "A EFI foi regenerada, mas a identidade não pôde ser lida; a imagem anterior foi restaurada."
+                ) from exc
+            if (
+                generated_identity.model != expected_identity.model
+                or generated_identity.serial_number != expected_identity.serial_number
+                or generated_identity.board_serial != expected_identity.board_serial
+                or generated_identity.smuuid.lower() != expected_identity.smuuid.lower()
+                or generated_identity.rom.lower() != expected_identity.rom.lower()
+            ):
+                WebAgentService._restore_opencore_image(image, backup, context)
+                raise RuntimeError(
+                    "A EFI regenerada não carrega a identidade solicitada; a imagem anterior foi restaurada."
+                )
 
     def _run_vm_opencore_picker_job(self, payload: dict[str, Any], context: Any) -> dict[str, Any]:
         """Run only Reims' allowlisted OpenCore regeneration command; never expose its output."""
@@ -2942,6 +3019,393 @@ class WebAgentService:
                 raise RuntimeError("O OpenCore foi regenerado, mas o catálogo mudou repetidamente; reconcilie a configuração da VM.")
             context.phase("OpenCore atualizado", 100)
             return {"vm_id": vm_id, "boot_selection": desired, "message": "OpenCore regenerado com a identidade SMBIOS preservada."}
+        finally:
+            lock.release()
+
+    def _smbios_identity_from_payload(self, value: Any) -> SMBIOSConfig:
+        """Parse the five-field identity a client sends; refuse anything else."""
+        if not isinstance(value, dict):
+            raise RpcRemoteError("invalid_smbios", "A identidade SMBIOS é inválida.")
+        try:
+            parsed = ApiSmbiosConfig.model_validate(value)
+        except Exception as exc:
+            raise RpcRemoteError("invalid_smbios", "A identidade SMBIOS é inválida.") from exc
+        return SMBIOSConfig(**parsed.model_dump())
+
+    def _validate_smbios_edit(
+        self, vm: VMConfig, requested: SMBIOSConfig
+    ) -> tuple[SMBIOSConfig, list[str], list[str]]:
+        """Validate a user-supplied identity against the catalog owner's rules.
+
+        Delegates to `GenSMBIOS.validate_for_edit` when the identity module
+        provides it (shape, plausibility, cross-VM conflicts, changed fields);
+        otherwise the syntax-only `GenSMBIOS.validate` remains the gate. The
+        caller refreshes the catalog before calling so the conflict view is fresh.
+        """
+        from core.smbios import GenSMBIOS, SMBIOSError
+
+        others = [other.smbios for other in self.store.list_vms() if other.id != vm.id]
+        validator = getattr(GenSMBIOS, "validate_for_edit", None)
+        if callable(validator):
+            validation = validator(
+                requested,
+                previous=vm.smbios,
+                macos_version=vm.macos_version,
+                other_identities=others,
+            )
+            identity = validation.identity
+            validation_warnings = list(validation.warnings)
+            changed_fields = list(validation.changed_fields)
+        else:
+            GenSMBIOS.validate(requested)
+            identity = requested
+            validation_warnings = []
+            changed_fields = [
+                field for field in SMBIOS_IDENTITY_FIELDS
+                if (getattr(requested, field, "") or "").strip().lower()
+                != (getattr(vm.smbios, field, "") or "").strip().lower()
+            ]
+        verification = GenSMBIOS.verify_with_macserial(identity)
+        if verification.get("ok") is not True:
+            # Never surface serial/MLB values or decoded identifiers in RPC errors/logs.
+            raise SMBIOSError("macserial did not confirm that the SMBIOS serial matches the model and MLB checksum")
+        return identity, validation_warnings, changed_fields
+
+    def generate_vm_smbios(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Mint a fresh identity preview for a user-chosen model; never persists it.
+
+        The preview is pure with respect to the VM and the catalog: it returns the
+        five fields for the UI to fill in, and the `vm.smbios.apply` job accepts
+        them without a second generation step. Audit records the action only.
+        """
+        from core.smbios import GenSMBIOS, SMBIOSError
+
+        model = payload.get("model")
+        if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9]+(?:,[0-9]+)?", model.strip()):
+            raise RpcRemoteError("invalid_smbios_model", "Informe um modelo válido, por exemplo MacPro7,1.")
+        vm_id = payload.get("vm_id")
+        if vm_id is not None:
+            if not isinstance(vm_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", vm_id):
+                raise RpcRemoteError("invalid_vm_id", "Identificador da VM inválido.")
+            self._refresh_catalog()
+            vm = self.store.get_vm(vm_id)
+            if vm is None:
+                raise RpcRemoteError("vm_not_found", "VM não encontrada.")
+            if vm_id in self._get_running_vms():
+                raise RpcRemoteError("vm_running", "Pare a VM antes de gerar uma nova identidade para ela.")
+        from core.smbios import SMBIOSEditError, SMBIOSError
+        generator = getattr(GenSMBIOS, "generate_for_model", None)
+        try:
+            if callable(generator):
+                identity = generator(model.strip())
+            else:
+                identity = GenSMBIOS.generate(model_override=model.strip())
+            GenSMBIOS.validate(identity)
+            verification = GenSMBIOS.verify_with_macserial(identity)
+            if verification.get("ok") is not True:
+                raise SMBIOSError("macserial could not verify the generated identity")
+        except SMBIOSEditError as exc:
+            raise RpcRemoteError("smbios_model_unsupported", str(exc)) from exc
+        except SMBIOSError as exc:
+            message = str(exc)
+            if "macserial is unavailable" in message or "could not verify the MLB" in message:
+                raise RpcRemoteError(
+                    "smbios_tool_unavailable",
+                    "O utilitário macserial não está disponível; reinstale os recursos do appliance.",
+                ) from exc
+            if "not on the supported edit list" in message or "cannot run " in message:
+                raise RpcRemoteError("smbios_model_unsupported", message) from exc
+            raise RpcRemoteError("smbios_identity_unverified", "macserial não confirmou a identidade gerada para este modelo.") from exc
+        return {field: getattr(identity, field) for field in SMBIOS_IDENTITY_FIELDS}
+
+    def submit_vm_smbios_apply(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Queue one identity rewrite of a stopped VM's managed OpenCore EFI."""
+        from core.smbios import SMBIOSError
+
+        if self.job_runner is None:
+            raise RpcRemoteError("capability_unavailable", "O serviço de tarefas não está configurado.")
+        vm_id = self._vm_id(payload)
+        confirmation = payload.get("confirmation")
+        idempotency_key = payload.get("idempotency_key")
+        try:
+            expected = self._expected_revision(payload).strip('"')
+        except RpcRemoteError:
+            raise
+        if confirmation != vm_id:
+            raise RpcRemoteError("confirmation_required", "Confirme informando o identificador exato da VM.")
+        if not isinstance(idempotency_key, str) or not re.fullmatch(r"[0-9a-f-]{36}", idempotency_key):
+            raise RpcRemoteError("invalid_idempotency_key", "Chave da operação inválida.")
+        requested = self._smbios_identity_from_payload(payload.get("smbios"))
+        if not shutil.which("guestfish") or not shutil.which("qemu-img"):
+            raise RpcRemoteError(
+                "capability_unavailable",
+                "Os utilitários guestfish e qemu-img são necessários para atualizar a EFI OpenCore.",
+            )
+        try:
+            from core.smbios import GenSMBIOS, SMBIOSError
+            GenSMBIOS._macserial()
+        except SMBIOSError as exc:
+            raise RpcRemoteError(
+                "smbios_tool_unavailable",
+                "O utilitário macserial não está disponível; reinstale os recursos do appliance.",
+            ) from exc
+        self._refresh_catalog()
+        if self.store.revision != expected:
+            raise RpcRemoteError("catalog_conflict", "O catálogo mudou; recarregue antes de aplicar a identidade.")
+        vm = self.store.get_vm(vm_id)
+        if vm is None:
+            raise RpcRemoteError("vm_not_found", "VM não encontrada.")
+        if vm_id in self._get_running_vms():
+            raise RpcRemoteError("vm_running", "Pare a VM antes de alterar a identidade SMBIOS.")
+        try:
+            identity, _warnings, changed = self._validate_smbios_edit(vm, requested)
+        except SMBIOSError as exc:
+            raise RpcRemoteError("invalid_smbios", str(exc)) from exc
+        if not changed:
+            raise RpcRemoteError("smbios_unchanged", "A VM já usa essa identidade.")
+        try:
+            job, _created = self.job_runner.submit(
+                idempotency_key=f"vm-smbios-apply:{vm_id}:{idempotency_key}",
+                kind=SMBIOS_APPLY_KIND,
+                payload={
+                    "vm_id": vm_id,
+                    "smbios": {field: getattr(identity, field) for field in SMBIOS_IDENTITY_FIELDS},
+                    "expected_revision": expected,
+                },
+                target_vm_id=vm_id,
+                vm_revision=expected,
+            )
+        except ValueError as exc:
+            raise RpcRemoteError("invalid_request", "A chave de idempotência já foi usada com outros dados.") from exc
+        except Exception as exc:
+            from core.web_job_runner import QueueFullError
+            if isinstance(exc, QueueFullError):
+                raise RpcRemoteError("job_queue_full", "A fila de tarefas está cheia; tente novamente mais tarde.") from exc
+            raise
+        return JobAccepted(job_id=job["id"], events_url=f"/api/v1/jobs/{job['id']}").model_dump(mode="json")
+
+    def _smbios_apply_prepare(
+        self,
+        *,
+        vm: VMConfig,
+        image: Path,
+        requested: SMBIOSConfig,
+    ) -> dict[str, Any]:
+        """Validate the requested identity, then prove the EFI can be edited in place.
+
+        Order is deliberate: the new identity is validated first (shape, allowlist,
+        cross-VM conflicts and the macserial serial<->model/MLB check), so an
+        invalid request touches nothing. Only then the EFI is inspected, and only
+        to prove it is editable: the config.plist must carry `PlatformInfo`, and
+        its kexts must still match a known profile so a corrupted image is not
+        edited blindly.
+
+        The edit is an in-place `config.plist` injection, not a full EFI
+        regeneration: regenerating would reset `csr-active-config`, the
+        `Kernel > Patch` entries, `SecureBootModel`, `Vault` and `prev-lang:kbd`
+        that the user configured. The current identity is read only to report
+        which fields change.
+        """
+        from core.smbios import SMBIOSError
+
+        if vm.id in self._get_running_vms():
+            raise RuntimeError("Pare a VM antes de alterar a identidade SMBIOS.")
+        try:
+            identity, warnings, changed = self._validate_smbios_edit(vm, requested)
+        except SMBIOSError as exc:
+            raise RuntimeError(f"A identidade SMBIOS solicitada é inválida: {exc}") from exc
+        if not changed:
+            raise RuntimeError("A VM já usa essa identidade; nada foi alterado.")
+        try:
+            config = self._read_opencore_config(image)
+            if not isinstance(config.get("PlatformInfo"), dict):
+                raise RuntimeError("a EFI não possui PlatformInfo")
+            before = self._opencore_enabled_kexts(image)
+        except Exception as exc:
+            raise RuntimeError(
+                "Não foi possível ler o config.plist da EFI; nada foi alterado."
+            ) from exc
+        source_profile = self._graphics_profile_from_kexts(before)
+        if source_profile is None:
+            raise RuntimeError("O perfil gráfico da EFI é desconhecido ou ambíguo; nada foi alterado.")
+        if before != self._expected_opencore_kexts(source_profile):
+            raise RuntimeError(
+                "O conjunto de kexts da EFI não corresponde exatamente ao perfil declarado; nada foi alterado."
+            )
+        if not shutil.which("qemu-img"):
+            raise RuntimeError("O utilitário qemu-img é necessário para validar a imagem; nada foi alterado.")
+        return {
+            "identity": identity,
+            "warnings": warnings,
+            "changed_fields": changed,
+            "profile": source_profile,
+        }
+
+    def _run_vm_smbios_apply_job(self, payload: dict[str, Any], context: Any) -> dict[str, Any]:
+        """Apply a requested identity to a stopped VM's managed OpenCore EFI.
+
+        Safe order: prove the VM is stopped and the image is managed; validate the
+        identity; snapshot the image; inject the NEW identity into the existing
+        `config.plist` in place; re-read the five fields; restore on any
+        divergence; only then update the catalog, merging this field with the
+        freshest one.
+        """
+        from core import reims_ctl
+        from core.config import ExclusiveVMLock
+
+        vm_id = self._vm_id(payload)
+        expected = payload.get("expected_revision")
+        if not isinstance(expected, str) or not expected:
+            raise ValueError("A revisão do catálogo é obrigatória para aplicar a identidade SMBIOS.")
+        requested = self._smbios_identity_from_payload(payload.get("smbios"))
+        context.check_cancelled()
+        self._refresh_catalog()
+        if self.store.revision != expected:
+            raise RuntimeError("O catálogo mudou; recarregue antes de aplicar a identidade SMBIOS.")
+        vm = self.store.get_vm(vm_id)
+        if vm is None:
+            raise RuntimeError("VM não encontrada.")
+        record = reims_ctl.vm_record(vm_id)
+        if not isinstance(record, dict) or record.get("state") != "stopped" or record.get("pid") is not None:
+            raise RuntimeError("O Reims não confirmou que a VM está parada e registrada.")
+        directory_value = record.get("dir")
+        if not isinstance(directory_value, str) or not directory_value:
+            raise RuntimeError("O registro Reims não informou o diretório da VM.")
+        managed_root = (self.store.config_dir / "vms").resolve(strict=False)
+        try:
+            resolved_directory = Path(directory_value).expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise RuntimeError("O diretório registrado da VM não está acessível.") from exc
+        if resolved_directory != managed_root / vm_id or not resolved_directory.is_relative_to(managed_root):
+            raise RuntimeError("A edição de identidade só está disponível para OpenCore dentro do volume gerenciado do appliance.")
+        projection_path = resolved_directory / "vm.toml"
+        try:
+            if projection_path.is_symlink() or not projection_path.is_file():
+                raise ValueError("Projeção ausente ou insegura")
+            with projection_path.open("rb") as handle:
+                projection = tomllib.load(handle)
+            q35 = projection.get("q35")
+            opencore_name = q35.get("opencore", "OpenCore.qcow2") if isinstance(q35, dict) else "OpenCore.qcow2"
+            relative_image = Path(opencore_name)
+            if relative_image.is_absolute() or ".." in relative_image.parts:
+                raise ValueError("Caminho fora do diretório")
+            image = resolved_directory / relative_image
+            resolved_image = image.resolve(strict=True)
+            if (
+                image.is_symlink()
+                or resolved_image != image
+                or not resolved_image.is_relative_to(resolved_directory)
+                or not resolved_image.is_file()
+                or resolved_image.stat().st_size <= 0
+            ):
+                raise ValueError("Imagem ausente, link ou vazia")
+        except (OSError, ValueError, TypeError, tomllib.TOMLDecodeError) as exc:
+            raise RuntimeError("O OpenCore não é um arquivo gerenciado e verificável pelo painel.") from exc
+
+        lock = ExclusiveVMLock()
+        if not lock.acquire(
+            vm.name, vm.ram_gb, vm.id, disk_path=vm.disk_path,
+            disk_paths=[disk.path for disk in (vm.additional_disks or [])],
+            usb_devices=vm.usb_auto_attach,
+        ):
+            raise RuntimeError("A VM não pôde reservar seus recursos para alterar a identidade.")
+        try:
+            context.check_cancelled()
+            self._refresh_catalog()
+            if self.store.revision != expected or vm_id in self._get_running_vms():
+                raise RuntimeError("A VM ou o catálogo mudou antes da edição; nenhuma imagem foi alterada.")
+            if image.is_symlink() or image.resolve(strict=True) != resolved_image:
+                raise RuntimeError("A imagem OpenCore mudou antes da edição; recarregue os dados da VM.")
+            context.phase("Validando a identidade e a EFI atual", 10)
+            prepared = self._smbios_apply_prepare(
+                vm=vm, image=image, requested=requested,
+            )
+            # Two byte-exact copies of the inspected image, both taken before any
+            # mutation: this job's rollback source, and the backup the catalog's
+            # own identity-change guard requires before it accepts a new identity.
+            backup = resolved_directory / ".opencore-before-smbios.qcow2"
+            fd, temporary_name = tempfile.mkstemp(prefix=f".{backup.name}.", dir=resolved_directory)
+            os.close(fd)
+            temporary_backup = Path(temporary_name)
+            try:
+                shutil.copy2(image, temporary_backup)
+                os.replace(temporary_backup, backup)
+                store_vm_dir = Path(vm.disk_path).parent if vm.disk_path else self.store.config_dir / "vms" / vm_id
+                verified_backup_dir = store_vm_dir / "smbios-backup-before-regeneration"
+                verified_backup_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(image, verified_backup_dir / "OpenCore.qcow2")
+            finally:
+                temporary_backup.unlink(missing_ok=True)
+            # Irreversible from here: no identity values, only field names.
+            context.checkpoint(
+                "smbios_apply_started",
+                {"vm_id": vm_id, "changed_fields": prepared["changed_fields"]},
+            )
+            context.phase("Injetando a nova identidade no config.plist", 30)
+            # In-place edit: only /EFI/OC/config.plist changes, so drivers, kexts,
+            # SIP (csr-active-config), Kernel>Patch and the other user settings
+            # survive. DiskProvisioner stages a copy, injects, runs qemu-img check
+            # and restores the untouched image if anything fails.
+            from core.disk import DiskProvisioner
+            try:
+                DiskProvisioner.inject_opencore_config(
+                    image,
+                    vm,
+                    show_picker=None,
+                    smbios=prepared["identity"],
+                    job_context=context,
+                )
+            except Exception as exc:
+                self._restore_opencore_image(image, backup, context)
+                raise RuntimeError(
+                    "Falha ao injetar a identidade no config.plist; a imagem anterior foi restaurada."
+                ) from exc
+            context.phase("Conferindo a identidade gravada na EFI", 70)
+            try:
+                after = self._opencore_identity(image)
+            except Exception as exc:
+                self._restore_opencore_image(image, backup, context)
+                raise RuntimeError(
+                    "A identidade não pôde ser relida da EFI; a imagem anterior foi restaurada."
+                ) from exc
+            expected = prepared["identity"]
+            if (
+                after.model != expected.model
+                or after.serial_number != expected.serial_number
+                or after.board_serial != expected.board_serial
+                or after.smuuid.lower() != expected.smuuid.lower()
+                or after.rom.lower() != expected.rom.lower()
+            ):
+                self._restore_opencore_image(image, backup, context)
+                raise RuntimeError(
+                    "A EFI não carrega a identidade solicitada; a imagem anterior foi restaurada."
+                )
+            context.phase("Atualizando o catálogo da VM", 90)
+            # Merge only the identity with the freshest catalog so unrelated edits
+            # made during the image operation survive; never mutate the live entry.
+            for _attempt in range(3):
+                self._refresh_catalog()
+                current = self.store.get_vm(vm_id)
+                if current is None:
+                    raise RuntimeError("O OpenCore foi regenerado, mas a VM desapareceu do catálogo.")
+                updated = copy.deepcopy(current)
+                updated.smbios = prepared["identity"]
+                try:
+                    self.store.update_vm(updated, expected_revision=self.store.revision)
+                    break
+                except ConcurrentCatalogUpdate:
+                    continue
+            else:
+                raise RuntimeError(
+                    "O OpenCore foi regenerado, mas o catálogo mudou repetidamente; reconcilie a configuração da VM."
+                )
+            context.phase("Identidade SMBIOS aplicada", 100)
+            return {
+                "vm_id": vm_id,
+                "changed_fields": prepared["changed_fields"],
+                "warnings": prepared["warnings"],
+                "message": "Identidade SMBIOS aplicada ao OpenCore.",
+            }
         finally:
             lock.release()
 
@@ -3893,6 +4357,7 @@ class WebAgentService:
             "vm.force_stop": {"force_stop_prepared"},
             "vm.restart": {"shutdown_request_prepared", "acpi_shutdown_sent", "vm_unit_restarted"},
             "vm.opencore.picker": {"opencore_regeneration_started"},
+            SMBIOS_APPLY_KIND: {"smbios_apply_started"},
             "reims.release.update": {"reims_release_update_started"},
         }.get(job["kind"], set())
         return any(item["name"] in irreversible_checkpoints for item in self.job_store.get_checkpoints(job["id"]))

@@ -557,7 +557,7 @@ class ReimsUtilTests(unittest.TestCase):
                 smbios=self.sample_smbios,
             )
 
-            def edit_plist(staged, _vm, _picker):
+            def edit_plist(staged, _vm, _picker, *, smbios=None, job_context=None):
                 with Path(staged).open("ab") as stream:
                     stream.write(b"-SMBIOS-UPDATED")
 

@@ -1,10 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft, Check, Cpu, Download, HardDrive, Layers3, LoaderCircle, Monitor, Save, Server, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Check, Cpu, Download, Fingerprint, HardDrive, Layers3, LoaderCircle, Monitor, Save, Server, WandSparkles, X } from 'lucide-react';
 import { ApiError, api } from './api/client';
-import type { AdditionalDiskDraft, CapabilitiesResponse, CpuTopology, GpuInventoryResponse, HostUsbInventoryResponse, JobAccepted, JobView, StorageInventory, VmConfig, VmConfigEnvelope, VmListResponse, VmProvisionRequest } from './api/contracts';
+import type { AdditionalDiskDraft, CapabilitiesResponse, CpuTopology, GpuInventoryResponse, HostUsbInventoryResponse, JobAccepted, JobView, SmbiosIdentity, StorageInventory, VmConfig, VmConfigEnvelope, VmListResponse, VmProvisionRequest, VmRuntime, VmSmbiosApplyRequest, VmSmbiosGenerateRequest, VmSmbiosGenerateResponse } from './api/contracts';
 import { usePolling } from './api/usePolling';
-import { FormField, ProgressBar } from './components';
+import { ConfirmationDialog, FormField, ProgressBar } from './components';
 import { translate as t } from './i18n';
 
 interface VmWrite {
@@ -53,6 +53,24 @@ interface Draft {
 }
 
 const QemuArgumentsEditor = lazy(() => import('./QemuArgumentsEditor'));
+
+type SmbiosFieldKey = keyof SmbiosIdentity;
+
+// These two routes mirror the contract in demanda 005: the apply route follows
+// the existing `/vms/{vm_id}/smbios/diagnostics` family and the generate route
+// is the read-only preview described in section 6. Both are gated by the
+// `vm.smbios.edit` capability until Delta Control Backend ships them.
+const vmSmbiosApplyPath = (vmId: string) => `/vms/${encodeURIComponent(vmId)}/smbios/apply`;
+const vmSmbiosGeneratePath = (vmId: string) => `/vms/${encodeURIComponent(vmId)}/smbios/generate`;
+
+/** The preview endpoint may return the five fields directly or under `smbios`. */
+function readGeneratedIdentity(response: VmSmbiosGenerateResponse): SmbiosIdentity | null {
+  const candidate = (response as { smbios?: SmbiosIdentity }).smbios ?? response as SmbiosIdentity;
+  if (!candidate || typeof candidate !== 'object') return null;
+  const { serial_number, board_serial, smuuid, rom } = candidate;
+  if ([serial_number, board_serial, smuuid, rom].some((value) => typeof value !== 'string')) return null;
+  return { model: typeof candidate.model === 'string' ? candidate.model : '', serial_number, board_serial, smuuid, rom };
+}
 
 const emptyDraft: Draft = {
   id: '', name: '', macos_version: 'sequoia', vcpus: '8', cpu_model: 'Skylake-Client-noTSX-IBRS', cpu_topology_enabled: false, cpu_topology_sockets: '1', cpu_topology_cores: '8', cpu_topology_threads: '1', ram_gb: '8', disk_size_gb: '64',
@@ -113,6 +131,7 @@ export default function VmEditor() {
   const gpuInventory = usePolling<GpuInventoryResponse>('/host/gpus', 30000);
   const usbInventory = usePolling<HostUsbInventoryResponse>('/host/usb', 30000);
   const storageInventory = usePolling<StorageInventory>(isEdit ? '/storage' : null, 30000);
+  const runtime = usePolling<VmRuntime>(isEdit && vmId ? `/vms/${encodeURIComponent(vmId)}/runtime` : null, 4000);
   const original = useMemo(() => catalog.data?.items.find((item) => item.config.id === vmId), [catalog.data, vmId]);
   const initialized = useRef(false);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
@@ -126,6 +145,17 @@ export default function VmEditor() {
   const [cancelling, setCancelling] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [qemuArgumentsValid, setQemuArgumentsValid] = useState(true);
+  const [smbios, setSmbios] = useState<SmbiosIdentity | null>(null);
+  const [smbiosErrors, setSmbiosErrors] = useState<Partial<Record<SmbiosFieldKey, string>>>({});
+  const [smbiosGenerateError, setSmbiosGenerateError] = useState<string | null>(null);
+  const [smbiosGenerating, setSmbiosGenerating] = useState(false);
+  const [smbiosGenerated, setSmbiosGenerated] = useState(false);
+  const [smbiosConfirmOpen, setSmbiosConfirmOpen] = useState(false);
+  const [smbiosConfirmation, setSmbiosConfirmation] = useState('');
+  const [smbiosPending, setSmbiosPending] = useState(false);
+  const [smbiosJob, setSmbiosJob] = useState<JobView | null>(null);
+  const [smbiosJobError, setSmbiosJobError] = useState<string | null>(null);
+  const smbiosInitialized = useRef(false);
   const virtioAudioCapability = capabilities.data?.items.find((item) => item.id === 'vm.audio.virtio_device');
   const bridgeCapability = capabilities.data?.items.find((item) => item.id === 'vm.network.bridge');
   const forwardingCapability = capabilities.data?.items.find((item) => item.id === 'vm.network.port_forwarding');
@@ -138,6 +168,43 @@ export default function VmEditor() {
   const gpuIdentityAvailable = gpuIdentityCapability?.available === true;
   const topologyAvailable = topologyCapability?.available === true;
   const additionalDisksEditable = isEdit && additionalDisksCapability?.available === true;
+  const smbiosEditCapability = capabilities.data?.items.find((item) => item.id === 'vm.smbios.edit');
+  const smbiosEditAvailable = smbiosEditCapability?.available === true;
+  const smbiosValues = smbios ?? original?.config.smbios ?? null;
+  const runtimeStopped = runtime.data?.state === 'stopped';
+  const smbiosDirty = Boolean(smbios && original && (Object.keys(smbios) as SmbiosFieldKey[]).some((key) => smbios[key].trim().toUpperCase() !== original.config.smbios[key].trim().toUpperCase()));
+  const smbiosJobActive = Boolean(smbiosJob && ['queued', 'running', 'cancelling'].includes(smbiosJob.state));
+  const smbiosCapabilityReason = smbiosEditCapability?.limitation ?? t('A edição de identidade SMBIOS não está disponível neste runtime.');
+  const smbiosStoppedReason = runtime.loading && !runtime.data
+    ? t('Aguardando o estado da VM.')
+    : runtime.error || !runtime.data
+      ? t('Não foi possível confirmar se a VM está parada.')
+      : !runtimeStopped
+        ? t('A VM precisa estar parada para alterar a identidade SMBIOS.')
+        : null;
+  const smbiosGenerateDisabledReason = !smbiosEditAvailable
+    ? smbiosCapabilityReason
+    : smbiosGenerating
+      ? t('Gerando identidade…')
+      : smbiosJobActive
+        ? t('Aguarde a tarefa de identidade SMBIOS terminar.')
+        : smbiosStoppedReason ?? (!smbios?.model.trim() ? t('Informe o modelo SMBIOS para gerar uma identidade.') : null);
+  const smbiosApplyDisabledReason = !smbiosEditAvailable
+    ? smbiosCapabilityReason
+    : smbiosPending || smbiosGenerating
+      ? t('Aguarde a operação de identidade SMBIOS terminar.')
+      : smbiosJobActive
+        ? t('Aguarde a tarefa de identidade SMBIOS terminar.')
+        : smbiosStoppedReason ?? (!smbiosDirty
+          ? t('Nenhum campo de identidade foi alterado.')
+          : !revision ? t('Não foi possível confirmar a revisão atual da VM; recarregue a página.') : null);
+  const changedSmbiosFields = smbios && original ? ([
+    ['model', t('Modelo SMBIOS')],
+    ['serial_number', t('Número de série')],
+    ['board_serial', t('Número da placa')],
+    ['smuuid', 'SMUUID'],
+    ['rom', 'ROM'],
+  ] as const).filter(([key]) => smbios[key].trim().toUpperCase() !== original.config.smbios[key].trim().toUpperCase()).map(([, label]) => label) : [];
   const storageChoices = (storageInventory.data?.items ?? []).filter((item) => item.location === 'managed' && item.availability === 'available' && /\.(qcow2|raw|img)$/i.test(item.name) && item.references.every((reference) => reference === draft.id));
   const audioDevice: 'usb-audio' | 'virtio-sound' = virtioAudioCapability?.available
     ? 'virtio-sound'
@@ -187,6 +254,12 @@ export default function VmEditor() {
   }, [original]);
 
   useEffect(() => {
+    if (!original || smbiosInitialized.current) return;
+    smbiosInitialized.current = true;
+    setSmbios({ ...original.config.smbios });
+  }, [original]);
+
+  useEffect(() => {
     let active = true;
     if (isEdit && vmId) {
       void api.requestWithHeaders<VmConfigEnvelope>(`/vms/${encodeURIComponent(vmId)}/config`).then(({ data, headers }) => {
@@ -196,7 +269,144 @@ export default function VmEditor() {
     return () => { active = false; };
   }, [isEdit, vmId]);
 
+  useEffect(() => {
+    if (!smbiosJob || ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(smbiosJob.state)) return;
+    let active = true;
+    let timer = 0;
+    const refresh = async () => {
+      try {
+        const current = await api.request<JobView>(`/jobs/${encodeURIComponent(smbiosJob.id)}`);
+        if (active) { setSmbiosJob(current); setSmbiosJobError(null); }
+      } catch (error) {
+        if (active) setSmbiosJobError(error instanceof Error ? t(error.message) : t('Não foi possível atualizar a tarefa.'));
+      }
+      if (active) timer = window.setTimeout(refresh, 1500);
+    };
+    timer = window.setTimeout(refresh, 250);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [smbiosJob?.id, smbiosJob?.state]);
+
+  useEffect(() => {
+    if (!smbiosJob || !vmId || !['succeeded', 'failed', 'cancelled', 'interrupted'].includes(smbiosJob.state)) return;
+    let active = true;
+    void (async () => {
+      await catalog.refresh();
+      try {
+        const { data, headers } = await api.requestWithHeaders<VmConfigEnvelope>(`/vms/${encodeURIComponent(vmId)}/config`);
+        if (!active) return;
+        setRevision(headers.get('ETag') ?? `"${data.revision}"`);
+        if (smbiosJob.state === 'succeeded') {
+          setSmbios({ ...data.config.smbios });
+          setSmbiosGenerated(false);
+          setSmbiosJobError(null);
+        }
+      } catch {
+        if (active && smbiosJob.state === 'succeeded') setSmbiosJobError(t('A identidade foi aplicada, mas não foi possível reler a configuração. Recarregue a página.'));
+      }
+    })();
+    return () => { active = false; };
+  }, [smbiosJob?.state, vmId, catalog.refresh]);
+
   const update = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((current) => ({ ...current, [key]: value }));
+  const updateSmbios = (key: SmbiosFieldKey, value: string) => {
+    const normalized = key === 'model' ? value : value.toUpperCase();
+    setSmbios((current) => current ? { ...current, [key]: normalized } : current);
+    setSmbiosErrors((current) => { const next = { ...current }; delete next[key]; return next; });
+    setSmbiosGenerateError(null);
+    setSmbiosGenerated(false);
+  };
+  const validateSmbios = () => {
+    if (!smbios) return false;
+    const errors: Partial<Record<SmbiosFieldKey, string>> = {};
+    const model = smbios.model.trim();
+    if (!model) errors.model = t('Informe o modelo SMBIOS.');
+    else if (!/^[A-Za-z0-9]+(?:,[0-9]+)?$/.test(model)) errors.model = t('Use o formato do modelo, por exemplo iMac20,1.');
+    if (!/^[A-Z0-9]{10,}$/.test(smbios.serial_number.trim().toUpperCase())) errors.serial_number = t('O número de série precisa ter ao menos 10 caracteres A–Z ou 0–9.');
+    if (!/^[A-Z0-9]{17}$/.test(smbios.board_serial.trim().toUpperCase())) errors.board_serial = t('O MLB precisa ter exatamente 17 caracteres A–Z ou 0–9.');
+    if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(smbios.smuuid.trim().toUpperCase())) errors.smuuid = t('O SMUUID precisa ter 36 caracteres no formato UUID.');
+    if (!/^[0-9A-F]{12}$/.test(smbios.rom.trim().toUpperCase())) errors.rom = t('A ROM precisa ter 12 dígitos hexadecimais.');
+    setSmbiosErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+  const discardSmbios = () => {
+    if (!original) return;
+    setSmbios({ ...original.config.smbios });
+    setSmbiosErrors({});
+    setSmbiosGenerateError(null);
+    setSmbiosJobError(null);
+    setSmbiosGenerated(false);
+  };
+  const generateSmbios = async () => {
+    if (!vmId || !smbios || smbiosGenerateDisabledReason) return;
+    const model = smbios.model.trim();
+    setSmbiosGenerating(true);
+    setSmbiosGenerateError(null);
+    setSmbiosGenerated(false);
+    try {
+      const request: VmSmbiosGenerateRequest = { model };
+      const response = await api.request<VmSmbiosGenerateResponse>(vmSmbiosGeneratePath(vmId), { method: 'POST', body: JSON.stringify(request) });
+      const generated = readGeneratedIdentity(response);
+      if (!generated) throw new Error(t('A prévia não retornou os cinco campos de identidade.'));
+      setSmbios((current) => current ? {
+        model: generated.model || current.model,
+        serial_number: generated.serial_number.trim().toUpperCase(),
+        board_serial: generated.board_serial.trim().toUpperCase(),
+        smuuid: generated.smuuid.trim().toUpperCase(),
+        rom: generated.rom.trim().toUpperCase(),
+      } : current);
+      setSmbiosErrors({});
+      setSmbiosGenerated(true);
+    } catch (error) {
+      setSmbiosGenerateError(error instanceof Error ? t(error.message) : t('Não foi possível gerar uma identidade para este modelo.'));
+    } finally { setSmbiosGenerating(false); }
+  };
+  const requestSmbiosApply = () => {
+    if (!smbios || smbiosApplyDisabledReason) return;
+    if (!validateSmbios()) return;
+    setSmbiosConfirmation('');
+    setSmbiosConfirmOpen(true);
+  };
+  const closeSmbiosConfirm = () => {
+    setSmbiosConfirmOpen(false);
+    setSmbiosConfirmation('');
+  };
+  const applySmbios = async () => {
+    if (!vmId || !smbios || smbiosPending || smbiosConfirmation !== vmId) return;
+    if (!validateSmbios()) { closeSmbiosConfirm(); return; }
+    if (!revision) {
+      closeSmbiosConfirm();
+      setSmbiosJobError(t('Não foi possível confirmar a revisão atual da VM. Recarregue a página antes de aplicar.'));
+      return;
+    }
+    setSmbiosPending(true);
+    setSmbiosJobError(null);
+    setSmbiosGenerateError(null);
+    try {
+      const request: VmSmbiosApplyRequest = {
+        confirmation: smbiosConfirmation,
+        idempotency_key: crypto.randomUUID(),
+        smbios: {
+          model: smbios.model.trim(),
+          serial_number: smbios.serial_number.trim().toUpperCase(),
+          board_serial: smbios.board_serial.trim().toUpperCase(),
+          smuuid: smbios.smuuid.trim().toUpperCase(),
+          rom: smbios.rom.trim().toUpperCase(),
+        },
+      };
+      const accepted = await api.request<JobAccepted>(vmSmbiosApplyPath(vmId), {
+        method: 'POST', headers: { 'If-Match': revision }, body: JSON.stringify(request),
+      });
+      setSmbiosJob({ id: accepted.job_id, kind: 'vm.smbios.apply', state: accepted.state, stage: 'queued', progress_percent: 0,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(), result: {}, error: null, cancellable: false, retryable: false });
+      setSmbiosGenerated(false);
+      closeSmbiosConfirm();
+    } catch (error) {
+      closeSmbiosConfirm();
+      setSmbiosJobError(error instanceof ApiError && (error.status === 409 || error.status === 412)
+        ? t('Esta configuração foi alterada em outro lugar. Recarregue a VM para revisar a versão mais recente antes de salvar.')
+        : error instanceof Error ? t(error.message) : t('Não foi possível aplicar a identidade SMBIOS.'));
+    } finally { setSmbiosPending(false); }
+  };
   const selectGpu = (bdf: string) => {
     const selected = selectableGpus.find((gpu) => gpu.pci_bdf === bdf);
     setDraft((current) => ({
@@ -246,6 +456,7 @@ export default function VmEditor() {
     const expectedEtag = revision;
     if (isEdit && !expectedEtag) { setFormError(t('Não foi possível obter a revisão ETag atual. Atualize o catálogo antes de salvar.')); return; }
     if (isEdit && original?.config.power_sync_mode !== 'vm-only') { setFormError(t('Esta VM possui uma política de energia antiga que o painel não pode preservar com segurança. A configuração permanece bloqueada.')); return; }
+    if (isEdit && smbiosDirty) { setFormError(t('A identidade SMBIOS tem alterações não aplicadas. Use “Aplicar identidade SMBIOS” ou descarte as alterações antes de salvar a configuração.')); return; }
     setSaving(true);
     try {
       if (!isEdit) {
@@ -390,10 +601,32 @@ export default function VmEditor() {
         {usbInventory.data && usbInventory.data.items.length === 0 && draft.usb_auto_attach.length === 0 && <p className="vm-field-hint">{t('Nenhum dispositivo USB anexável foi encontrado no host.')}</p>}
       </section>
 
-      <details className="panel vm-editor-section vm-advanced" onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}><summary><span className="vm-editor-section-icon"><Layers3 size={18}/></span><span><strong>{t('Identidade e opções avançadas')}</strong><small>{t('Identidade gerenciada e editor técnico QEMU')}</small></span></summary><div className="vm-editor-grid vm-editor-grid-three vm-editor-advanced-content">
-        {original && <><Field label={t('Modelo SMBIOS')}><input readOnly value={original.config.smbios.model}/></Field><Field label={t('Número de série')}><input readOnly value={original.config.smbios.serial_number}/></Field><Field label={t('Número da placa')}><input readOnly value={original.config.smbios.board_serial}/></Field><Field label="SMUUID"><input readOnly value={original.config.smbios.smuuid}/></Field><Field label="ROM"><input readOnly value={original.config.smbios.rom}/></Field></>}
+      <details className="panel vm-editor-section vm-advanced" onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}><summary><span className="vm-editor-section-icon"><Layers3 size={18}/></span><span><strong>{t('Identidade e opções avançadas')}</strong><small>{t('Identidade gerenciada e editor técnico QEMU')}</small></span></summary><div className="vm-editor-advanced-content">
+        {original && smbiosValues && <div className="vm-smbios-editor">
+          <div className="vm-editor-grid vm-editor-grid-three">
+            <div className="vm-smbios-model">
+              <Field label={t('Modelo SMBIOS')} hint={smbiosEditAvailable ? t('Formato do modelo, por exemplo iMac20,1.') : undefined} error={smbiosErrors.model}><input readOnly={!smbiosEditAvailable} autoComplete="off" spellCheck={false} maxLength={64} value={smbiosValues.model} onChange={(event) => updateSmbios('model', event.target.value)}/></Field>
+              <button type="button" className="button button-secondary vm-smbios-generate" disabled={Boolean(smbiosGenerateDisabledReason)} title={smbiosGenerateDisabledReason ?? undefined} onClick={() => void generateSmbios()}><WandSparkles size={16}/>{smbiosGenerating ? t('Gerando…') : t('Gerar identidade para este modelo')}</button>
+            </div>
+            <Field label={t('Número de série')} hint={smbiosEditAvailable ? t('Ao menos 10 caracteres A–Z ou 0–9.') : undefined} error={smbiosErrors.serial_number}><input readOnly={!smbiosEditAvailable} autoComplete="off" spellCheck={false} maxLength={32} value={smbiosValues.serial_number} onChange={(event) => updateSmbios('serial_number', event.target.value)}/></Field>
+            <Field label={t('Número da placa')} hint={smbiosEditAvailable ? t('MLB com exatamente 17 caracteres A–Z ou 0–9.') : undefined} error={smbiosErrors.board_serial}><input readOnly={!smbiosEditAvailable} autoComplete="off" spellCheck={false} maxLength={17} value={smbiosValues.board_serial} onChange={(event) => updateSmbios('board_serial', event.target.value)}/></Field>
+            <Field label="SMUUID" hint={smbiosEditAvailable ? t('UUID de 36 caracteres.') : undefined} error={smbiosErrors.smuuid}><input readOnly={!smbiosEditAvailable} autoComplete="off" spellCheck={false} maxLength={36} value={smbiosValues.smuuid} onChange={(event) => updateSmbios('smuuid', event.target.value)}/></Field>
+            <Field label="ROM" hint={smbiosEditAvailable ? t('12 dígitos hexadecimais.') : undefined} error={smbiosErrors.rom}><input readOnly={!smbiosEditAvailable} autoComplete="off" spellCheck={false} maxLength={12} value={smbiosValues.rom} onChange={(event) => updateSmbios('rom', event.target.value)}/></Field>
+          </div>
+          <div className="vm-smbios-actions">
+            <div className="button-row">
+              <button type="button" className="button button-primary" disabled={Boolean(smbiosApplyDisabledReason)} title={smbiosApplyDisabledReason ?? undefined} onClick={requestSmbiosApply}><Fingerprint size={17}/>{t('Aplicar identidade SMBIOS')}</button>
+              {smbiosDirty && <button type="button" className="button button-secondary" disabled={smbiosPending || smbiosJobActive || smbiosGenerating} onClick={discardSmbios}>{t('Descartar alterações')}</button>}
+            </div>
+            {smbiosApplyDisabledReason && <p className="vm-field-hint" role="status">{smbiosApplyDisabledReason}</p>}
+            {smbiosJobError && <div className="inline-message error-message" role="alert">{smbiosJobError}</div>}
+            {smbiosGenerateError && <div className="inline-message error-message" role="alert">{smbiosGenerateError}</div>}
+          </div>
+          {smbiosGenerated && <p className="vm-form-note" role="status">{t('Prévia gerada para o modelo {model}. Nada foi gravado ainda: revise os campos e use “Aplicar identidade SMBIOS”.').replace('{model}', smbiosValues.model)}</p>}
+          {smbiosJob && <section className="panel vm-provision-job" aria-live="polite"><div className="vm-provision-job-head"><span className="vm-editor-section-icon">{smbiosJobActive ? <LoaderCircle className="spin" size={18}/> : smbiosJob.state === 'succeeded' ? <Check size={18}/> : <AlertTriangle size={18}/>}</span><div><h2>{smbiosJob.state === 'succeeded' ? t('Identidade SMBIOS aplicada') : smbiosJob.state === 'failed' ? t('Aplicação da identidade falhou') : smbiosJob.state === 'cancelled' ? t('Aplicação cancelada') : smbiosJob.state === 'interrupted' ? t('Tarefa interrompida') : t('Aplicando identidade SMBIOS')}</h2><p>{t(smbiosJob.stage || 'Aguardando início')} · {smbiosJob.progress_percent == null ? t('Progresso indisponível') : `${Math.round(smbiosJob.progress_percent)}%`}</p></div></div><ProgressBar value={smbiosJob.progress_percent} label={t('Progresso da identidade SMBIOS')} className="vm-job-progress"/>{smbiosJob.state === 'succeeded' && <p className="vm-form-note">{t('A identidade foi aplicada à EFI OpenCore e ao catálogo. Ela vale no próximo boot; iCloud, iMessage, FileVault e a ativação Apple precisam ser revalidados no guest.')}</p>}{smbiosJob.error?.message && <div className="inline-message error-message" role="alert">{t(smbiosJob.error.message)}</div>}</section>}
+        </div>}
         {advancedOpen && <div className="qemu-editor-host"><Suspense fallback={<div className="chart-loading" role="status">{t('Carregando editor QEMU…')}</div>}><QemuArgumentsEditor value={draft.qemu_extra_args} onChange={(tokens) => update('qemu_extra_args', tokens)} onValidityChange={setQemuArgumentsValid}/></Suspense></div>}
-        <p className="vm-form-note">{t('SMBIOS e dispositivos USB continuam sob controle do appliance. O editor não executa comandos nem envia argumentos arbitrários ao QEMU.')}</p>
+        <p className="vm-form-note">{smbiosEditAvailable ? t('A nova identidade é gravada na EFI OpenCore por uma tarefa com backup e verificação; o catálogo só muda depois que a EFI gerada for validada. Trocar a identidade invalida iCloud, iMessage, FileVault e a ativação Apple no guest.') : t('SMBIOS e dispositivos USB continuam sob controle do appliance. O editor não executa comandos nem envia argumentos arbitrários ao QEMU.')}</p>
       </div></details>
 
       <details className="panel vm-editor-section vm-advanced"><summary><span className="vm-editor-section-icon"><Cpu size={18}/></span><span><strong>{t('Inventário de capacidades QEMU/Reims')}</strong><small>{t('Versões, opções de linha de comando, dispositivos e limites estruturados')}</small></span></summary><div className="vm-editor-advanced-content"><p className="vm-form-note">{t('QEMU informa o que o binário contém; Reims informa as opções aceitas pelo comando de configuração. Um recurso listado não significa que o painel permita ativá-lo.')}</p><div className="vm-capability-catalog"><div><strong>{t('Versões detectadas')}</strong><span>Reims: {capabilities.data?.runtime?.reims_version ?? t('indisponível')} · QEMU: {capabilities.data?.runtime?.qemu_version ?? t('indisponível')}</span></div>{Object.entries(capabilities.data?.runtime?.qemu_device_categories ?? {}).map(([category, devices]) => <div key={category}><strong>{category === 'storage' ? t('Armazenamento') : category === 'network' ? t('Rede') : category === 'audio' ? t('Áudio') : category === 'usb' ? 'USB' : category === 'display' ? t('Vídeo') : category}</strong><span>{devices.length ? devices.join(', ') : t('Nenhum dispositivo detectado')}</span></div>)}<div><strong>{t('CPU / máquinas')}</strong><span>{capabilities.data?.runtime ? t('{cpus} modelos de CPU · {machines} máquinas').replace('{cpus}', String(capabilities.data.runtime.qemu_cpu_models.length)).replace('{machines}', String(capabilities.data.runtime.qemu_machine_types.length)) : t('Inventário indisponível')}</span></div><div><strong>{t('Todos os dispositivos QEMU')}</strong><span>{capabilities.data?.runtime?.qemu_devices.join(', ') || t('Indisponíveis')}</span></div><div><strong>{t('Todos os modelos de CPU')}</strong><span>{capabilities.data?.runtime?.qemu_cpu_models.join(', ') || t('Indisponíveis')}</span></div><div><strong>{t('Tipos de máquina')}</strong><span>{capabilities.data?.runtime?.qemu_machine_types.join(', ') || t('Indisponíveis')}</span></div><div><strong>{t('Backends de áudio')}</strong><span>{capabilities.data?.runtime?.qemu_audio_backends.join(', ') || t('Indisponíveis')}</span></div><div><strong>{t('Opções Reims (comando set)')}</strong><span>{capabilities.data?.runtime?.reims_set_options.join(', ') || t('Indisponíveis')}</span></div><div><strong>{t('Opções Reims (create)')}</strong><span>{capabilities.data?.runtime?.reims_create_options.join(', ') || t('Indisponíveis')}</span></div><div><strong>{t('Opções QEMU')}</strong><span>{capabilities.data?.runtime?.qemu_command_options.join(', ') || t('Indisponíveis')}</span></div></div>{(capabilities.data?.items ?? []).filter((item) => item.id.startsWith('vm.audio.') || item.id.startsWith('vm.disks.')).map((item) => <p className="vm-field-hint" key={item.id}><strong>{t(item.label)}:</strong> {t(item.supported ? item.description ?? 'Recurso disponível.' : item.limitation ?? item.description ?? 'Opção não disponível no runtime atual.')}</p>)}</div></details>
@@ -406,5 +639,18 @@ export default function VmEditor() {
       {isEdit && <section className="panel vm-editor-section vm-config-diff" aria-live="polite"><div className="vm-editor-section-heading"><span className="vm-editor-section-icon"><Layers3 size={18}/></span><div><h2>{t('Salvo e aplicado ao Reims')}</h2><p>{t('Diferenças entre o catálogo do painel e o último vm.toml preparado para o próximo boot.')}</p></div></div>{original?.projection_status === 'unknown' ? <p className="vm-field-hint">{t('Ainda não há uma projeção local confiável para comparar.')}</p> : original?.config_differences.length ? <div className="vm-config-diff-list">{original.config_differences.map((difference) => <div key={difference.field}><strong>{({ vcpus: t('vCPU'), cpu_model: t('Modelo de CPU'), ram_gb: t('Memória'), disk_path: t('Arquivo do disco'), disk_format: t('Formato do disco'), disk_port: t('Porta do disco'), additional_disks: t('Discos adicionais'), audio_enabled: t('Áudio'), audio_backend: t('Backend de áudio'), network_enabled: t('Rede'), network_mac: t('Endereço MAC'), network_ssh_port: t('Porta local para SSH'), display_resolution: t('Resolução'), display_count: t('Quantidade de displays'), display_hidpi: t('HiDPI'), fullscreen: t('Tela cheia'), display_refresh_hz: t('Taxa de atualização'), qemu_extra_args: t('Opções QEMU') } as Record<string, string>)[difference.field] ?? difference.field.replaceAll('_', ' ')}</strong><span>{t('Salvo: {value}').replace('{value}', difference.saved_value)}</span><span>{t('Última projeção: {value}').replace('{value}', difference.last_projection_value)}</span></div>)}</div> : <p className="vm-field-hint">{t('Os campos estruturados comparáveis coincidem com a última projeção.')}</p>}<p className="vm-form-note">{t('“Aplicado” aqui significa registrado no arquivo do Reims. Isso não confirma os argumentos efetivos de um QEMU que já esteja em execução; as mudanças persistentes entram no próximo boot.')}</p></section>}
       {isEdit && <p className="vm-form-note">{t('Operações iniciar/parar permanecem no painel da VM. Esta tela só altera configuração persistente; recursos sem suporte no runtime não são ativados.')}</p>}
     </form>
+    <ConfirmationDialog
+      open={smbiosConfirmOpen}
+      title={t('Aplicar nova identidade SMBIOS?')}
+      description={t('A VM {name} (ID {id}) terá a identidade Apple regravada na EFI OpenCore. A tarefa faz backup e confere os cinco campos na EFI gerada; se algo divergir, a imagem anterior é restaurada.').replace('{name}', original?.config.name ?? '').replace('{id}', draft.id)}
+      confirmLabel={t('Aplicar identidade')}
+      busy={smbiosPending}
+      confirmDisabled={Boolean(smbiosApplyDisabledReason)}
+      onConfirm={() => void applySmbios()}
+      onClose={() => setSmbiosConfirmOpen(false)}
+    >
+      <p className="vm-form-note" role="alert">{t('Trocar a identidade Apple invalida iCloud, iMessage, FileVault e a ativação Apple no guest. A VM precisa estar parada e a nova identidade vale no próximo boot.')}</p>
+      {changedSmbiosFields.length > 0 && <p className="vm-form-note">{t('Campos alterados: {fields}.').replace('{fields}', changedSmbiosFields.join(', '))}</p>}
+    </ConfirmationDialog>
   </div>;
 }
