@@ -642,15 +642,27 @@ export default function VmEditor() {
     <ConfirmationDialog
       open={smbiosConfirmOpen}
       title={t('Aplicar nova identidade SMBIOS?')}
-      description={t('A VM {name} (ID {id}) terá a identidade Apple regravada na EFI OpenCore. A tarefa faz backup e confere os cinco campos na EFI gerada; se algo divergir, a imagem anterior é restaurada.').replace('{name}', original?.config.name ?? '').replace('{id}', draft.id)}
+      description={t('A VM {name} (ID {id}) terá a identidade Apple injetada na EFI OpenCore existente. A tarefa faz backup e verifica a identidade na EFI após a injeção; se algo divergir, a imagem anterior é restaurada.').replace('{name}', original?.config.name ?? '').replace('{id}', draft.id)}
       confirmLabel={t('Aplicar identidade')}
       busy={smbiosPending}
-      confirmDisabled={Boolean(smbiosApplyDisabledReason)}
+      confirmDisabled={Boolean(smbiosApplyDisabledReason) || smbiosConfirmation !== vmId}
       onConfirm={() => void applySmbios()}
-      onClose={() => setSmbiosConfirmOpen(false)}
+      onClose={closeSmbiosConfirm}
     >
       <p className="vm-form-note" role="alert">{t('Trocar a identidade Apple invalida iCloud, iMessage, FileVault e a ativação Apple no guest. A VM precisa estar parada e a nova identidade vale no próximo boot.')}</p>
       {changedSmbiosFields.length > 0 && <p className="vm-form-note">{t('Campos alterados: {fields}.').replace('{fields}', changedSmbiosFields.join(', '))}</p>}
+      <label className="ui-field vm-field">
+        <span className="ui-field-label vm-field-label">{t('Digite o ID exato para confirmar')} <code>{draft.id}</code></span>
+        <input
+          autoComplete="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          value={smbiosConfirmation}
+          onChange={(event) => setSmbiosConfirmation(event.target.value)}
+          aria-label={t('Digite o identificador exato da VM')}
+        />
+      </label>
+      <small className="vm-field-hint">{t('O ID diferencia letras maiúsculas e minúsculas.')}</small>
     </ConfirmationDialog>
   </div>;
 }
