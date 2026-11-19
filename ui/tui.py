@@ -23,6 +23,7 @@ from rich.rule import Rule
 from rich.text import Text
 
 from core.config import VMConfig, VMManagerStore, ExclusiveVMLock, CONFIG_DIR, SMBIOSConfig
+from core.opencore_path import OpencoreImageError, opencore_image_path
 from core import i18n
 from core.reims_build import evaluate as evaluate_reims_release, find_reims_dir, install_prebuilt
 from core import reims_ctl
@@ -888,18 +889,22 @@ class VMTUI:
                     continue
                 console.print(i18n.t("tui.opencore.syncing"))
                 opencore_file = None
+                candidate_dirs = []
                 if vm.disk_path:
-                    cand = Path(vm.disk_path).parent / "OpenCore.qcow2"
-                    if cand.exists():
-                        opencore_file = cand
-                if not opencore_file:
-                    for c in [
-                        Path(os.path.expanduser(f"~/.config/vhackintosh/vms/{vm.id}/OpenCore.qcow2")),
-                        Path(f"/root/.config/vhackintosh/vms/{vm.id}/OpenCore.qcow2"),
-                    ]:
-                        if c.exists():
-                            opencore_file = c
-                            break
+                    candidate_dirs.append(Path(vm.disk_path).parent)
+                candidate_dirs.extend([
+                    Path(os.path.expanduser(f"~/.config/vhackintosh/vms/{vm.id}")),
+                    Path(f"/root/.config/vhackintosh/vms/{vm.id}"),
+                ])
+                for candidate_dir in candidate_dirs:
+                    try:
+                        candidate = opencore_image_path(candidate_dir)
+                    except OpencoreImageError as exc:
+                        console.print(i18n.t("tui.opencore.write_error", error=exc))
+                        break
+                    if candidate.is_file():
+                        opencore_file = candidate
+                        break
                 if opencore_file:
                     try:
                         DiskProvisioner.inject_opencore_config(opencore_file, vm, show_picker=new_picker)
@@ -920,14 +925,14 @@ class VMTUI:
                     continue
                 backup_dir = existing_vm_dir / "smbios-backup-before-regeneration"
                 try:
+                    existing_file = opencore_image_path(existing_vm_dir, quarantine_conflict=True)
                     backup_dir.mkdir(mode=0o700, exist_ok=False)
-                    existing_file = existing_vm_dir / "OpenCore.qcow2"
                     if not existing_file.is_file():
                         backup_dir.rmdir()
                         raise RuntimeError("EFI da VM não encontrada; identidade não foi alterada")
                     shutil.copy2(existing_file, backup_dir / "OpenCore.qcow2")
                     new_smbios = GenSMBIOS.generate(vm.macos_version)
-                    existing_efi = existing_vm_dir / "OpenCore.qcow2"
+                    existing_efi = opencore_image_path(existing_vm_dir, quarantine_conflict=True)
                     if existing_efi.is_file():
                         old_identity = vm.smbios
                         try:
@@ -1256,7 +1261,12 @@ class VMTUI:
             console.print(i18n.t("smbios.diag.unavailable", reason="nenhuma VM cadastrada"))
         for vm in vms:
             vm_dir = Path(vm.disk_path).parent if vm.disk_path else Path.home() / ".config/vhackintosh/vms" / vm.id
-            result = GenSMBIOS.inspect_vm(vm, vm_dir / "OpenCore.qcow2")
+            try:
+                image = opencore_image_path(vm_dir)
+            except OpencoreImageError as exc:
+                console.print(f"[yellow]{vm.name}: {exc}[/yellow]")
+                continue
+            result = GenSMBIOS.inspect_vm(vm, image)
             if result["ok"]:
                 console.print(f"[green]{vm.name}: {i18n.t('smbios.diag.match')}[/green]")
             elif result.get("reason") == "identity fields missing or differ; Apple activation remains unverified":

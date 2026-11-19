@@ -3488,7 +3488,15 @@ class WebAgentService:
                 raise ValueError("Projeção ausente ou insegura")
             with projection_path.open("rb") as handle:
                 tomllib.load(handle)
-            image = opencore_image_path(resolved_directory)
+            quarantine_dir = resolved_directory / "opencore-quarantine"
+            quarantined_before = set(quarantine_dir.iterdir()) if quarantine_dir.is_dir() else set()
+            image = opencore_image_path(resolved_directory, quarantine_conflict=True)
+            moved = sorted(set(quarantine_dir.iterdir()) - quarantined_before) if quarantine_dir.is_dir() else []
+            for quarantined in moved:
+                source_name = quarantined.name.rsplit(".", 2)[0]
+                source_path = resolved_directory / source_name
+                logger.warning("OpenCore variante não declarada movida para quarentena: %s -> %s", source_path, quarantined)
+                context.phase(f"OpenCore movido para quarentena: {source_path} → {quarantined}; usando {image}.", 5)
             resolved_image = image.resolve(strict=True)
             if (
                 image.is_symlink()

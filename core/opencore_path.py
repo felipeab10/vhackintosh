@@ -70,13 +70,13 @@ def declared_opencore_name(vm_dir: str | Path) -> str:
     return name
 
 
-def opencore_image_path(vm_dir: str | Path) -> Path:
+def opencore_image_path(vm_dir: str | Path, *, quarantine_conflict: bool = False) -> Path:
     """Resolve the EFI image of ``vm_dir`` to the file the runtime boots.
 
     The returned path may not exist yet (creation); callers that need an
-    existing image check it themselves. Raises :class:`OpencoreImageError` when
-    two files differ only by case and are not the same underlying inode, naming
-    the declared one.
+    existing image check it themselves. By default raises
+    :class:`OpencoreImageError` when two distinct case variants exist. The SMBIOS
+    apply may opt into moving the undeclared variant into a reversible quarantine.
     """
     directory = Path(vm_dir)
     declared = declared_opencore_name(directory)
@@ -99,8 +99,33 @@ def opencore_image_path(vm_dir: str | Path) -> Path:
     if len(matches) > 1:
         # Two candidates with matching case: check whether they resolve to the
         # same underlying inode (e.g. hard links on a case-insensitive FS view).
-        real_paths = {os.path.realpath(match) for match in matches}
-        if len(real_paths) > 1:
+        file_ids = set()
+        for match in matches:
+            stat = match.stat()
+            file_ids.add((stat.st_dev, stat.st_ino))
+        if len(file_ids) > 1 and quarantine_conflict:
+            declared_path = directory / declared
+            undeclared = [match for match in matches if match.name != declared]
+            if len(undeclared) != 1 or not declared_path.is_file() or declared_path.is_symlink():
+                raise OpencoreImageError(
+                    f"{directory} contém variantes ambíguas; não foi possível identificar "
+                    f"com segurança a imagem declarada {declared!r}."
+                )
+            from datetime import datetime, timezone
+
+            quarantine_dir = directory / "opencore-quarantine"
+            quarantine_dir.mkdir(mode=0o700, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+            quarantined = quarantine_dir / f"{undeclared[0].name}.{stamp}"
+            os.replace(undeclared[0], quarantined)
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "OpenCore variante não declarada movida para quarentena: %s -> %s",
+                undeclared[0], quarantined,
+            )
+            return declared_path
+        if len(file_ids) > 1:
             raise OpencoreImageError(
                 f"{directory} tem {', '.join(sorted(m.name for m in matches))} e o vm.toml declara "
                 f"{declared!r}: remova o arquivo com a caixa errada antes de continuar "
