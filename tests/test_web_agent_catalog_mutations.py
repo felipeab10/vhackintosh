@@ -9,16 +9,24 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.config import SMBIOSConfig, VMConfig, VMManagerStore
-from core.graphics_profiles import EMBEDDED_KEXTS, GRAPHICS_PROFILES
+from core.graphics_profiles import EMBEDDED_KEXTS, GRAPHICS_PROFILES, SUPPORT_KEXT_BUNDLES
 from core.web_agent import WebAgentService
 from core.web_rpc import RpcRemoteError
 
 LEGACY = "apple-gfx-pci"
 REIMS = "reims-graphics-pci"
 
+def _support_kexts():
+    """Support bundles Control injects on every generation pass."""
+    return {bundle for bundle, _minimum in SUPPORT_KEXT_BUNDLES}
+
 def _kexts(profile):
-    """Exact enabled-kext set the closed contract declares for a profile."""
-    return set(EMBEDDED_KEXTS) | {bundle for bundle, _minimum in GRAPHICS_PROFILES[profile]}
+    """Exact enabled-kext set Control checks after a profile regeneration."""
+    return (
+        set(EMBEDDED_KEXTS)
+        | {bundle for bundle, _minimum in GRAPHICS_PROFILES[profile]}
+        | _support_kexts()
+    )
 
 def _runtime(profile=LEGACY, kext_mode="embedded"):
     return {
@@ -895,7 +903,7 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
         def fake_run(command, **_kwargs):
             if command[0] == "guestfish" and "download" in command:
                 seen["n"] += 1
-                bundles = _kexts(LEGACY) if seen["n"] == 1 else {"Lilu.kext"}
+                bundles = _kexts(LEGACY) if seen["n"] == 1 else ({"Lilu.kext"} | _support_kexts())
                 plist = {
                     "Kernel": {"Add": [{"BundlePath": name, "Enabled": True} for name in sorted(bundles)]},
                     "PlatformInfo": {"Generic": _identity_plist()},
@@ -903,7 +911,7 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
                 Path(command[-1]).write_bytes(plistlib.dumps(plist))
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             if command[0] == "guestfish" and "ls" in command:
-                bundles = _kexts(LEGACY) if seen["n"] == 1 else {"Lilu.kext"}
+                bundles = _kexts(LEGACY) if seen["n"] == 1 else ({"Lilu.kext"} | _support_kexts())
                 return SimpleNamespace(returncode=0, stdout="\n".join(sorted(bundles)) + "\n", stderr="")
             raise AssertionError(f"comando inesperado: {command}")
 
@@ -1016,7 +1024,9 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(outside.read_bytes(), b"keep")
 
-    def test_picker_regeneration_refuses_opencore_path_escaping_through_parent_symlink(self):
+    def test_picker_regeneration_refuses_opencore_path_with_directory_before_resolving_symlink(self):
+        """A declared path with a directory is rejected as a simple name, so a
+        symlinked parent directory can never redirect the regeneration."""
         vm = VMConfig(id="macos-studio", name="Studio", macos_version="tahoe")
         self.service.store.add_vm(vm)
         vm_dir = self.service.store.config_dir / "vms" / vm.id
@@ -1035,7 +1045,7 @@ class WebAgentCatalogMutationTests(unittest.TestCase):
         with patch("core.reims_ctl.vm_record", return_value={"name": vm.id, "dir": str(vm_dir), "state": "stopped", "pid": None}), \
              patch("core.runtime_inventory.inspect_runtime", return_value=_runtime()), \
              patch("subprocess.run") as run:
-            with self.assertRaisesRegex(RuntimeError, "arquivo gerenciado"):
+            with self.assertRaisesRegex(RuntimeError, "nome simples"):
                 self.service._run_vm_opencore_picker_job({
                     "vm_id": vm.id, "boot_selection": True, "expected_revision": self.service.store.revision,
                 }, Context())

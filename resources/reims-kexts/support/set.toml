@@ -1,0 +1,18 @@
+# Support kexts that belong to no graphics family and are injected in every
+# generated OpenCore image. One [[kext]] per Kernel > Add entry, each the bundle
+# beside this file named by BundlePath. The profile itself is still decided by
+# the Rgfx/Vgpu bundles in GRAPHICS_PROFILES, never by these.
+#
+# A plist-only kext has no executable, so integrity is pinned by plist_sha256
+# (the SHA-256 of PlistPath) instead of the optional `sha256`.
+format = 1
+MinKernel = "19.0.0"
+MaxKernel = "25.99.99"
+
+[[kext]]
+BundlePath = "MCEReporterDisabler.kext"
+PlistPath = "Contents/Info.plist"
+MinKernel = "19.0.0"
+MaxKernel = "25.99.99"
+Comment = "V0.5 | AppleMCEReporter disabler"
+plist_sha256 = "231da3ffdd09ebced832a0e05ab98da48f16f84f138f9be3062324a6905d94c7"

@@ -81,3 +81,26 @@ texts already included in `LICENSES/` above. These five bundles use
 The `set.toml`/`sources.toml` files are retained alongside the bundles for
 upstream build-input provenance. The project does not modify `reims-vgpu` or
 its generated kexts.
+
+## Support bundles (`support/`)
+
+These belong to no graphics family. They are injected with `--add-kext` in
+every generated OpenCore image, beside the five/eight profile bundles, and do
+not participate in profile detection: the profile is still decided by the
+Rgfx/Vgpu bundles. `support/set.toml` declares `MinKernel=19.0.0`,
+`MaxKernel=25.99.99` and the integrity of the plist (`plist_sha256`), since a
+plist-only bundle has no executable to pin.
+
+| Bundle | CFBundleIdentifier | MinKernel | Contents | Plist SHA-256 |
+| --- | --- | --- | --- | --- |
+| `MCEReporterDisabler.kext` | `org.rehabman.disabler.MCEReporter` | `19.0.0` | plist-only (1 file, 1893 bytes) | `231da3ffdd09ebced832a0e05ab98da48f16f84f138f9be3062324a6905d94c7` |
+
+`MCEReporterDisabler.kext` v0.5 is RehabMan's 2017 GPLv2 disabler for
+`AppleIntelMCEReporter`. It was extracted verbatim from this project's own
+`templates/OpenCore.qcow2` (`/EFI/OC/Kexts/MCEReporterDisabler.kext`), where it
+was already shipped enabled at `MinKernel 19.0.0`. Keeping it vendored is what
+makes a regeneration preserve it: the generator rebuilds `Kernel > Add` from
+these bundles, so a bundle that exists only inside the template is lost on the
+next regeneration (the 18/11 `taeho1` reboot). Its `IOKitPersonalities` match
+board-ids `Mac-F60DEB81FF30ACF6`, `Mac-7BA5B2D9E42DDD94` and
+`Mac-27AD2F918AE68F61` (MacPro7,1).

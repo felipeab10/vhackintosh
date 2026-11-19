@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from core.config import CONFIG_DIR, VM_RESERVATIONS_LOCK, VMConfig, VMManagerStore
+from core.opencore_path import OpencoreImageError, declared_opencore_name, opencore_image_path
 
 
 class VMBackupError(Exception):
@@ -46,7 +47,16 @@ class VMBackupService:
     """
 
     _VM_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-    _ARTIFACTS = ("macos.qcow2", "OpenCore.qcow2", "OVMF_CODE.fd", "OVMF_VARS.fd", "vm.toml")
+    _ARTIFACTS = ("macos.qcow2", "OVMF_CODE.fd", "OVMF_VARS.fd", "vm.toml")
+
+    @staticmethod
+    def _opencore_path(vm_dir: Path) -> Path:
+        """The EFI image ``vm.toml`` declares, matched without guessing a case."""
+        try:
+            return opencore_image_path(vm_dir)
+        except OpencoreImageError as exc:
+            raise VMBackupUnsafe(str(exc)) from exc
+
     _MAX_QCOW_CHAIN = 16
     _MAX_BUNDLE_FILES = 300
 
@@ -295,8 +305,11 @@ class VMBackupService:
             raise VMBackupUnsafe("O caminho do disco não corresponde ao layout gerenciado desta VM.")
 
         artifacts: list[Path] = []
-        for name in self._ARTIFACTS:
-            path = vm_dir / name
+        opencore_name = declared_opencore_name(vm_dir)
+        opencore_path = self._opencore_path(vm_dir)
+        artifact_paths = [(name, vm_dir / name) for name in self._ARTIFACTS]
+        artifact_paths.append((opencore_name, opencore_path))
+        for name, path in artifact_paths:
             try:
                 info = path.lstat()
             except FileNotFoundError as exc:
@@ -316,7 +329,9 @@ class VMBackupService:
         config_root = config_root.resolve(strict=True)
         vm_dir_real = vm_dir.resolve(strict=False)
         additional_paths: list[Path] = []
-        main_artifacts = {(vm_dir / name).resolve(strict=False) for name in self._ARTIFACTS}
+        main_artifacts = {
+            (vm_dir / name).resolve(strict=False) for name in self._ARTIFACTS
+        } | {self._opencore_path(vm_dir).resolve(strict=False)}
         for disk in vm.additional_disks or []:
             path = Path(disk.path).expanduser()
             if not path.is_absolute():
@@ -591,13 +606,22 @@ class VMBackupService:
             raise VMBackupUnsafe("Backup de uma VM ainda vinculada a um instalador externo não é suportado.")
         expected_values = {
             "disk": "macos.qcow2",
-            "opencore": "OpenCore.qcow2",
             "firmware_code": "OVMF_CODE.fd",
             "firmware_vars": "OVMF_VARS.fd",
         }
         q35 = data.get("q35")
         if not isinstance(q35, dict):
             raise VMBackupUnsafe("Configuração q35/EFI ausente em vm.toml.")
+
+        try:
+            expected_opencore_name = declared_opencore_name(path.parent)
+        except OpencoreImageError as exc:
+            raise VMBackupUnsafe(str(exc)) from exc
+        actual_opencore = q35.get("opencore")
+        if not isinstance(actual_opencore, str) or Path(actual_opencore).name != actual_opencore:
+            raise VMBackupUnsafe("Artifact opencore precisa ser um nome simples declarado em vm.toml.")
+        if actual_opencore != expected_opencore_name:
+            raise VMBackupUnsafe("Artifact opencore não corresponde ao nome declarado em vm.toml.")
         for key, value in expected_values.items():
             actual = data.get(key) if key == "disk" else q35.get(key)
             if actual != value:
@@ -687,13 +711,24 @@ class VMBackupService:
             vm_dir, artifacts, additional_paths = self._source_artifacts(vm, vm_id)
             vm_toml = vm_dir / "vm.toml"
             self._validate_vm_toml(vm_toml, vm_id, vm, reject_unowned_disks=True)
-            archive_sources: dict[str, Path] = {path.name: path for path in artifacts}
+            source_opencore = self._opencore_path(vm_dir)
+            archive_sources: dict[str, Path] = {
+                ("OpenCore.qcow2" if path == source_opencore else path.name): path
+                for path in artifacts
+            }
             # Resolve and validate backing files before copying anything. Only
             # direct siblings of the managed VM directory are accepted, so a
             # relative backing name remains valid in both the bundle and restore.
-            for disk in (vm_dir / "macos.qcow2", vm_dir / "OpenCore.qcow2"):
-                for backing_file in self._safe_qcow_files(disk):
-                    archive_name = backing_file.name
+            for disk in (vm_dir / "macos.qcow2", source_opencore):
+                for index, backing_file in enumerate(self._safe_qcow_files(disk)):
+                    # The EFI root is always stored under the bundle's stable
+                    # v1 name, even when vm.toml declares a legacy basename;
+                    # restore re-materializes it with the declared name.
+                    archive_name = (
+                        "OpenCore.qcow2"
+                        if disk == source_opencore and index == 0
+                        else backing_file.name
+                    )
                     prior = archive_sources.get(archive_name)
                     if prior is not None and prior.resolve(strict=True) != backing_file.resolve(strict=True):
                         raise VMBackupUnsafe("Duas cadeias QCOW2 usam o mesmo nome para arquivos diferentes.")
@@ -1026,6 +1061,7 @@ class VMBackupService:
         if check_cancelled is not None:
             check_cancelled()
         expected_files = set(required)
+        expected_files.add("OpenCore.qcow2")
         for root_name in ("macos.qcow2", "OpenCore.qcow2"):
             chain = self._safe_qcow_files(bundle / root_name)
             expected_files.update(path.name for path in chain)
@@ -1089,6 +1125,13 @@ class VMBackupService:
             if shutil.disk_usage(self.vm_storage_root).free < total_bytes + 16 * 1024 * 1024:
                 raise VMBackupConflict("Espaço livre insuficiente para preparar a restauração com segurança.")
 
+            try:
+                declared_restore_opencore = declared_opencore_name(bundle)
+            except OpencoreImageError as exc:
+                raise VMBackupUnsafe(str(exc)) from exc
+            # Resolve the current directory first to reject an ambiguous pair;
+            # the directory swap below replaces it with the backup's declaration.
+            self._opencore_path(vm_dir)
             additional_targets = self._validated_additional_paths(restored_config, vm_id, require_files=False)
             manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
             by_name = {entry["name"]: entry for entry in manifest["files"] if isinstance(entry, dict)}
@@ -1163,7 +1206,8 @@ class VMBackupService:
                         # Local-to-VM additional disks are materialized below
                         # at their original sibling names.
                         continue
-                    scheduled[stage / name] = name
+                    destination_name = declared_restore_opencore if name == "OpenCore.qcow2" else name
+                    scheduled[stage / destination_name] = name
                 for filename, archive_name in local_additional.items():
                     destination = stage / filename
                     if destination in scheduled and scheduled[destination] != archive_name:
@@ -1188,8 +1232,8 @@ class VMBackupService:
                     copied += size
                     records.append(name)
                 self._validate_vm_toml(stage / "vm.toml", vm_id, restored_config)
+                self._safe_qcow_files(stage / declared_restore_opencore)
                 self._safe_qcow_files(stage / "macos.qcow2")
-                self._safe_qcow_files(stage / "OpenCore.qcow2")
                 for disk_config, target in zip(restored_config.additional_disks or [], additional_targets):
                     if (disk_config.format == "qcow2"
                             and target.parent.resolve(strict=True) == vm_dir_real):

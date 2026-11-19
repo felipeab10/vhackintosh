@@ -37,9 +37,10 @@ MASTER_BINARY = Path("/tmp/ru-check/target/release/reims-util")
 PIN_BINARY = Path("/opt/vhackintosh/resources/reims-util/reims-util")
 
 # O que a EFI final tem de carregar. Lilu.kext é o único kext que o master ainda
-# embute; os outros oito vêm de `resources/reims-kexts/` por `--add-kext`.
+# embute; os oito de perfil gráfico e o suporte MCE vêm vendorizados via `--add-kext`.
 EXPECTED_KEXTS = {
     "Lilu.kext",
+    "MCEReporterDisabler.kext",
     "ReimsVgpu.kext",
     "AppleGraphicsDeviceControlBridge.kext",
     "AppleParavirtGPULoader.kext",

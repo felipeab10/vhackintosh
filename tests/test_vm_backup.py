@@ -461,6 +461,32 @@ class VMBackupServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(VMBackupUnsafe, "Checksum não confere"):
             service.verify_backup("studio", backup.name)
 
+    def test_legacy_declared_opencore_name_survives_backup_restore(self):
+        legacy_name = "opencore.qcow2"
+        (self.vm_dir / "OpenCore.qcow2").rename(self.vm_dir / legacy_name)
+        (self.vm_dir / "vm.toml").write_text(VM_TOML.replace("OpenCore.qcow2", legacy_name), encoding="utf-8")
+        service = self.service(inspector=lambda path: [path])
+
+        backup = service.create("studio")
+        self.assertTrue((backup / "OpenCore.qcow2").is_file())
+        self.assertTrue(service.verify_backup("studio", backup.name)["verified"])
+
+        result = service.restore("studio", backup.name)
+        self.assertTrue(result["restored"])
+        self.assertTrue((self.vm_dir / legacy_name).is_file())
+        self.assertFalse((self.vm_dir / "OpenCore.qcow2").exists())
+
+    def test_opencore_case_collision_aborts_backup_without_writing(self):
+        (self.vm_dir / "vm.toml").write_text(VM_TOML.replace("OpenCore.qcow2", "opencore.qcow2"), encoding="utf-8")
+        (self.vm_dir / "opencore.qcow2").write_bytes(b"declared EFI")
+        service = self.service(inspector=lambda path: [path])
+
+        with self.assertRaisesRegex(VMBackupUnsafe, "opencore.qcow2"):
+            service.create("studio")
+
+        self.assertEqual((self.vm_dir / "opencore.qcow2").read_bytes(), b"declared EFI")
+        self.assertEqual(list((self.backups / "studio").glob("*.vhb")), [])
+
     def test_cleans_staging_on_interrupted_copy_and_does_not_publish_partial_backup(self):
         service = self.service()
         with patch.object(service, "_copy_hash", side_effect=OSError("simulated interruption")):

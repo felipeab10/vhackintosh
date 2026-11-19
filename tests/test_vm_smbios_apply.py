@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.config import SMBIOSConfig, VMConfig
-from core.graphics_profiles import EMBEDDED_KEXTS, GRAPHICS_PROFILES
+from core.graphics_profiles import EMBEDDED_KEXTS, GRAPHICS_PROFILES, SUPPORT_KEXT_BUNDLES
 from core.smbios import EDIT_MODEL_MAX_MACOS, GenSMBIOS, MACSERIAL_CANDIDATES
 from core.web_agent import SMBIOS_APPLY_KIND, WebAgentService
 from core.web_rpc import RpcRemoteError
@@ -36,7 +36,13 @@ def payload_identity(identity: SMBIOSConfig) -> dict[str, str]:
 
 
 def expected_kexts():
-    return set(EMBEDDED_KEXTS) | {bundle for bundle, _minimum in GRAPHICS_PROFILES[LEGACY]}
+    # The SMBIOS apply edits config.plist in place, so the EFI already carries
+    # the injected support bundles when the job runs; they must survive it.
+    return (
+        set(EMBEDDED_KEXTS)
+        | {bundle for bundle, _minimum in GRAPHICS_PROFILES[LEGACY]}
+        | {bundle for bundle, _minimum in SUPPORT_KEXT_BUNDLES}
+    )
 
 
 def config_plist(identity: SMBIOSConfig, picker: bool = True, boot_args: str = "-v custom=1",
@@ -229,6 +235,83 @@ class SmbiosApplyTests(unittest.TestCase):
         self.assertNotIn(NEW.serial_number, str(caught.exception))
         self.assertEqual(self.image.read_bytes(), original)
         self.assertEqual(payload_identity(self.service.store.get_vm("studio").smbios), payload_identity(OLD))
+
+    def test_apply_abort_names_the_recognized_family_and_the_orphan_bundle(self):
+        # The user's real dump: complete reims-graphics-pci family plus an orphan
+        # legacy ReimsVgpu.kext. The abort must name the family and the extra.
+        from core.graphics_profiles import GRAPHICS_PROFILES
+
+        self._install_fakes()
+        modern = {bundle for bundle, _ in GRAPHICS_PROFILES["reims-graphics-pci"]}
+        kexts = modern | {"Lilu.kext", "ReimsVgpu.kext"}
+        config = config_plist(OLD)
+        config["Kernel"]["Add"] = [
+            {"BundlePath": name, "Enabled": True} for name in sorted(kexts)
+        ]
+        with patch.object(WebAgentService, "_opencore_enabled_kexts", return_value=kexts), \
+             patch.object(WebAgentService, "_read_opencore_config", return_value=config):
+            with self.assertRaises(RuntimeError) as caught:
+                self.service._smbios_apply_prepare(
+                    vm=self.service.store.get_vm("studio"), image=self.image, requested=NEW,
+                )
+        message = str(caught.exception)
+        self.assertIn("reims-graphics-pci", message)
+        self.assertIn("ReimsVgpu.kext", message)
+        self.assertIn("Kexts ativos (7)", message)
+        # The old opaque wording alone is no longer acceptable.
+        self.assertNotEqual(
+            message,
+            "O perfil gráfico da EFI é desconhecido ou ambíguo; nada foi alterado.",
+        )
+
+    def test_support_kext_beside_the_family_is_applied_with_a_named_warning(self):
+        # MacPro7,1 plan: MCEReporterDisabler.kext sits in Kernel>Add beside the
+        # reims-graphics-pci family. The in-place identity edit must proceed, keep
+        # the kext byte-for-byte and report it as a warning instead of aborting.
+        state = self._install_fakes()
+        kexts = (
+            {bundle for bundle, _ in GRAPHICS_PROFILES["reims-graphics-pci"]}
+            | set(EMBEDDED_KEXTS)
+            | {"MCEReporterDisabler.kext"}
+        )
+        plist = config_plist(OLD)
+        plist["Kernel"]["Add"] = [
+            {"BundlePath": name, "Enabled": True} for name in sorted(kexts)
+        ]
+        state["plist"] = plist
+        with patch.object(WebAgentService, "_opencore_enabled_kexts", return_value=kexts):
+            result = self._apply(Context(state))
+        self.assertEqual(
+            payload_identity(self.service.store.get_vm("studio").smbios), payload_identity(NEW)
+        )
+        self.assertEqual(
+            {item["BundlePath"] for item in state["plist"]["Kernel"]["Add"]}, kexts
+        )
+        warnings = " ".join(result["warnings"])
+        self.assertIn("MCEReporterDisabler.kext", warnings)
+        self.assertIn("reims-graphics-pci", warnings)
+        # It is support, never "sobrando" of the profile.
+        self.assertNotIn("sobrando MCEReporterDisabler.kext", warnings)
+
+    def test_apply_abort_for_no_complete_family_lists_what_is_active(self):
+        self._install_fakes()
+        kexts = {"Lilu.kext", "SomeUserKext.kext"}
+        config = config_plist(OLD)
+        config["Kernel"]["Add"] = [
+            {"BundlePath": name, "Enabled": True} for name in sorted(kexts)
+        ]
+        with patch.object(WebAgentService, "_opencore_enabled_kexts", return_value=kexts), \
+             patch.object(WebAgentService, "_read_opencore_config", return_value=config):
+            with self.assertRaises(RuntimeError) as caught:
+                self.service._smbios_apply_prepare(
+                    vm=self.service.store.get_vm("studio"), image=self.image, requested=NEW,
+                )
+        message = str(caught.exception)
+        self.assertIn("nenhuma família de kexts está completa", message)
+        self.assertIn("Kexts ativos (2)", message)
+        self.assertIn("SomeUserKext.kext", message)
+        self.assertIn("faltando", message)
+        self.assertIn("sobrando", message)
 
     def test_patch_vm_config_refuses_catalog_only_identity_change(self):
         with self.assertRaises(RpcRemoteError) as caught:

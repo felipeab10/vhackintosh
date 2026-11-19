@@ -18,9 +18,12 @@ from core.config import LOGS_DIR, SMBIOSConfig
 from core.graphics_profiles import (
     GRAPHICS_PROFILES,
     KEXT_MAX_KERNEL,
+    SUPPORT_KEXT_BUNDLES,
+    SUPPORT_PROFILE,
     VENDORED_KEXTS,
     VENDORED_KEXTS_DIR,
     profile_kext_dir,
+    support_kext_dir,
     verify_kext_manifest,
 )
 
@@ -276,6 +279,7 @@ def generate_opencore(
     if supports_add_kext:
         bundles = GRAPHICS_PROFILES[profile]
         profile_dir = profile_kext_dir(profile, VENDORED_KEXTS_DIR)
+        support_bundles = SUPPORT_KEXT_BUNDLES
         missing = [name for name, _ in bundles if not (profile_dir / name).is_dir()]
         if missing:
             with LOG_FILE.open("a", encoding="utf-8") as lf:
@@ -298,6 +302,34 @@ def generate_opencore(
         for name, minimum_kernel in bundles:
             kext_args.append("--add-kext")
             kext_args.append(f"{profile_dir / name},{minimum_kernel},{KEXT_MAX_KERNEL}")
+        # Support kexts belong to no graphics family, but the regenerated image
+        # rebuilds Kernel>Add from these bundles: skipping them is what deleted
+        # MCEReporterDisabler from a MacPro7,1 EFI and made the guest reboot.
+        if support_bundles:
+            support_dir = support_kext_dir(VENDORED_KEXTS_DIR)
+            missing_support = [
+                name for name, _ in support_bundles if not (support_dir / name).is_dir()
+            ]
+            if missing_support:
+                with LOG_FILE.open("a", encoding="utf-8") as lf:
+                    lf.write(
+                        f"\n--- reims-util opencore ({Path(output_path).name}) ---\n"
+                        f"Erro: faltam kexts de suporte em {support_dir}: "
+                        f"{', '.join(missing_support)}.\n"
+                    )
+                return False
+            try:
+                verify_kext_manifest(SUPPORT_PROFILE, VENDORED_KEXTS_DIR)
+            except RuntimeError as exc:
+                with LOG_FILE.open("a", encoding="utf-8") as lf:
+                    lf.write(
+                        f"\n--- reims-util opencore ({Path(output_path).name}) ---\n"
+                        f"Erro de integridade dos kexts de suporte: {exc}.\n"
+                    )
+                return False
+            for name, minimum_kernel in support_bundles:
+                kext_args.append("--add-kext")
+                kext_args.append(f"{support_dir / name},{minimum_kernel},{KEXT_MAX_KERNEL}")
 
     final_dest = Path(output_path).resolve()
     final_dest.parent.mkdir(parents=True, exist_ok=True)

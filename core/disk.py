@@ -17,6 +17,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from core.config import VMConfig, CONFIG_DIR
+from core.opencore_path import opencore_image_path
 from core.smbios import GenSMBIOS
 from core import reims_util
 
@@ -122,7 +123,7 @@ class DiskProvisioner:
         vm_dir.mkdir(parents=True, exist_ok=True)
         macos_path = vm_dir / "macos.qcow2"
         hdd_path = vm_dir / "hdd.qcow2"
-        opencore_path = vm_dir / "OpenCore.qcow2"
+        opencore_path = opencore_image_path(vm_dir)
         # O OVMF é escrito antes do OpenCore porque o reims-util é chamado com
         # `--no-ovmf` e não deve tocar nesses arquivos. Se a geração da EFI
         # falhar depois, o diretório não pode ficar com OVMF e sem OpenCore: um

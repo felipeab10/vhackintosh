@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core.config import CONFIG_DIR, ExclusiveVMLock, VMConfig, VMManagerStore
+from core.opencore_path import OpencoreImageError, declared_opencore_name, opencore_image_path
 from core.disk import DiskProvisioner
 from core.gpu import GPUChecker
 from core import reims_ctl
@@ -237,10 +238,17 @@ def decide_reimsctl(
     if not qemu_binary().exists():
         return False, f"QEMU do reims-vgpu não instalado (esperado em {qemu_binary()})"
 
+    custom_opencore: Optional[Path] = None
+    if custom_dir is not None:
+        try:
+            custom_opencore = opencore_image_path(custom_dir)
+        except OpencoreImageError as exc:
+            return False, str(exc)
     if not (
         custom_dir
         and (custom_dir / "macos.qcow2").exists()
-        and (custom_dir / "OpenCore.qcow2").exists()
+        and custom_opencore is not None
+        and custom_opencore.exists()
     ):
         return False, f"layout persistente incompleto em {custom_dir}"
 
@@ -294,10 +302,12 @@ def recover_reimsctl_vm_storage(
 
     disk_name = source_config.get("disk", "disk.qcow2")
     q35 = source_config.get("q35") or {}
-    opencore_name = q35.get("opencore", "opencore.qcow2")
+    try:
+        source_opencore = opencore_image_path(source_dir)
+    except OpencoreImageError as exc:
+        return None, str(exc)
     vars_name = q35.get("firmware_vars", "OVMF_VARS.fd")
     source_disk = source_dir / disk_name
-    source_opencore = source_dir / opencore_name
     source_vars = source_dir / vars_name
     if not source_disk.is_file() or source_disk.stat().st_size == 0:
         return None, f"o disco da VM registrada não existe ou está vazio: {source_disk}"
@@ -306,7 +316,6 @@ def recover_reimsctl_vm_storage(
 
     target_dir = config_dir / "vms" / vm.id
     target_disk = target_dir / "macos.qcow2"
-    target_opencore = target_dir / "OpenCore.qcow2"
     target_vars = target_dir / "OVMF_VARS.fd"
     target_dir.mkdir(parents=True, exist_ok=True)
     if target_disk.exists() or target_disk.is_symlink():
@@ -323,6 +332,10 @@ def recover_reimsctl_vm_storage(
     # pelo vHackintosh. Preserve exatamente a imagem apontada pelo vm.toml que
     # já iniciou esta VM; a capitalização do nome é só o contrato do TOML novo.
     native_opencore = source_opencore.is_file() and source_opencore.stat().st_size > 0
+    try:
+        target_opencore = opencore_image_path(target_dir)
+    except OpencoreImageError as exc:
+        return None, str(exc)
     if native_opencore:
         if target_opencore.exists() or target_opencore.is_symlink():
             try:
@@ -363,7 +376,7 @@ def recover_reimsctl_vm_storage(
         except Exception as exc:  # noqa: BLE001 — devolve o motivo para a TUI
             return None, f"falha ao preparar OpenCore/UEFI no destino {target_dir}: {exc}"
 
-    required = (target_disk, target_dir / "OpenCore.qcow2", target_vars)
+    required = (target_disk, target_opencore, target_vars)
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         return None, "a recuperação terminou sem estes arquivos: " + ", ".join(missing)
@@ -627,7 +640,7 @@ class VMLifecycleService:
                 vm.disk_path
                 and Path(vm.disk_path).expanduser().is_file()
                 and configured_dir
-                and (configured_dir / "OpenCore.qcow2").is_file()
+                and opencore_image_path(configured_dir).is_file()
             ):
                 custom_dir = configured_dir
             else:
