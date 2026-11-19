@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.config import AdditionalDiskConfig, SMBIOSConfig, VMConfig, VMManagerStore
-from core.graphics_profiles import EMBEDDED_KEXTS, GRAPHICS_PROFILES
+from core.graphics_profiles import EMBEDDED_KEXTS, GRAPHICS_PROFILES, SUPPORT_KEXT_BUNDLES
 from core.web_rpc import RpcRemoteError
 
 LEGACY_PROFILE = "apple-gfx-pci"
@@ -19,7 +19,11 @@ REIMS_PROFILE = "reims-graphics-pci"
 
 
 def _profile_kexts(profile):
-    return set(EMBEDDED_KEXTS) | {bundle for bundle, _minimum in GRAPHICS_PROFILES[profile]}
+    return (
+        set(EMBEDDED_KEXTS)
+        | {bundle for bundle, _minimum in GRAPHICS_PROFILES[profile]}
+        | {bundle for bundle, _minimum in SUPPORT_KEXT_BUNDLES}
+    )
 
 
 def _release_runtime(profile=LEGACY_PROFILE, kext_mode="embedded"):

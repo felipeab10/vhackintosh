@@ -3,21 +3,33 @@
 The closed contract says the graphics profile is identified by the compiled
 device name (`reims-graphics-pci` wins over `apple-gfx-pci`; absence of both is
 fail-closed) and that an EFI must enable exactly `{Lilu.kext} ∪ profile kexts`.
-These tests are hermetic: no real QEMU, reims-util or guestfish is executed.
+The classification and diagnostic tests are hermetic. One consistency test runs
+the pinned reims-util plus guestfish when both are installed, and skips otherwise.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from core import reims_util
 from core.config import SMBIOSConfig, VMConfig, VMManagerStore
-from core.graphics_profiles import EMBEDDED_KEXTS, GRAPHICS_PROFILES
+from core.graphics_profiles import (
+    EMBEDDED_KEXTS,
+    GRAPHICS_PROFILES,
+    SUPPORT_KEXTS,
+    SUPPORT_KEXT_BUNDLES,
+    profile_kext_dir,
+    verify_kext_manifest,
+)
 from core.runtime_inventory import _qemu_graphics_profile, inspect_runtime
+from core.smbios import GenSMBIOS
 from core.web_agent import WebAgentService
 
 LEGACY = "apple-gfx-pci"
@@ -213,6 +225,9 @@ class ExactKextSetValidationTests(unittest.TestCase):
         self.assertEqual(expected_reims, set(EMBEDDED_KEXTS) | {b for b, _ in GRAPHICS_PROFILES[REIMS]})
         self.assertEqual(len(expected_legacy), 9)
         self.assertEqual(len(expected_reims), 6)
+        support = {bundle for bundle, _ in SUPPORT_KEXT_BUNDLES}
+        self.assertEqual(len(expected_legacy | support), 10)
+        self.assertEqual(len(expected_reims | support), 7)
         self.assertNotEqual(expected_legacy, expected_reims)
 
     def test_unknown_profile_is_refused(self):
@@ -235,6 +250,176 @@ class ExactKextSetValidationTests(unittest.TestCase):
         legacy_without_gate = _bundle_names(LEGACY) | set(EMBEDDED_KEXTS)
         legacy_without_gate.discard("RgfxGate.kext")
         self.assertEqual(self.service._graphics_profile_from_kexts(legacy_without_gate), LEGACY)
+
+    def test_complete_family_with_an_orphan_legacy_marker_is_diagnosable(self):
+        # Measured dump from a user's VM: the full modern family plus an orphan
+        # ReimsVgpu.kext. The family is recognizable; the extra is named. The
+        # coexistence policy is still pending, so detection stays fail-closed.
+        kexts = _bundle_names(REIMS) | set(EMBEDDED_KEXTS) | {"ReimsVgpu.kext"}
+        match = self.service._classify_opencore_profile(kexts)
+        self.assertEqual(match.kind, "complete_with_extras")
+        self.assertEqual(match.profile, REIMS)
+        self.assertEqual(match.extras, ("ReimsVgpu.kext",))
+        self.assertIsNone(self.service._graphics_profile_from_kexts(kexts))
+
+    def test_support_allowlist_names_the_non_graphics_bundles(self):
+        # MCEReporterDisabler is required by MacPro7,1 (board-id
+        # Mac-27AD2F918AE68F61 panics in AppleIntelMCEReporter); VirtualSMC/SMC*
+        # are the sensor set. None of them belongs to a graphics family.
+        for name in (
+            "Lilu.kext", "VirtualSMC.kext", "SMCProcessor.kext",
+            "SMCSuperIO.kext", "MCEReporterDisabler.kext",
+        ):
+            self.assertIn(name, SUPPORT_KEXTS)
+        # No graphics bundle may leak into the allowlist, or the family check
+        # would stop meaning anything.
+        for bundles in GRAPHICS_PROFILES.values():
+            for bundle, _minimum in bundles:
+                self.assertNotIn(bundle, SUPPORT_KEXTS)
+
+    def test_exact_family_alone_is_exact_without_warnings(self):
+        kexts = _bundle_names(REIMS) | set(EMBEDDED_KEXTS)
+        match = self.service._classify_opencore_profile(kexts)
+        self.assertEqual(match.kind, "exact")
+        self.assertEqual(match.profile, REIMS)
+        self.assertEqual(match.extras, ())
+        self.assertEqual(match.support, ())
+        self.assertEqual(match.unknown, ())
+        self.assertEqual(self.service._graphics_profile_warnings(match), [])
+
+    def test_mce_reporter_disabler_is_accepted_as_support_not_an_extra(self):
+        # Regression for the MacPro7,1 plan: adding the disabler must NOT turn
+        # the set into complete_with_extras and must not block the SMBIOS apply.
+        kexts = _bundle_names(REIMS) | set(EMBEDDED_KEXTS) | {"MCEReporterDisabler.kext"}
+        match = self.service._classify_opencore_profile(kexts)
+        self.assertEqual(match.kind, "exact")
+        self.assertEqual(match.profile, REIMS)
+        self.assertEqual(match.extras, ())
+        self.assertEqual(match.support, ("MCEReporterDisabler.kext",))
+        self.assertEqual(self.service._graphics_profile_from_kexts(kexts), REIMS)
+        warnings = self.service._graphics_profile_warnings(match)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("MCEReporterDisabler.kext", warnings[0])
+        self.assertIn(REIMS, warnings[0])
+        # The diagnostic must not call a support kext "sobrando" of the profile.
+        message = self.service._graphics_profile_diagnostic(kexts)
+        self.assertIn("Suporte (Lilu.kext, MCEReporterDisabler.kext)", message)
+        self.assertNotIn("sobrando MCEReporterDisabler.kext", message)
+
+    def test_virtualsmc_and_smc_sensors_are_accepted_as_support(self):
+        kexts = _bundle_names(REIMS) | set(EMBEDDED_KEXTS) | {
+            "VirtualSMC.kext", "SMCProcessor.kext", "SMCSuperIO.kext",
+        }
+        match = self.service._classify_opencore_profile(kexts)
+        self.assertEqual(match.kind, "exact")
+        self.assertEqual(match.extras, ())
+        self.assertEqual(
+            match.support,
+            ("SMCProcessor.kext", "SMCSuperIO.kext", "VirtualSMC.kext"),
+        )
+        self.assertEqual(self.service._graphics_profile_from_kexts(kexts), REIMS)
+        self.assertIn("VirtualSMC.kext", self.service._graphics_profile_warnings(match)[0])
+
+    def test_unknown_non_graphics_bundle_is_a_named_warning_not_an_extra(self):
+        kexts = _bundle_names(REIMS) | set(EMBEDDED_KEXTS) | {"SomeUserKext.kext"}
+        match = self.service._classify_opencore_profile(kexts)
+        self.assertEqual(match.kind, "exact")
+        self.assertEqual(match.extras, ())
+        self.assertEqual(match.unknown, ("SomeUserKext.kext",))
+        self.assertIn("SomeUserKext.kext", self.service._graphics_profile_warnings(match)[0])
+
+    def test_other_family_bundle_stays_blocking_beside_support_kexts(self):
+        # The real ambiguity is unchanged even with a support kext present:
+        # ReimsVgpu.kext belongs to apple-gfx-pci, so the modern family is
+        # refused exactly as before.
+        kexts = _bundle_names(REIMS) | set(EMBEDDED_KEXTS) | {
+            "ReimsVgpu.kext", "MCEReporterDisabler.kext",
+        }
+        match = self.service._classify_opencore_profile(kexts)
+        self.assertEqual(match.kind, "complete_with_extras")
+        self.assertEqual(match.profile, REIMS)
+        self.assertEqual(match.extras, ("ReimsVgpu.kext",))
+        self.assertEqual(match.support, ("MCEReporterDisabler.kext",))
+        self.assertIsNone(self.service._graphics_profile_from_kexts(kexts))
+
+    def test_incomplete_family_with_support_is_still_none(self):
+        # A support kext never completes a family: the kind stays ``none`` and
+        # the caller keeps failing closed.
+        kexts = _bundle_names(REIMS) | set(EMBEDDED_KEXTS) | {"MCEReporterDisabler.kext"}
+        kexts.discard("RgfxGate.kext")
+        match = self.service._classify_opencore_profile(kexts)
+        self.assertEqual(match.kind, "none")
+        self.assertIsNone(match.profile)
+        self.assertIsNone(self.service._graphics_profile_from_kexts(kexts))
+
+    def test_diagnostic_names_the_active_set_count_and_both_profile_diffs(self):
+        kexts = _bundle_names(REIMS) | set(EMBEDDED_KEXTS) | {"ReimsVgpu.kext"}
+        message = self.service._graphics_profile_diagnostic(kexts)
+        self.assertIn("Kexts ativos (7)", message)
+        self.assertIn("ReimsVgpu.kext", message)
+        self.assertIn(f"Perfil {LEGACY}", message)
+        self.assertIn(f"Perfil {REIMS}", message)
+        self.assertIn("faltando", message)
+        self.assertIn("sobrando", message)
+        # Identity fields are never part of a kext diagnostic.
+        for forbidden in ("C02", "F5K", "MLB", "SystemUUID"):
+            self.assertNotIn(forbidden, message)
+
+    def test_diagnostic_truncates_long_lists(self):
+        names = {f"Unknown{index:02d}.kext" for index in range(20)}
+        message = self.service._graphics_profile_diagnostic(names)
+        active = message.split("Perfil ")[0]
+        self.assertIn("Kexts ativos (20)", active)
+        self.assertIn("... (+5)", active)
+        self.assertEqual(active.count("Unknown"), 15)
+
+    def test_integer_or_string_enabled_is_not_accepted_and_is_named(self):
+        bundles = _bundle_names(LEGACY) | set(EMBEDDED_KEXTS)
+        config = {
+            "Kernel": {"Add": [
+                {"BundlePath": name, "Enabled": 1} for name in sorted(bundles)
+            ]},
+        }
+        listing = SimpleNamespace(returncode=0, stdout="\n".join(sorted(bundles)), stderr="")
+        with patch("core.web_agent.subprocess.run", return_value=listing):
+            active = self.service._opencore_kext_bundles(Path("OpenCore.qcow2"), config)
+        # OpenCore requires <true/>; an integer must never be read as enabled.
+        self.assertEqual(active, set())
+        message = self.service._graphics_profile_diagnostic(active, config)
+        self.assertIn("Enabled não-booleano", message)
+        self.assertIn("o OpenCore exige true/false", message)
+
+        string_config = {"Kernel": {"Add": [
+            {"BundlePath": name, "Enabled": "true"} for name in sorted(bundles)
+        ]}}
+        with patch("core.web_agent.subprocess.run", return_value=listing):
+            self.assertEqual(
+                self.service._opencore_kext_bundles(Path("OpenCore.qcow2"), string_config),
+                set(),
+            )
+
+    def test_generator_inputs_and_detection_agree_for_both_profiles(self):
+        # What `core.reims_util.generate_opencore` injects is the graphics profile
+        # plus the separately managed support bundles and embedded Lilu.
+        for profile in (LEGACY, REIMS):
+            with self.subTest(profile=profile):
+                directory = profile_kext_dir(profile)
+                if directory.is_dir():
+                    for name, _minimum in GRAPHICS_PROFILES[profile]:
+                        self.assertTrue((directory / name).is_dir(), f"missing vendored {name}")
+                    manifest = directory / "set.toml"
+                    if manifest.is_file():
+                        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+                        self.assertEqual(
+                            {entry["BundlePath"] for entry in data["kext"]},
+                            _bundle_names(profile),
+                        )
+                        verify_kext_manifest(profile)
+                generated = _bundle_names(profile) | set(EMBEDDED_KEXTS)
+                generated_with_support = generated | {bundle for bundle, _ in SUPPORT_KEXT_BUNDLES}
+                self.assertEqual(self.service._expected_opencore_kexts(profile), generated)
+                self.assertEqual(self.service._graphics_profile_from_kexts(generated_with_support), profile)
+                self.assertEqual(self.service._classify_opencore_profile(generated_with_support).kind, "exact")
 
 
 class PickerProfileMismatchTests(unittest.TestCase):
@@ -317,6 +502,7 @@ class ReleaseProfileMismatchTests(unittest.TestCase):
             fake_tree.mkdir()
             legacy_bundles = _bundle_names(LEGACY) | set(EMBEDDED_KEXTS)
             reims_bundles = _bundle_names(REIMS) | set(EMBEDDED_KEXTS)
+            support_bundles = {bundle for bundle, _ in SUPPORT_KEXT_BUNDLES}
             seen: list[dict] = []
 
             class Context:
@@ -337,7 +523,7 @@ class ReleaseProfileMismatchTests(unittest.TestCase):
 
             def fake_kexts(_image):
                 kext_reads["n"] += 1
-                return set(reims_bundles) if kext_reads["n"] > 1 else set(legacy_bundles)
+                return (set(reims_bundles) | support_bundles) if kext_reads["n"] > 1 else set(legacy_bundles)
 
             smbios_in = SMBIOSConfig(
                 model="iMac20,1", serial_number="C02ABCDEFGHI", board_serial="C020000000000001",
@@ -381,6 +567,41 @@ def _runtime_dict(profile):
         "qemu_graphics_profile": profile,
         "qemu_graphics_profile_source": "/managed/qemu-system-x86_64",
     }
+
+class RealGeneratorDetectionTests(unittest.TestCase):
+    """The pinned generator's own output must pass the detection it feeds.
+
+    Skipped unless the host has the packaged reims-util with --add-kext and
+    guestfish; when present this is the end-to-end proof for both profiles.
+    """
+
+    @unittest.skipUnless(
+        reims_util.find_reims_util() and shutil.which("guestfish"),
+        "reims-util or guestfish not installed",
+    )
+    def test_control_generator_output_is_accepted_for_both_profiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for profile in (LEGACY, REIMS):
+                with self.subTest(profile=profile):
+                    image = Path(directory) / f"{profile}.qcow2"
+                    identity = GenSMBIOS.generate_for_model("iMac20,1", macos_version="tahoe")
+                    self.assertTrue(
+                        reims_util.generate_opencore(
+                            image, identity, graphics_profile=profile, show_picker=False,
+                        ),
+                        reims_util.LOG_FILE,
+                    )
+                    kexts = WebAgentService._opencore_enabled_kexts(image)
+                    from core.graphics_profiles import SUPPORT_KEXT_BUNDLES
+                    self.assertEqual(
+                        kexts,
+                        WebAgentService._expected_opencore_kexts(profile)
+                        | {bundle for bundle, _ in SUPPORT_KEXT_BUNDLES},
+                    )
+                    self.assertEqual(WebAgentService._graphics_profile_from_kexts(kexts), profile)
+                    self.assertEqual(
+                        WebAgentService._classify_opencore_profile(kexts).kind, "exact",
+                    )
 
 
 if __name__ == "__main__":

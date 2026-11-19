@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.config import AdditionalDiskConfig, SMBIOSConfig, VMConfig, VMManagerStore
+from core.opencore_path import DEFAULT_OPENCORE_NAME, OpencoreImageError, declared_opencore_name, opencore_image_path
 from core.smbios import GenSMBIOS
 from core.vm_backup import VMBackupConflict, VMBackupService, VMBackupUnsafe
 
@@ -92,6 +93,36 @@ class VMCloneService:
         index = matches[0]
         newline = "\r\n" if lines[index].endswith("\r\n") else "\n" if lines[index].endswith("\n") else ""
         lines[index] = f"{key} = {json.dumps(value, ensure_ascii=False)}{newline}"
+        return "".join(lines)
+
+    @staticmethod
+    def _set_toml_opencore(text: str, value: str) -> str:
+        lines = text.splitlines(keepends=True)
+        active_section = None
+        matches = []
+        for index, line in enumerate(lines):
+            section_match = re.match(r"\s*\[([^]]+)\]\s*(?:#.*)?(?:\r?\n)?$", line)
+            if section_match:
+                active_section = section_match.group(1)
+            if active_section == "q35" and re.match(r"\s*opencore\s*=", line):
+                matches.append(index)
+        if len(matches) > 1:
+            raise VMBackupUnsafe("vm.toml contém campos q35.opencore duplicados.")
+        if matches:
+            index = matches[0]
+            newline = "\r\n" if lines[index].endswith("\r\n") else "\n" if lines[index].endswith("\n") else ""
+            lines[index] = f"opencore = {json.dumps(value)}{newline}"
+            return "".join(lines)
+        section_index = next((index for index, line in enumerate(lines)
+                              if re.match(r"\s*\[q35\]\s*(?:#.*)?(?:\r?\n)?$", line)), None)
+        if section_index is None:
+            separator = "" if not lines or lines[-1].endswith(("\n", "\r")) else "\n"
+            return "".join(lines) + separator + f"\n[q35]\nopencore = {json.dumps(value)}\n"
+        insert_at = section_index + 1
+        while insert_at < len(lines) and not re.match(r"\s*\[", lines[insert_at]):
+            insert_at += 1
+        newline = "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
+        lines.insert(insert_at, f"opencore = {json.dumps(value)}{newline}")
         return "".join(lines)
 
     def _write_clone_journal(self, journal: Path, payload: dict) -> None:
@@ -422,7 +453,12 @@ class VMCloneService:
             additional_disks = self._additional_disks(source, source_toml)
             main_disk = source_dir / "macos.qcow2"
             main_chain = self.guard._safe_qcow_files(main_disk)
-            self.guard._safe_qcow_files(source_dir / "OpenCore.qcow2")
+            try:
+                source_opencore = opencore_image_path(source_dir)
+            except OpencoreImageError as exc:
+                raise VMBackupUnsafe(str(exc)) from exc
+            self.guard._safe_qcow_files(source_opencore)
+            clone_opencore_name = DEFAULT_OPENCORE_NAME
             disk_jobs = [{
                 "role": "primary", "source": main_disk, "format": "qcow2", "controller": None,
                 "order": None, "filename": "macos.qcow2", "chain": main_chain,
@@ -544,9 +580,10 @@ class VMCloneService:
                             "backing_chain_materialized": True, "size_bytes": size, "sha256": digest,
                         })
                     else:
+                        destination = stage / (clone_opencore_name if path == source_opencore else path.name)
                         size, digest = self.guard._copy_hash(
                             path,
-                            stage / path.name,
+                            destination,
                             check_cancelled=check_cancelled,
                             already_copied=copied,
                             on_progress=(lambda amount: on_progress(amount, total_bytes)) if on_progress else None,
@@ -593,10 +630,11 @@ class VMCloneService:
                 toml_text = vm_toml_path.read_text(encoding="utf-8")
                 toml_text = self._replace_toml_value(toml_text, "name", clone_id)
                 toml_text = self._replace_toml_value(toml_text, "mac", mac, section="network")
+                toml_text = self._set_toml_opencore(toml_text, DEFAULT_OPENCORE_NAME)
                 toml_text = self._replace_additional_disk_paths(toml_text, additional_disks, clone_disk_paths)
                 vm_toml_path.write_text(toml_text, encoding="utf-8")
                 self.guard._validate_vm_toml(vm_toml_path, clone_id)
-                self.opencore_rewriter(stage / "OpenCore.qcow2", clone)
+                self.opencore_rewriter(stage / clone_opencore_name, clone)
                 self.guard._copy_hash(nvram, stage / "OVMF_VARS.fd")
                 if on_progress is not None:
                     on_progress(total_bytes, total_bytes)
@@ -604,7 +642,7 @@ class VMCloneService:
                 cloned_main_chain = self.guard._safe_qcow_files(stage / "macos.qcow2")
                 if main_job["materialized"] and len(cloned_main_chain) != 1:
                     raise VMBackupUnsafe("A cadeia QCOW2 principal não foi materializada por completo.")
-                self.guard.qcow_inspector(stage / "OpenCore.qcow2")
+                self.guard.qcow_inspector(stage / clone_opencore_name)
                 completed_files = []
                 for artifact in sorted(stage.iterdir(), key=lambda item: item.name):
                     if artifact.name == "clone-manifest.json":

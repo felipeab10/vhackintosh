@@ -1,0 +1,26 @@
+MCEReporterDisabler.kext
+=======================
+
+Plist-only kernel extension (no executable; only `Contents/Info.plist`).
+Identifier `org.rehabman.disabler.MCEReporter`, version 0.5.
+
+Upstream author: RehabMan (2017).
+License: GPL-2.0. The bundle's own `Info.plist` declares it in
+`CFBundleGetInfoString`:
+
+    MCEReporterDisabler 0.5, Copyright (GPLv2) (c) 2017 by RehabMan. All rights reserved.
+
+The full license text is `GPL-2.0-or-later.txt` in this directory, the same
+terms the other RehabMan-derived bundles in this tree are distributed under.
+
+What it does: it publishes `AppleIntelMCEReporter`/`AppleIntelMCEInterruptController`
+personalities with a higher probe score for the board-ids listed in its
+`IOKitPersonalities` (including `Mac-27AD2F918AE68F61`, the MacPro7,1 board-id),
+so macOS does not attach the real `AppleIntelMCEReporter` on that identity and
+does not panic/reboot during boot under QEMU.
+
+Provenance of the vendored copy: extracted verbatim from the OpenCore template
+image this project already shipped (`templates/OpenCore.qcow2`,
+`/EFI/OC/Kexts/MCEReporterDisabler.kext`), where the entry is enabled with
+`MinKernel 19.0.0`. SHA-256 of `Contents/Info.plist`:
+`231da3ffdd09ebced832a0e05ab98da48f16f84f138f9be3062324a6905d94c7`.

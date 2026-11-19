@@ -44,6 +44,14 @@ SYSFS_IOMMU_GROUPS = Path("/sys/kernel/iommu_groups")
 LOGS_DIR = CONFIG_DIR / "logs"
 
 
+from core.opencore_path import SMBIOS_BACKUP_IMAGE_NAME
+
+
+# OpenCore image resolution lives in core.opencore_path; keep this module's
+# configuration/data-store responsibilities independent of VM image naming.
+from core.opencore_path import SMBIOS_BACKUP_IMAGE_NAME
+
+
 @dataclass
 class SMBIOSConfig:
     model: str = "iMac20,1"
@@ -481,7 +489,7 @@ class VMManagerStore:
             existing = self._vms.get(vm.id)
             if existing and self._has_identity_changed(existing.smbios, vm.smbios):
                 vm_dir = Path(existing.disk_path).parent if existing.disk_path else self.config_dir / "vms" / vm.id
-                if not (vm_dir / "smbios-backup-before-regeneration" / "OpenCore.qcow2").is_file():
+                if not (vm_dir / "smbios-backup-before-regeneration" / SMBIOS_BACKUP_IMAGE_NAME).is_file():
                     raise ValueError("SMBIOS change for an existing VM requires a verified OpenCore backup")
             self._assert_unique_identity(vm)
             if vm.auto_start:

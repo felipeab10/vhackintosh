@@ -202,19 +202,32 @@ class ReimsUtilTests(unittest.TestCase):
             ), patch(
                 "pathlib.Path.is_dir", return_value=True
             ), patch(
+                "core.reims_util.verify_kext_manifest"
+            ), patch(
                 "subprocess.run", side_effect=fake_run
             ) as mock_run:
                 ok = reims_util.generate_opencore(dest, self.sample_smbios, no_ovmf=True)
                 self.assertTrue(ok)
                 called_cmd = mock_run.call_args_list[1].args[0]
-                # Um --add-kext por kext vendorizado, com os gates de kernel corretos.
-                self.assertEqual(called_cmd.count("--add-kext"), len(reims_util.VENDORED_KEXTS))
+                # Um --add-kext por kext vendorizado (perfil + suporte), com os gates de kernel corretos.
+                self.assertEqual(
+                    called_cmd.count("--add-kext"),
+                    len(reims_util.VENDORED_KEXTS) + len(reims_util.SUPPORT_KEXT_BUNDLES),
+                )
                 self.assertIn("/vendored/ReimsVgpu.kext,25.0.0,25.99.99", called_cmd)
                 self.assertIn("/vendored/APVDisplayPort.kext,25.4.0,25.99.99", called_cmd)
+                self.assertIn(
+                    f"/vendored/support/MCEReporterDisabler.kext,19.0.0,{reims_util.KEXT_MAX_KERNEL}",
+                    called_cmd,
+                )
                 # A ordem tem de casar com VENDORED_KEXTS: o reims-util recusa link para kext posterior.
                 add_positions = [i for i, arg in enumerate(called_cmd) if arg == "--add-kext"]
                 given = [called_cmd[i + 1].rsplit("/", 1)[1].split(",")[0] for i in add_positions]
-                self.assertEqual(given, [name for name, _ in reims_util.VENDORED_KEXTS])
+                self.assertEqual(
+                    given,
+                    [name for name, _ in reims_util.VENDORED_KEXTS]
+                    + [name for name, _ in reims_util.SUPPORT_KEXT_BUNDLES],
+                )
 
     def test_generate_opencore_refuses_binary_with_neither_embedded_nor_added_kexts(self):
         with tempfile.TemporaryDirectory() as td:
@@ -373,7 +386,9 @@ class ReimsUtilTests(unittest.TestCase):
                     for i, arg in enumerate(gen_cmd) if arg == "--add-kext"
                 ]
                 self.assertEqual(
-                    given, [name for name, _ in reims_util.GRAPHICS_PROFILES["reims-graphics-pci"]]
+                    given,
+                    [name for name, _ in reims_util.GRAPHICS_PROFILES["reims-graphics-pci"]]
+                    + [name for name, _ in reims_util.SUPPORT_KEXT_BUNDLES],
                 )
 
     def test_generate_opencore_autodetect_refuses_without_qemu_instead_of_assuming_legacy(self):

@@ -22,7 +22,7 @@ import tomllib
 import plistlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 import psutil
 
@@ -35,6 +35,11 @@ from core.web_vm_units import SystemdVmUnitManager
 from core.web_rpc import RpcRemoteError
 from core.web_rpc import UnixRpcServer
 from core.config import VMS_FILE
+from core.opencore_path import (
+    OpencoreImageError,
+    SMBIOS_BACKUP_IMAGE_NAME,
+    opencore_image_path,
+)
 from web.api.contracts import (
     HostOverview,
     InstallPhase,
@@ -66,6 +71,23 @@ VM_SHUTDOWN_TIMEOUT_SECONDS = 180
 VM_START_READY_TIMEOUT_SECONDS = 30
 SMBIOS_APPLY_KIND = "vm.smbios.apply"
 SMBIOS_IDENTITY_FIELDS = ("model", "serial_number", "board_serial", "smuuid", "rom")
+
+
+class GraphicsProfileMatch(NamedTuple):
+    """Result of classifying an active OpenCore kext set.
+
+    ``extras`` are the blocking bundles only: members of *another* graphics
+    family, the one real ambiguity. ``support`` (allowlisted non-graphics kexts,
+    e.g. ``VirtualSMC.kext``, ``MCEReporterDisabler.kext``) and ``unknown``
+    (bundles outside every family) never block; callers report them as named
+    warnings so the user still sees what the EFI activates.
+    """
+
+    profile: str | None
+    kind: str
+    extras: tuple[str, ...] = ()
+    support: tuple[str, ...] = ()
+    unknown: tuple[str, ...] = ()
 
 
 def _qcow2_virtual_size(path: Path, expected_stat: os.stat_result) -> int | None:
@@ -2728,21 +2750,140 @@ class WebAgentService:
         return smbios, show_picker, boot_args
 
     @staticmethod
-    def _graphics_profile_from_kexts(kexts: set[str]) -> str | None:
-        """Recognize the EFI profile from its discriminator bundle IDs."""
-        from core.graphics_profiles import GRAPHICS_PROFILES, LEGACY_PROFILE
+    def _format_kext_names(names) -> str:
+        """Render bundle names for an error message: names only, bounded length."""
+        ordered = sorted(name for name in names if isinstance(name, str) and name)
+        if not ordered:
+            return "nenhum"
+        limit = 15
+        shown = ", ".join(ordered[:limit])
+        if len(ordered) > limit:
+            return f"{shown} ... (+{len(ordered) - limit})"
+        return shown
 
-        legacy_marker = "ReimsVgpu.kext"
-        modern_markers = {"ReimsGraphicsLoader.kext", "RgfxGate.kext"}
-        legacy = legacy_marker in kexts and not modern_markers.intersection(kexts)
-        modern = modern_markers.issubset(kexts) and legacy_marker not in kexts
-        if legacy == modern:
-            return None
-        return LEGACY_PROFILE if legacy else "reims-graphics-pci"
+    @classmethod
+    def _classify_opencore_profile(cls, kexts: set[str]) -> "GraphicsProfileMatch":
+        """Classify the active kext set into the three diagnosable cases.
+
+        A family is *complete* when every bundle Control's generator would inject
+        for it is active. The cases are:
+          - ``exact``: one family complete, with nothing but support/unknown
+            bundles besides it (an orphan legacy marker is NOT "unknown": it
+            belongs to the other family and stays blocking);
+          - ``complete_with_extras``: one family complete plus bundles of the
+            *other* graphics family — the only genuine ambiguity, e.g. the
+            modern family beside ``ReimsVgpu.kext``;
+          - ``none``: zero or more than one family complete (genuinely ambiguous).
+
+        Support kexts (``core.graphics_profiles.SUPPORT_KEXTS``) live in no
+        family by design, so they can neither complete nor contradict a profile.
+        They are returned separately for a named warning instead of an abort.
+        """
+        from core.graphics_profiles import GRAPHICS_PROFILES, SUPPORT_KEXTS
+
+        families = {
+            name: {bundle for bundle, _minimum in bundles}
+            for name, bundles in GRAPHICS_PROFILES.items()
+        }
+        complete = [
+            profile
+            for profile in GRAPHICS_PROFILES
+            if cls._expected_opencore_kexts(profile).issubset(kexts)
+        ]
+        if len(complete) != 1:
+            return GraphicsProfileMatch(profile=None, kind="none")
+        profile = complete[0]
+        expected = cls._expected_opencore_kexts(profile)
+        foreign = set().union(
+            *(bundles for name, bundles in families.items() if name != profile)
+        )
+        leftover = kexts - expected - SUPPORT_KEXTS
+        extras = tuple(sorted(leftover & foreign))
+        return GraphicsProfileMatch(
+            profile=profile,
+            kind="complete_with_extras" if extras else "exact",
+            extras=extras,
+            support=tuple(sorted((kexts & SUPPORT_KEXTS) - expected)),
+            unknown=tuple(sorted(leftover - foreign)),
+        )
+
+    @classmethod
+    def _graphics_profile_diagnostic(cls, kexts: set[str], config: dict[str, Any] | None = None) -> str:
+        """Describe what the EFI activates, without any SMBIOS identity value.
+
+        Names the active bundles and their count, then the missing/extra bundles
+        against every known profile, so a user report carries the cause instead
+        of only "unknown". Support kexts are reported apart and never counted as
+        "sobrando", because they belong to no family. Also flags `Kernel > Add`
+        entries whose `Enabled` is not a boolean, because OpenCore's schema
+        requires true/false and such an entry silently contributes nothing.
+        """
+        from core.graphics_profiles import GRAPHICS_PROFILES, SUPPORT_KEXTS
+
+        parts = [f"Kexts ativos ({len(kexts)}): {cls._format_kext_names(kexts)}."]
+        support = kexts & SUPPORT_KEXTS
+        if support:
+            parts.append(f"Suporte ({cls._format_kext_names(support)}): não define perfil.")
+        for profile in GRAPHICS_PROFILES:
+            expected = cls._expected_opencore_kexts(profile)
+            parts.append(
+                f"Perfil {profile}: faltando {cls._format_kext_names(expected - kexts)}; "
+                f"sobrando {cls._format_kext_names(kexts - expected - SUPPORT_KEXTS)}."
+            )
+        if config is not None:
+            kernel = config.get("Kernel")
+            entries = kernel.get("Add") if isinstance(kernel, dict) else None
+            if isinstance(entries, list):
+                odd = [
+                    item for item in entries
+                    if isinstance(item, dict)
+                    and "Enabled" in item
+                    and not isinstance(item["Enabled"], bool)
+                ]
+                if odd:
+                    parts.append(
+                        f"{len(odd)} entrada(s) de Kernel>Add com Enabled não-booleano "
+                        f"({cls._format_kext_names(item.get('BundlePath') for item in odd)}): "
+                        "o OpenCore exige true/false e ignora o valor."
+                    )
+        return " ".join(parts)
+
+    @classmethod
+    def _graphics_profile_from_kexts(cls, kexts: set[str]) -> str | None:
+        """Recognize the profile when one family is complete and no other family conflicts.
+
+        Support and unknown bundles do not define a profile, so they are tolerated
+        here; a bundle from the other graphics family still returns ``None``.
+        """
+        match = cls._classify_opencore_profile(kexts)
+        return match.profile if match.kind == "exact" else None
+
+    @classmethod
+    def _graphics_profile_warnings(cls, match: "GraphicsProfileMatch") -> list[str]:
+        """Name the non-family bundles accepted beside the declared profile.
+
+        Support kexts (`SUPPORT_KEXTS`) and bundles outside every family do not
+        change the QEMU profile, so they never block an edit; they are reported
+        so the user knows they stay untouched by an in-place `config.plist` edit.
+        """
+        warnings: list[str] = []
+        if match.support:
+            warnings.append(
+                f"Kexts de suporte ativos em {match.profile}: "
+                f"{cls._format_kext_names(match.support)}; eles não definem o perfil e "
+                "permanecem na EFI."
+            )
+        if match.unknown:
+            warnings.append(
+                f"Kexts fora de qualquer família gráfica em {match.profile}: "
+                f"{cls._format_kext_names(match.unknown)}; eles não definem o perfil e "
+                "permanecem na EFI."
+            )
+        return warnings
 
     @staticmethod
     def _expected_opencore_kexts(graphics_profile: str) -> set[str]:
-        from core.graphics_profiles import EMBEDDED_KEXTS, GRAPHICS_PROFILES
+        from core.graphics_profiles import EMBEDDED_KEXTS, GRAPHICS_PROFILES, SUPPORT_KEXT_BUNDLES
 
         if graphics_profile not in GRAPHICS_PROFILES:
             raise RuntimeError(f"Perfil gráfico desconhecido: {graphics_profile!r}")
@@ -2821,16 +2962,48 @@ class WebAgentService:
                 "O gerador do Control não conseguiu regenerar o OpenCore; a imagem anterior foi restaurada."
             )
         try:
-            after_kexts = WebAgentService._opencore_enabled_kexts(image)
+            from core.opencore_path import opencore_image_path
+
+            declared_image = opencore_image_path(image.parent)
+            if declared_image.resolve(strict=True) != resolved_image.resolve(strict=True):
+                raise RuntimeError(
+                    f"A regeneração não escreveu no OpenCore declarado {declared_image.name}."
+                )
+            after_kexts = WebAgentService._opencore_enabled_kexts(declared_image)
         except Exception as exc:
             WebAgentService._restore_opencore_image(image, backup, context)
             raise RuntimeError(
-                "A EFI foi regenerada, mas não pôde ser inspecionada; a imagem anterior foi restaurada."
+                "A EFI foi regenerada, mas não pôde ser inspecionada no caminho declarado; "
+                "a imagem anterior foi restaurada."
             ) from exc
-        if after_kexts != WebAgentService._expected_opencore_kexts(expected_profile):
+        # Support kexts are injected in every generation and are what keeps a
+        # MacPro7,1 board-id from panicking in AppleIntelMCEReporter. They are
+        # verified by name, before the profile comparison, so a generator that
+        # silently drops them fails the job instead of yielding a VM that
+        # reboots on the next boot.
+        from core.graphics_profiles import SUPPORT_KEXT_BUNDLES
+
+        missing_support = [
+            name for name, _minimum in SUPPORT_KEXT_BUNDLES if name not in after_kexts
+        ]
+        if missing_support:
             WebAgentService._restore_opencore_image(image, backup, context)
             raise RuntimeError(
-                "A EFI regenerada não corresponde exatamente ao perfil; a imagem anterior foi restaurada."
+                "A EFI regenerada não habilita a(s) kext(s) de suporte "
+                f"{WebAgentService._format_kext_names(missing_support)}; "
+                "a imagem anterior foi restaurada."
+            )
+        expected_kexts = WebAgentService._expected_opencore_kexts(expected_profile) | {
+            name for name, _minimum in SUPPORT_KEXT_BUNDLES
+        }
+        if after_kexts != expected_kexts:
+            WebAgentService._restore_opencore_image(image, backup, context)
+            raise RuntimeError(
+                "A EFI regenerada não corresponde exatamente ao perfil "
+                f"{expected_profile} mais as kexts de suporte "
+                f"(faltando {WebAgentService._format_kext_names(expected_kexts - after_kexts)}; "
+                f"sobrando {WebAgentService._format_kext_names(after_kexts - expected_kexts)}); "
+                "a imagem anterior foi restaurada."
             )
         if expected_identity is not None:
             try:
@@ -2889,13 +3062,8 @@ class WebAgentService:
             if projection_path.is_symlink() or not projection_path.is_file():
                 raise ValueError("Projeção ausente ou insegura")
             with projection_path.open("rb") as handle:
-                projection = tomllib.load(handle)
-            q35 = projection.get("q35")
-            opencore_name = q35.get("opencore", "OpenCore.qcow2") if isinstance(q35, dict) else "OpenCore.qcow2"
-            relative_image = Path(opencore_name)
-            if relative_image.is_absolute() or ".." in relative_image.parts:
-                raise ValueError("Caminho fora do diretório")
-            image = resolved_directory / relative_image
+                tomllib.load(handle)
+            image = opencore_image_path(resolved_directory)
             resolved_image = image.resolve(strict=True)
             if (
                 image.is_symlink()
@@ -2949,21 +3117,45 @@ class WebAgentService:
             # backup so a failure leaves no orphan `.opencore-before-picker.qcow2`.
             try:
                 before = self._opencore_enabled_kexts(image)
-                source_profile = self._graphics_profile_from_kexts(before)
             except Exception as exc:
                 raise RuntimeError(
                     "Não foi possível validar os kexts da EFI antes de regenerar; nada foi alterado."
                 ) from exc
-            if source_profile is None:
-                raise RuntimeError("O perfil gráfico da EFI é desconhecido ou ambíguo; nada foi alterado.")
+            match = self._classify_opencore_profile(before)
+            diagnostic = self._graphics_profile_diagnostic(before)
+            if match.kind == "none":
+                raise RuntimeError(
+                    "O perfil gráfico da EFI é desconhecido ou ambíguo: nenhuma família de kexts "
+                    f"está completa; nada foi alterado. {diagnostic}"
+                )
+            if match.kind == "complete_with_extras":
+                raise RuntimeError(
+                    f"A EFI contém a família {match.profile} completa, mas também bundles de outra "
+                    f"família gráfica: {self._format_kext_names(match.extras)}; nada foi "
+                    f"alterado. {diagnostic}"
+                )
+            source_profile = match.profile
             if source_profile != graphics_profile:
                 raise RuntimeError(
                     f"A EFI está no perfil {source_profile}, mas o QEMU selecionado é {graphics_profile}; "
-                    "o picker não migra perfil. Nada foi alterado."
+                    f"o picker não migra perfil. Nada foi alterado. {diagnostic}"
                 )
-            if before != self._expected_opencore_kexts(source_profile):
+            from core.graphics_profiles import SUPPORT_KEXT_BUNDLES
+
+            # Regeneration rebuilds `Kernel > Add` from the vendored profile
+            # bundles plus the support bundles Control injects itself. A
+            # support kext outside that injected set (e.g. a user-added
+            # VirtualSMC) or an unknown bundle would be silently deleted;
+            # accepting the set and dropping the kext would be worse than
+            # refusing, so name them and keep the EFI untouched.
+            rebuildable_support = {name for name, _minimum in SUPPORT_KEXT_BUNDLES}
+            would_drop = (set(match.support) - rebuildable_support) | set(match.unknown)
+            if would_drop:
                 raise RuntimeError(
-                    "O conjunto de kexts da EFI não corresponde exatamente ao perfil declarado; nada foi alterado."
+                    f"A regeneração do OpenCore reconstrói Kernel>Add a partir dos bundles do "
+                    f"perfil {source_profile} mais as kexts de suporte injetadas e removeria: "
+                    f"{self._format_kext_names(would_drop)}; nada foi "
+                    f"alterado. Remova esses kexts da EFI antes de regenerar. {diagnostic}"
                 )
             # Identity and boot-args are read only after the cheap checks pass, so
             # a rejected profile leaves no orphan backup and never touches guestfish.
@@ -3225,20 +3417,32 @@ class WebAgentService:
             raise RuntimeError(
                 "Não foi possível ler o config.plist da EFI; nada foi alterado."
             ) from exc
-        source_profile = self._graphics_profile_from_kexts(before)
-        if source_profile is None:
-            raise RuntimeError("O perfil gráfico da EFI é desconhecido ou ambíguo; nada foi alterado.")
-        if before != self._expected_opencore_kexts(source_profile):
+        match = self._classify_opencore_profile(before)
+        diagnostic = self._graphics_profile_diagnostic(before, config)
+        if match.kind == "none":
             raise RuntimeError(
-                "O conjunto de kexts da EFI não corresponde exatamente ao perfil declarado; nada foi alterado."
+                "O perfil gráfico da EFI é desconhecido ou ambíguo: nenhuma família de kexts está "
+                f"completa; nada foi alterado. {diagnostic}"
             )
+        if match.kind == "complete_with_extras":
+            raise RuntimeError(
+                f"A EFI contém a família {match.profile} completa, mas também bundles de outra "
+                f"família gráfica: {self._format_kext_names(match.extras)}; nada foi "
+                f"alterado. {diagnostic}"
+            )
+        source_profile = match.profile
         if not shutil.which("qemu-img"):
             raise RuntimeError("O utilitário qemu-img é necessário para validar a imagem; nada foi alterado.")
+        # The edit rewrites only `config.plist` in place: support/unknown bundles
+        # in `Kernel > Add` stay exactly as they are, so they are reported as
+        # named warnings instead of aborting the identity change.
+        warnings.extend(self._graphics_profile_warnings(match))
         return {
             "identity": identity,
             "warnings": warnings,
             "changed_fields": changed,
             "profile": source_profile,
+            "kexts": before,
         }
 
     def _run_vm_smbios_apply_job(self, payload: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -3283,13 +3487,16 @@ class WebAgentService:
             if projection_path.is_symlink() or not projection_path.is_file():
                 raise ValueError("Projeção ausente ou insegura")
             with projection_path.open("rb") as handle:
-                projection = tomllib.load(handle)
-            q35 = projection.get("q35")
-            opencore_name = q35.get("opencore", "OpenCore.qcow2") if isinstance(q35, dict) else "OpenCore.qcow2"
-            relative_image = Path(opencore_name)
-            if relative_image.is_absolute() or ".." in relative_image.parts:
-                raise ValueError("Caminho fora do diretório")
-            image = resolved_directory / relative_image
+                tomllib.load(handle)
+            quarantine_dir = resolved_directory / "opencore-quarantine"
+            quarantined_before = set(quarantine_dir.iterdir()) if quarantine_dir.is_dir() else set()
+            image = opencore_image_path(resolved_directory, quarantine_conflict=True)
+            moved = sorted(set(quarantine_dir.iterdir()) - quarantined_before) if quarantine_dir.is_dir() else []
+            for quarantined in moved:
+                source_name = quarantined.name.rsplit(".", 2)[0]
+                source_path = resolved_directory / source_name
+                logger.warning("OpenCore variante não declarada movida para quarentena: %s -> %s", source_path, quarantined)
+                context.phase(f"OpenCore movido para quarentena: {source_path} → {quarantined}; usando {image}.", 5)
             resolved_image = image.resolve(strict=True)
             if (
                 image.is_symlink()
@@ -3333,7 +3540,7 @@ class WebAgentService:
                 store_vm_dir = Path(vm.disk_path).parent if vm.disk_path else self.store.config_dir / "vms" / vm_id
                 verified_backup_dir = store_vm_dir / "smbios-backup-before-regeneration"
                 verified_backup_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(image, verified_backup_dir / "OpenCore.qcow2")
+                shutil.copy2(image, verified_backup_dir / SMBIOS_BACKUP_IMAGE_NAME)
             finally:
                 temporary_backup.unlink(missing_ok=True)
             # Irreversible from here: no identity values, only field names.
@@ -3379,6 +3586,37 @@ class WebAgentService:
                 self._restore_opencore_image(image, backup, context)
                 raise RuntimeError(
                     "A EFI não carrega a identidade solicitada; a imagem anterior foi restaurada."
+                )
+            context.phase("Conferindo as kexts de suporte na EFI", 80)
+            # The edit rewrites only config.plist, so every Kernel>Add entry that
+            # was already there must still be enabled — and the support bundles
+            # (MCEReporterDisabler) are mandatory. Reopen the image through the
+            # path vm.toml DECLARES and fail closed naming any missing kext.
+            try:
+                declared_image = opencore_image_path(resolved_directory)
+                if declared_image.resolve(strict=True) != resolved_image:
+                    raise RuntimeError(
+                        f"a EFI editada não é o OpenCore declarado {declared_image.name}"
+                    )
+                after_kexts = self._opencore_enabled_kexts(declared_image)
+            except Exception as exc:
+                self._restore_opencore_image(image, backup, context)
+                raise RuntimeError(
+                    "As kexts da EFI não puderam ser relidas no caminho declarado em vm.toml; "
+                    "a imagem anterior foi restaurada."
+                ) from exc
+            from core.graphics_profiles import SUPPORT_KEXT_BUNDLES
+
+            missing_support = [
+                name for name, _minimum in SUPPORT_KEXT_BUNDLES
+                if name not in after_kexts or name not in prepared["kexts"]
+            ]
+            if missing_support:
+                self._restore_opencore_image(image, backup, context)
+                raise RuntimeError(
+                    "A EFI editada não habilita a(s) kext(s) de suporte "
+                    f"{self._format_kext_names(missing_support)} em Kernel>Add; "
+                    "a imagem anterior foi restaurada."
                 )
             context.phase("Atualizando o catálogo da VM", 90)
             # Merge only the identity with the freshest catalog so unrelated edits
@@ -3482,13 +3720,8 @@ class WebAgentService:
             if projection_path.is_symlink() or not projection_path.is_file():
                 raise ValueError("Projeção ausente ou insegura")
             with projection_path.open("rb") as handle:
-                projection = tomllib.load(handle)
-            q35 = projection.get("q35")
-            opencore_name = q35.get("opencore", "OpenCore.qcow2") if isinstance(q35, dict) else "OpenCore.qcow2"
-            relative_image = Path(opencore_name)
-            if relative_image.is_absolute() or ".." in relative_image.parts:
-                raise ValueError("Caminho fora do diretório")
-            image = directory / relative_image
+                tomllib.load(handle)
+            image = opencore_image_path(directory)
             resolved_image = image.resolve(strict=True)
             if image.is_symlink() or resolved_image != image or not resolved_image.is_relative_to(directory) or not resolved_image.is_file():
                 raise ValueError("Imagem ausente, link ou fora do diretório")
@@ -4060,11 +4293,7 @@ class WebAgentService:
                             context.log(f"{vm.name}: ignorada; arquitetura sem OpenCore x86-64.")
                             context.checkpoint("reims_vm_opencore_skipped", {"vm_id": vm.id, "reason": "no-q35"}, completed=True)
                             continue
-                        opencore_name = q35.get("opencore", "OpenCore.qcow2")
-                        relative_image = Path(opencore_name)
-                        if relative_image.is_absolute() or ".." in relative_image.parts:
-                            raise ValueError("caminho do OpenCore fora do diretório da VM")
-                        image = resolved_directory / relative_image
+                        image = opencore_image_path(resolved_directory)
                         resolved_image = image.resolve(strict=True)
                         if (
                             image.is_symlink()
@@ -4074,6 +4303,8 @@ class WebAgentService:
                             or resolved_image.stat().st_size <= 0
                         ):
                             raise ValueError("imagem OpenCore ausente ou insegura")
+                    except OpencoreImageError:
+                        raise
                     except (OSError, ValueError, TypeError, tomllib.TOMLDecodeError) as exc:
                         raise RuntimeError("não foi possível validar a projeção e a imagem OpenCore") from exc
 
@@ -4090,9 +4321,23 @@ class WebAgentService:
                     # mismatch is regenerated to `destination_profile` rather than
                     # skipped. Identity, picker, and boot-args are carried over.
                     if source_profile is None:
-                        raise RuntimeError("o perfil gráfico da EFI é desconhecido ou ambíguo")
-                    if before_kexts != self._expected_opencore_kexts(source_profile):
-                        raise RuntimeError("o conjunto de kexts da EFI difere do perfil declarado")
+                        raise RuntimeError(
+                            "o perfil gráfico da EFI é desconhecido ou ambíguo: "
+                            + self._graphics_profile_diagnostic(before_kexts)
+                        )
+                    match = self._classify_opencore_profile(before_kexts)
+                    from core.graphics_profiles import SUPPORT_KEXT_BUNDLES
+
+                    rebuildable_support = {name for name, _minimum in SUPPORT_KEXT_BUNDLES}
+                    would_drop = (set(match.support) - rebuildable_support) | set(match.unknown)
+                    if would_drop:
+                        # Control injects this support set on every regeneration,
+                        # so only user-added support or unknown bundles would be lost.
+                        raise RuntimeError(
+                            "a regeneração reconstrói Kernel>Add e removeria "
+                            + self._format_kext_names(would_drop)
+                            + "; remova esses kexts da EFI antes de regenerar"
+                        )
                     # Create the backup only after the image was inspected: a
                     # failed inspection never mutated anything and must not leave
                     # an orphan `.opencore-before-{tag}.qcow2`. It is still taken
